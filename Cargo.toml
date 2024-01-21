@@ -1,0 +1,13 @@
+[package]
+name = "thin_client"
+version = "0.0.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+
+[dependencies]
+socket2 = {version = "0.5.5", features = ["all"]}
+libc = "0.2.152"
+rand = "0.8"
+cbor = "0.4.1"
