@@ -7,9 +7,17 @@ import pytest
 from thinclient import ThinClient, Config, pretty_print_obj, scrub_descriptor_keys
 
 
+# Global variable to store the reply
+reply_message = None
+
+def save_reply(reply):
+    global reply_message
+    reply_message = reply
+    pretty_print_obj(reply)  # Optional: Pretty print the reply
+
 @pytest.mark.asyncio
-async def test_thin_client_naive_sleep_integration_test() -> None:
-    cfg = Config(on_message_reply=pretty_print_obj)
+async def test_thin_client_naive_sleep_integration_test():
+    cfg = Config(on_message_reply=save_reply)
     client = ThinClient(cfg)
     loop = asyncio.get_event_loop()
     await client.start(loop)
@@ -19,10 +27,15 @@ async def test_thin_client_naive_sleep_integration_test() -> None:
     payload = "hello"
     dest = service_desc.to_destination()
 
+    print(f"TEST DESTINATION: {dest}\n\n")
+
     client.send_message(surb_id, payload, dest[0], dest[1])
 
+    # Wait for the reply to be received
     await client.await_message_reply()
 
-    client.stop()
+    # Access the global variable to print the reply
+    global reply_message
+    print(f"reply: {reply_message}\n")
 
-    
+    client.stop()

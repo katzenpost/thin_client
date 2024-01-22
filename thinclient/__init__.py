@@ -191,10 +191,10 @@ class ThinClient:
         return random.choice(service_descriptors)
 
     def new_message_id(self):
-        os.urandom(MESSAGE_ID_SIZE)
+        return os.urandom(MESSAGE_ID_SIZE)
 
     def new_surb_id(self):
-        os.urandom(SURB_ID_SIZE)
+        return os.urandom(SURB_ID_SIZE)
         
         
     def handle_response(self, response):
@@ -245,9 +245,9 @@ class ThinClient:
             "WithSURB": True,
             "SURBID": surb_id,
             "IsSendOp": True,
-            "Destination": dest_node,
+            "DestinationIdHash": dest_node,
             "RecipientQueueID": dest_queue,
-                           }
+        }
         cbor_request = cbor2.dumps(request)
 
         try:

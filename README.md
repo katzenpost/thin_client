@@ -1,5 +1,13 @@
 # thin client library for Katzenpost client daemon
 
+*What is it?*
+
+**work-in-progress thin client library for both rust and python**
+
+## rust
+
+
+## python
 
 before you run the python thin client integraton tests, first
 start up the katzenpost client2 daemon:
@@ -21,7 +29,6 @@ make warpedclientdaemon
 ./cmd/kpclientd/kpclientd -c ../docker/voting_mixnet/client2/client.toml
 
 ```
-
 
 after the daemon is started, then run the integration tests:
 
