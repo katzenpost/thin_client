@@ -1,0 +1,5 @@
+coloredlogs==15.0.1
+asyncio==3.4.3
+cbor2==5.6.0
+pprintpp==0.4.0
+cryptography==41.0.7

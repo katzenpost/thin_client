@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: © 2024 David Stainton
+// SPDX-FileCopyrightText: Copyright (C) 2024 David Stainton
 // SPDX-License-Identifier: AGPL-3.0-only
 
 pub mod error;
@@ -48,7 +48,7 @@ impl ThinClient {
         let mut client_id = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut client_id);
         let client_socket_string = client_id.iter().map(|byte| format!("{:02x}", byte)).collect::<String>();
-        let formatted_socket_name = format!("katzenpost_golang_thin_client_{}", client_socket_string);
+        let formatted_socket_name = format!("katzenpost_rust_thin_client_{}", client_socket_string);
         let client_socket_name = formatted_socket_name.as_bytes();
         let client_addr = abstract_socket_addr(client_socket_name)?;
         let client_socket = Socket::new(Domain::UNIX, Type::SEQPACKET, None)?;
