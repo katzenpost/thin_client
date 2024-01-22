@@ -16,7 +16,7 @@ def save_reply(reply):
     pretty_print_obj(reply)  # Optional: Pretty print the reply
 
 @pytest.mark.asyncio
-async def test_thin_client_naive_sleep_integration_test():
+async def test_thin_client_send_receive_integration_test():
     cfg = Config(on_message_reply=save_reply)
     client = ThinClient(cfg)
     loop = asyncio.get_event_loop()
@@ -36,6 +36,12 @@ async def test_thin_client_naive_sleep_integration_test():
 
     # Access the global variable to print the reply
     global reply_message
-    print(f"reply: {reply_message}\n")
+
+    payload2 = reply_message['Payload']
+    payload2 = payload2[0:len(payload)]
+    payload2 = str(payload2)
+
+    assert len(payload) == len(payload2)
+    assert payload2 == payload
 
     client.stop()

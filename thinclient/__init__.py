@@ -45,9 +45,7 @@ class ServiceDescriptor:
 def find_services(capability, doc):
     services = []
     for provider in doc['Providers']:
-        print(f"PROVIDER :\n")
         scrub_descriptor_keys(provider)
-        pretty_print_obj(provider)
 
         # XXX WTF is the python cbor2 representation of the doc so
         # fucked up as to not have the "Kaetzchen" key inside the MixDescriptor?
@@ -110,21 +108,22 @@ class ThinClient:
 
     async def start(self, loop):
         self.logger.debug("connecting to daemon")
-        # Abstract names in Unix domain sockets start with a null byte ('\0').
+
         daemon_address = "katzenpost"
+        # Abstract names in Unix domain sockets start with a null byte ('\0').
         server_addr = '\0' + daemon_address
         await loop.sock_connect(self.socket, server_addr)
 
+        # 1st message is always a status event
         response = await self.recv(loop)
         assert response is not None
         assert response["ConnectionStatusEvent"] is not None
-        self.parse_status(response["ConnectionStatusEvent"])
         self.handle_response(response)
 
+        # 2nd message is always a new pki doc event
         response = await self.recv(loop)
         assert response is not None
         assert response["NewPKIDocumentEvent"] is not None
-        self.parse_pki_doc(response["NewPKIDocumentEvent"])
         self.handle_response(response)
         
         # Start the read loop as a background task
@@ -150,10 +149,7 @@ class ThinClient:
         while True:
             self.logger.debug("read loop")
             try:
-                self.logger.debug("BEFORE recv")
                 response = await self.recv(loop)
-                self.logger.debug("AFTER recv")
-
                 self.handle_response(response)
             except asyncio.CancelledError:
                 # Handle cancellation of the read loop
@@ -202,10 +198,12 @@ class ThinClient:
 
         if response.get("ConnectionStatusEvent") is not None:
             self.logger.debug("connection status event")
+            self.parse_status(response["ConnectionStatusEvent"])
             self.config.handle_connection_status_event(response["ConnectionStatusEvent"])
             return
         if response.get("NewPKIDocumentEvent") is not None:
             self.logger.debug("new pki doc event")
+            self.parse_pki_doc(response["NewPKIDocumentEvent"])
             self.config.handle_new_pki_document_event(response["NewPKIDocumentEvent"])
             return
         if response.get("MessageSentEvent") is not None:
@@ -215,6 +213,8 @@ class ThinClient:
         if response.get("MessageReplyEvent") is not None:
             self.logger.debug("message reply event")
             self.reply_received_event.set()
+            reply = response["MessageReplyEvent"]
+            self.logger.debug(f"message reply event: {reply}", reply)
             self.config.handle_message_reply_event(response["MessageReplyEvent"])
             return
 
