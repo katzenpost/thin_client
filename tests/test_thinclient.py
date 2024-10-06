@@ -3,6 +3,7 @@
 
 import asyncio
 import pytest
+import binascii
 
 from thinclient import ThinClient, Config, pretty_print_obj, scrub_descriptor_keys
 
@@ -13,7 +14,7 @@ reply_message = None
 def save_reply(reply):
     global reply_message
     reply_message = reply
-    pretty_print_obj(reply)  # Optional: Pretty print the reply
+    #pretty_print_obj(reply)  # Optional: Pretty print the reply
 
 @pytest.mark.asyncio
 async def test_thin_client_send_receive_integration_test():
@@ -37,11 +38,10 @@ async def test_thin_client_send_receive_integration_test():
     # Access the global variable to print the reply
     global reply_message
 
-    payload2 = reply_message['Payload']
+    payload2 = reply_message['payload']
     payload2 = payload2[0:len(payload)]
-    payload2 = str(payload2)
-
+    
     assert len(payload) == len(payload2)
-    assert payload2 == payload
+    assert payload2.decode() == payload
 
     client.stop()

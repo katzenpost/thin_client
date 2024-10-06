@@ -44,17 +44,17 @@ class ServiceDescriptor:
 
 def find_services(capability, doc):
     services = []
-    for provider in doc['Providers']:
-        scrub_descriptor_keys(provider)
+    for node in doc['ServiceNodes']:
+        scrub_descriptor_keys(node)
 
         # XXX WTF is the python cbor2 representation of the doc so
         # fucked up as to not have the "Kaetzchen" key inside the MixDescriptor?
         #for cap, details in provider['Kaetzchen'].items():
-        for cap, details in provider['omitempty'].items():
+        for cap, details in node['omitempty'].items():
             if cap == capability:
                 service_desc = ServiceDescriptor(
                     recipient_queue_id=bytes(details['endpoint'], 'utf-8'),
-                    mix_descriptor=provider
+                    mix_descriptor=node
                 )
                 services.append(service_desc)
     return services
@@ -91,6 +91,7 @@ class ThinClient:
     """
 
     def __init__(self, config):
+        self.pki_doc = None
         self.config = config
         self.reply_received_event = asyncio.Event()
         self.logger = logging.getLogger('thinclient')
@@ -117,13 +118,13 @@ class ThinClient:
         # 1st message is always a status event
         response = await self.recv(loop)
         assert response is not None
-        assert response["ConnectionStatusEvent"] is not None
+        assert response["connection_status_event"] is not None
         self.handle_response(response)
 
         # 2nd message is always a new pki doc event
         response = await self.recv(loop)
         assert response is not None
-        assert response["NewPKIDocumentEvent"] is not None
+        assert response["new_pki_document_event"] is not None
         self.handle_response(response)
         
         # Start the read loop as a background task
@@ -161,7 +162,7 @@ class ThinClient:
     def parse_status(self, event):
         self.logger.debug("parse status")
         assert event is not None
-        assert event["IsConnected"] == True
+        assert event["is_connected"] == True
         self.logger.debug("parse status success")
 
     def pki_document(self):
@@ -170,16 +171,19 @@ class ThinClient:
     def parse_pki_doc(self, event):
         self.logger.debug("parse pki doc")
         assert event is not None        
-        assert event["Payload"] is not None
-        self.pki_doc = cbor2.loads(event["Payload"])
+        assert event["payload"] is not None
+        raw_pki_doc = cbor2.loads(event["payload"])
+        self.pki_doc = cbor2.loads(raw_pki_doc["Certified"])
         self.pretty_print_pki_doc(self.pki_doc)
         self.logger.debug("parse pki doc success")
 
     def get_services(self, capability):
         doc = self.pki_document()
+        if doc == None:
+            raise Exception("pki doc is nil")
         descriptors = find_services(capability, doc)
         if not descriptors:
-            raise "service not found in pki doc"
+            raise Exception("service not found in pki doc")
         return descriptors
 
     def get_service(self, service_name):
@@ -196,26 +200,26 @@ class ThinClient:
     def handle_response(self, response):
         assert response is not None
 
-        if response.get("ConnectionStatusEvent") is not None:
+        if response.get("connection status event") is not None:
             self.logger.debug("connection status event")
-            self.parse_status(response["ConnectionStatusEvent"])
-            self.config.handle_connection_status_event(response["ConnectionStatusEvent"])
+            self.parse_status(response["connection_status_event"])
+            self.config.handle_connection_status_event(response["connection_status_event"])
             return
-        if response.get("NewPKIDocumentEvent") is not None:
+        if response.get("new_pki_document_event") is not None:
             self.logger.debug("new pki doc event")
-            self.parse_pki_doc(response["NewPKIDocumentEvent"])
-            self.config.handle_new_pki_document_event(response["NewPKIDocumentEvent"])
+            self.parse_pki_doc(response["new_pki_document_event"])
+            self.config.handle_new_pki_document_event(response["new_pki_document_event"])
             return
-        if response.get("MessageSentEvent") is not None:
+        if response.get("message_sent_event") is not None:
             self.logger.debug("message sent event")
-            self.config.handle_message_sent_event(response["MessageSentEvent"])
+            self.config.handle_message_sent_event(response["message_sent_event"])
             return
-        if response.get("MessageReplyEvent") is not None:
+        if response.get("message_reply_event") is not None:
             self.logger.debug("message reply event")
             self.reply_received_event.set()
-            reply = response["MessageReplyEvent"]
+            reply = response["message_reply_event"]
             self.logger.debug(f"message reply event: {reply}", reply)
-            self.config.handle_message_reply_event(response["MessageReplyEvent"])
+            self.config.handle_message_reply_event(response["message_reply_event"])
             return
 
     def send_message_with_reply(self, payload, dest_node, dest_queue):
@@ -223,10 +227,10 @@ class ThinClient:
             payload = payload.encode('utf-8')  # Encoding the string to bytes
                 
         request = {
-            "Payload": payload,
-            "IsSendOp": True,
-            "Destination": dest_node,
-            "RecipientQueueID": dest_queue,
+            "payload": payload,
+            "is_send_op": True,
+            "destination_id_hash": dest_node,
+            "recipient_queue_id": dest_queue,
                            }
         cbor_request = cbor2.dumps(request)
 
@@ -241,12 +245,12 @@ class ThinClient:
             payload = payload.encode('utf-8')  # Encoding the string to bytes
                 
         request = {
-            "Payload": payload,
-            "WithSURB": True,
-            "SURBID": surb_id,
-            "IsSendOp": True,
-            "DestinationIdHash": dest_node,
-            "RecipientQueueID": dest_queue,
+            "with_surb": True,
+            "surbid": surb_id,
+            "destination_id_hash": dest_node,
+            "recipient_queue_id": dest_queue,
+            "payload": payload,
+            "is_send_op": True,
         }
         cbor_request = cbor2.dumps(request)
 
@@ -258,27 +262,33 @@ class ThinClient:
 
     def pretty_print_pki_doc(self, doc):
         assert doc is not None
-        assert doc['Providers'] is not None
+        assert doc['GatewayNodes'] is not None
+        assert doc['ServiceNodes'] is not None
         assert doc['Topology'] is not None
 
         new_doc = doc
-        providers = []
+        gateway_nodes = []
+        service_nodes = []
         topology = []
         
-        for provider_cert_blob in doc['Providers']:
-            provider_cert = cbor2.loads(provider_cert_blob)
-            provider_desc = cbor2.loads(provider_cert['Certified'])
-            scrub_descriptor_keys(provider_desc)
-            providers.append(provider_desc)
+        for gateway_cert_blob in doc['GatewayNodes']:
+            gateway_cert = cbor2.loads(gateway_cert_blob)
+            scrub_descriptor_keys(gateway_cert)
+            gateway_nodes.append(gateway_cert)
 
+        for service_cert_blob in doc['ServiceNodes']:
+            service_cert = cbor2.loads(service_cert_blob)
+            scrub_descriptor_keys(service_cert)
+            service_nodes.append(service_cert)
+            
         for layer in doc['Topology']:
             for mix_desc_blob in layer:
                 mix_cert = cbor2.loads(mix_desc_blob)
-                mix_desc = cbor2.loads(mix_cert['Certified'])
-                scrub_descriptor_keys(mix_desc)
-                topology.append(mix_desc) # flatten, no prob, relax
+                scrub_descriptor_keys(mix_cert)
+                topology.append(mix_cert) # flatten, no prob, relax
 
-        new_doc['Providers'] = providers
+        new_doc['GatewayNodes'] = gateway_nodes
+        new_doc['ServiceNodes'] = service_nodes
         new_doc['Topology'] = topology
         pretty_print_obj(new_doc)
 
