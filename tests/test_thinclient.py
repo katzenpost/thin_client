@@ -3,7 +3,6 @@
 
 import asyncio
 import pytest
-import binascii
 
 from thinclient import ThinClient, Config, pretty_print_obj, scrub_descriptor_keys
 

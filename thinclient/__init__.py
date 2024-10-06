@@ -96,7 +96,7 @@ class ThinClient:
         self.reply_received_event = asyncio.Event()
         self.logger = logging.getLogger('thinclient')
         self.logger.setLevel(logging.DEBUG)
-        handler = logging.StreamHandler(sys.stdout)
+        handler = logging.StreamHandler(sys.stderr)
         self.logger.addHandler(handler)
 
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -174,7 +174,6 @@ class ThinClient:
         assert event["payload"] is not None
         raw_pki_doc = cbor2.loads(event["payload"])
         self.pki_doc = cbor2.loads(raw_pki_doc["Certified"])
-        self.pretty_print_pki_doc(self.pki_doc)
         self.logger.debug("parse pki doc success")
 
     def get_services(self, capability):
