@@ -2,7 +2,7 @@
 
 import asyncio
 
-from thinclient import ThinClient, Config, pretty_print_obj, scrub_descriptor_keys
+from thinclient import ThinClient, Config, pretty_print_obj
 
 async def main():
     cfg = Config()
