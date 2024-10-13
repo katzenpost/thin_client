@@ -140,9 +140,15 @@ class ThinClient:
         self.task.cancel()
 
     async def recv(self, loop):
-        raw_data = await loop.sock_recv(self.socket, (10*1024))
+        length_prefix = await loop.sock_recv(self.socket, 4)
+        if len(length_prefix) < 4:
+            raise ValueError("Failed to read the length prefix")
+        message_length = struct.unpack('>I', length_prefix)[0]
+        raw_data = await loop.sock_recv(self.socket, message_length)
+        if len(raw_data) < message_length:
+            raise ValueError("Did not receive the full message")
         response = cbor2.loads(raw_data)
-        self.logger.debug(f"received daemon response")
+        self.logger.debug(f"Received daemon response")
         return response
 
     async def worker_loop(self, loop):
@@ -232,9 +238,11 @@ class ThinClient:
             "recipient_queue_id": dest_queue,
                            }
         cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
 
         try:
-            self.socket.sendall(cbor_request)
+            self.socket.sendall(length_prefixed_request)
             self.logger.info("Message sent successfully.")
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
@@ -252,9 +260,11 @@ class ThinClient:
             "is_send_op": True,
         }
         cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
 
         try:
-            self.socket.sendall(cbor_request)
+            self.socket.sendall(length_prefixed_request)
             self.logger.info("Message sent successfully.")
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
