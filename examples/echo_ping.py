@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 
-#!/usr/bin/env python3
-
 import asyncio
 from thinclient import ThinClient, Config
 
 class ClientState:
     def __init__(self):
         self.reply_message = None
-
     def save_reply(self, reply):
         self.reply_message = reply
 
 async def main():
     state = ClientState()
-
     cfg = Config(on_message_reply=state.save_reply)
     client = ThinClient(cfg)
     loop = asyncio.get_event_loop()
@@ -31,7 +27,6 @@ async def main():
     payload2 = payload2[0:len(payload)]
     assert len(payload) == len(payload2)
     assert payload2.decode() == payload
-
     print("stopping client")
     client.stop()
 
