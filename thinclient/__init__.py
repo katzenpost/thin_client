@@ -147,7 +147,7 @@ class ThinClient:
         message_length = struct.unpack('>I', length_prefix)[0]
         raw_data = await loop.sock_recv(self.socket, message_length)
         if len(raw_data) < message_length:
-            raise ValueError("Did not receive the full message")
+            raise ValueError("Did not receive the full message {} != {}".format(len(raw_data), message_length))
         response = cbor2.loads(raw_data)
         self.logger.debug(f"Received daemon response")
         return response
