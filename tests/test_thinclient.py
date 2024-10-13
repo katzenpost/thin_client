@@ -4,7 +4,7 @@
 import asyncio
 import pytest
 
-from thinclient import ThinClient, Config, pretty_print_obj, scrub_descriptor_keys
+from thinclient import ThinClient, Config, pretty_print_obj
 
 
 # Global variable to store the reply
@@ -39,7 +39,7 @@ async def test_thin_client_send_receive_integration_test():
 
     payload2 = reply_message['payload']
     payload2 = payload2[0:len(payload)]
-    
+
     assert len(payload) == len(payload2)
     assert payload2.decode() == payload
 

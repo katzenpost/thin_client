@@ -26,11 +26,6 @@ def pretty_print_obj(obj):
     pp = pprintpp.PrettyPrinter(indent=4)
     pp.pprint(obj)
 
-    
-def scrub_descriptor_keys(desc):
-    assert desc['LinkKey'] is not None
-    desc['LinkKey'] = "scrubbed"
-    
 def blake2_256_sum(data):
     return hashlib.blake2b(data, digest_size=32).digest()
 
@@ -46,16 +41,16 @@ class ServiceDescriptor:
 def find_services(capability, doc):
     services = []
     for node in doc['ServiceNodes']:
-        scrub_descriptor_keys(node)
+        mynode = cbor2.loads(node)
 
         # XXX WTF is the python cbor2 representation of the doc so
         # fucked up as to not have the "Kaetzchen" key inside the MixDescriptor?
         #for cap, details in provider['Kaetzchen'].items():
-        for cap, details in node['omitempty'].items():
+        for cap, details in mynode['omitempty'].items():
             if cap == capability:
                 service_desc = ServiceDescriptor(
                     recipient_queue_id=bytes(details['endpoint'], 'utf-8'),
-                    mix_descriptor=node
+                    mix_descriptor=mynode
                 )
                 services.append(service_desc)
     return services
@@ -202,7 +197,6 @@ class ThinClient:
     def new_surb_id(self):
         return os.urandom(SURB_ID_SIZE)
         
-        
     def handle_response(self, response):
         assert response is not None
 
@@ -225,23 +219,22 @@ class ThinClient:
             self.reply_received_event.set()
             reply = response["message_reply_event"]
             self.logger.debug(f"message reply event: {reply}", reply)
-            self.config.handle_message_reply_event(response["message_reply_event"])
+            self.config.handle_message_reply_event(reply)
             return
 
-    def send_message_with_reply(self, payload, dest_node, dest_queue):
+    def send_message_without_reply(self, payload, dest_node, dest_queue):
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
-                
         request = {
-            "payload": payload,
+            "with_surb": False,
             "is_send_op": True,
+            "payload": payload,
             "destination_id_hash": dest_node,
             "recipient_queue_id": dest_queue,
-                           }
+        }
         cbor_request = cbor2.dumps(request)
         length_prefix = struct.pack('>I', len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
-
         try:
             self.socket.sendall(length_prefixed_request)
             self.logger.info("Message sent successfully.")
@@ -251,7 +244,6 @@ class ThinClient:
     def send_message(self, surb_id, payload, dest_node, dest_queue):
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
-                
         request = {
             "with_surb": True,
             "surbid": surb_id,
@@ -263,7 +255,25 @@ class ThinClient:
         cbor_request = cbor2.dumps(request)
         length_prefix = struct.pack('>I', len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
+        try:
+            self.socket.sendall(length_prefixed_request)
+            self.logger.info("Message sent successfully.")
+        except Exception as e:
+            self.logger.error(f"Error sending message: {e}")
 
+    def send_reliable_message(self, message_id, payload, dest_node, dest_queue):
+        if not isinstance(payload, bytes):
+            payload = payload.encode('utf-8')  # Encoding the string to bytes
+        request = {
+            "with_surb": True,
+            "is_arq_send_op": True,
+            "payload": payload,
+            "destination_id_hash": dest_node,
+            "recipient_queue_id": dest_queue,
+        }
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
         try:
             self.socket.sendall(length_prefixed_request)
             self.logger.info("Message sent successfully.")
@@ -283,18 +293,15 @@ class ThinClient:
         
         for gateway_cert_blob in doc['GatewayNodes']:
             gateway_cert = cbor2.loads(gateway_cert_blob)
-            scrub_descriptor_keys(gateway_cert)
             gateway_nodes.append(gateway_cert)
 
         for service_cert_blob in doc['ServiceNodes']:
             service_cert = cbor2.loads(service_cert_blob)
-            scrub_descriptor_keys(service_cert)
             service_nodes.append(service_cert)
             
         for layer in doc['Topology']:
             for mix_desc_blob in layer:
                 mix_cert = cbor2.loads(mix_desc_blob)
-                scrub_descriptor_keys(mix_cert)
                 topology.append(mix_cert) # flatten, no prob, relax
 
         new_doc['GatewayNodes'] = gateway_nodes
