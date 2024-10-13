@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import socket
+import struct
 import random
 import coloredlogs
 import logging
@@ -99,7 +100,7 @@ class ThinClient:
         handler = logging.StreamHandler(sys.stderr)
         self.logger.addHandler(handler)
 
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         random_bytes = [random.randint(0, 255) for _ in range(16)]
         hex_string = ''.join(format(byte, '02x') for byte in random_bytes)
         abstract_name = f"katzenpost_python_thin_client_{hex_string}"
