@@ -10,6 +10,7 @@ async def main():
     loop = asyncio.get_event_loop()
     await client.start(loop)
     client.pretty_print_pki_doc(client.pki_document())
+    client.stop()
 
 if __name__ == '__main__':
     asyncio.run(main())
