@@ -175,7 +175,7 @@ class ThinClient:
         assert event is not None        
         assert event["payload"] is not None
         raw_pki_doc = cbor2.loads(event["payload"])
-        self.pki_doc = cbor2.loads(raw_pki_doc["Certified"])
+        self.pki_doc = raw_pki_doc
         self.logger.debug("parse pki doc success")
 
     def get_services(self, capability):
