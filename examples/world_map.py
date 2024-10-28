@@ -57,14 +57,13 @@ def get_gps_coords(ip_addrs, geolite2_city_db_filepath):
 
 def plot_world_map(gps_coords, out_file):
     fig = plt.figure(figsize=(10, 7))
-    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax = plt.axes(projection=ccrs.Robinson())
     ax.stock_img()
     ax.coastlines()
     for lon, lat in gps_coords:
         ax.plot(lon, lat, marker='o', color='red', markersize=5, transform=ccrs.PlateCarree())
     plt.savefig(out_file, dpi=300)
     print(f"wrote world map to {out_file}")
-
 
 async def main(geolite2_city_db_filepath='../../GeoLite2-City_20241025/GeoLite2-City.mmdb'):
     cfg = Config()
@@ -80,7 +79,6 @@ async def main(geolite2_city_db_filepath='../../GeoLite2-City_20241025/GeoLite2-
     gps_coords = get_gps_coords(ip_addrs, geolite2_city_db_filepath)
 
     plot_world_map(gps_coords, "world_map.png")
-
     
 if __name__ == '__main__':
     asyncio.run(main())
