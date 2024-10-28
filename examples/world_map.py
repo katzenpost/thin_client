@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from jinja2 import Environment, FileSystemLoader
 from six.moves.urllib.parse import urlparse
 import asyncio
 import geoip2.database
@@ -10,20 +11,16 @@ import cartopy.crs as ccrs
 
 from thinclient import ThinClient, Config, pretty_print_obj
 
-async def main():
-    cfg = Config()
-    client = ThinClient(cfg)
-    loop = asyncio.get_event_loop()
-    await client.start(loop)
-    doc = client.pki_document()
-
+def get_nodes(doc):
     nodes = []
     nodes.append(cbor2.loads(doc["GatewayNodes"][0]))
     nodes.append(cbor2.loads(doc["ServiceNodes"][0]))
     for _, layer in enumerate(doc["Topology"]):
         for _, node in enumerate(layer):
             nodes.append(cbor2.loads(node))
+    return nodes
 
+def get_address_urls(nodes):
     urls = []
     for i, node in enumerate(nodes):
         addrs = node["Addresses"]
@@ -35,41 +32,54 @@ async def main():
             urls.append(addrs["quic"])
         else:
             continue
-            
-    ip_addrs = []
-    gps_coords = []
-    with geoip2.database.Reader('../../GeoLite2-City_20241025/GeoLite2-City.mmdb') as reader:
-        for _, url in enumerate(urls):
-            parsed_url = urlparse(url[0])
-            ip = parsed_url.netloc.split(":")[0]
-            ip_addrs.append(ip)
-        
-            #print(ip)
+    return urls
 
+def get_ip_addrs(urls):
+    ip_addrs = []
+    for _, url in enumerate(urls):
+        parsed_url = urlparse(url[0])
+        ip = parsed_url.netloc.split(":")[0]
+        ip_addrs.append(ip)
+    return ip_addrs
+
+def get_gps_coords(ip_addrs, geolite2_city_db_filepath):
+    gps_coords = []
+    with geoip2.database.Reader(geolite2_city_db_filepath) as reader:
+        for _, ip in enumerate(ip_addrs):
             try:
                 response = reader.city(ip)
                 latitude = response.location.latitude
                 longitude = response.location.longitude
                 gps_coords.append((longitude, latitude))  # Store coordinates as (lon, lat)
-                print(f"GPS Coordinates: Latitude: {latitude}, Longitude: {longitude}")
             except geoip2.errors.AddressNotFoundError:
                 print("Location not found")
-        
-    client.stop()
+    return gps_coords
 
-    # Plotting on a world map
+def plot_world_map(gps_coords, out_file):
     fig = plt.figure(figsize=(10, 7))
     ax = plt.axes(projection=ccrs.PlateCarree())
     ax.stock_img()
     ax.coastlines()
-
-    # Mark each coordinate on the map
     for lon, lat in gps_coords:
         ax.plot(lon, lat, marker='o', color='red', markersize=5, transform=ccrs.PlateCarree())
+    plt.savefig(out_file, dpi=300)
+    print(f"wrote world map to {out_file}")
 
-    # Save the map to a file
-    plt.savefig("world_map.png", dpi=300)
-    print("Map saved as world_map.png")
+
+async def main(geolite2_city_db_filepath='../../GeoLite2-City_20241025/GeoLite2-City.mmdb'):
+    cfg = Config()
+    client = ThinClient(cfg)
+    loop = asyncio.get_event_loop()
+    await client.start(loop)
+    doc = client.pki_document()
+    client.stop()
+
+    nodes = get_nodes(doc)
+    urls = get_address_urls(nodes)
+    ip_addrs = get_ip_addrs(urls)
+    gps_coords = get_gps_coords(ip_addrs, geolite2_city_db_filepath)
+
+    plot_world_map(gps_coords, "world_map.png")
 
     
 if __name__ == '__main__':
