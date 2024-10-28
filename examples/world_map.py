@@ -13,8 +13,10 @@ from thinclient import ThinClient, Config, pretty_print_obj
 
 def get_nodes(doc):
     nodes = []
-    nodes.append(cbor2.loads(doc["GatewayNodes"][0]))
-    nodes.append(cbor2.loads(doc["ServiceNodes"][0]))
+    for _, gatewayNode in enumerate(doc["GatewayNodes"]):
+        nodes.append(cbor2.loads(gatewayNode))
+    for _, serviceNode in enumerate(doc["ServiceNodes"]):
+        nodes.append(cbor2.loads(serviceNode))
     for _, layer in enumerate(doc["Topology"]):
         for _, node in enumerate(layer):
             nodes.append(cbor2.loads(node))
