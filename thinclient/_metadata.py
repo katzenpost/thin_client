@@ -1,6 +1,0 @@
-__version__ = '0.0.0'
-__author__ = 'David Stainton'
-__contact__ = 'dstainton415@gmail.com'
-__url__ = 'https://github.com/katzenpost/thin_client'
-__license__ = 'AGPL3'
-__copyright__ = 'Copyright 2024'
