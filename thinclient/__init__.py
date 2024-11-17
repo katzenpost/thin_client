@@ -218,7 +218,6 @@ class ThinClient:
             self.logger.debug("message reply event")
             self.reply_received_event.set()
             reply = response["message_reply_event"]
-            self.logger.debug(f"message reply event: {reply}", reply)
             self.config.handle_message_reply_event(reply)
             return
 
