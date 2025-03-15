@@ -16,3 +16,5 @@ log = "0.4"
 env_logger = "0.11"
 hex = "0.4"
 tokio = { version = "1", features = ["full"] }
+generic-array = "0.14.0"
+typenum = "1.16"  # Explicitly add typenum, which provides `U32`

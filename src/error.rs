@@ -1,37 +1,34 @@
-// SPDX-FileCopyrightText: Copyright (C) 2024 David Stainton
+// SPDX-FileCopyrightText: Copyright (C) 2025 David Stainton
 // SPDX-License-Identifier: AGPL-3.0-only
-
-//! ThinClient error types.
 
 use std::error::Error;
 use std::fmt;
-use std::io;
 
 #[derive(Debug)]
 pub enum ThinClientError {
-    ConnectError,
-    IoError(io::Error),
+    IoError(std::io::Error),
     CborError(serde_cbor::Error),
-    InvalidResponse,
-    UnexpectedEOF,
+    ConnectError,
+    MissingPkiDocument,
+    ServiceNotFound,
 }
 
 impl fmt::Display for ThinClientError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            ThinClientError::ConnectError => write!(f, "Failed to connect to server."),
-            ThinClientError::IoError(ref err) => write!(f, "IO error: {}", err),
-            ThinClientError::CborError(ref err) => write!(f, "CBOR parsing error: {}", err),
-            ThinClientError::InvalidResponse => write!(f, "Received an invalid response."),
-            ThinClientError::UnexpectedEOF => write!(f, "Unexpected EOF while reading socket."),
+        match self {
+            ThinClientError::IoError(err) => write!(f, "IO Error: {}", err),
+            ThinClientError::CborError(err) => write!(f, "CBOR Error: {}", err),
+            ThinClientError::ConnectError => write!(f, "Connection error."),
+            ThinClientError::MissingPkiDocument => write!(f, "Missing PKI document."),
+            ThinClientError::ServiceNotFound => write!(f, "Service not found."),
         }
     }
 }
 
 impl Error for ThinClientError {}
 
-impl From<io::Error> for ThinClientError {
-    fn from(err: io::Error) -> Self {
+impl From<std::io::Error> for ThinClientError {
+    fn from(err: std::io::Error) -> Self {
         ThinClientError::IoError(err)
     }
 }
@@ -41,4 +38,3 @@ impl From<serde_cbor::Error> for ThinClientError {
         ThinClientError::CborError(err)
     }
 }
-

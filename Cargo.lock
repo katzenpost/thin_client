@@ -563,6 +563,7 @@ version = "0.0.0"
 dependencies = [
  "blake2",
  "env_logger",
+ "generic-array",
  "hex",
  "libc",
  "log",
@@ -570,6 +571,7 @@ dependencies = [
  "serde",
  "serde_cbor",
  "tokio",
+ "typenum",
 ]
 
 [[package]]
