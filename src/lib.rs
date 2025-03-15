@@ -19,7 +19,6 @@ use log::{debug, info, error};
 
 use crate::error::ThinClientError;
 
-// Constants
 const SURB_ID_SIZE: usize = 16;
 const MESSAGE_ID_SIZE: usize = 16;
 const DAEMON_SOCKET: &str = "\0katzenpost";
@@ -89,10 +88,8 @@ impl ThinClient {
             config,
             pki_doc: Arc::new(RwLock::new(None)),
 	});
-
-	let client_clone = Arc::clone(&client);  // ✅ Clone before moving into `start`
-	client_clone.start().await;              // ✅ Calls `start` without moving `client`
-
+	let client_clone = Arc::clone(&client);
+	client_clone.start().await;
 	Ok(client)
     }
     
