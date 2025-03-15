@@ -196,7 +196,7 @@ class ThinClient:
 
     def new_surb_id(self):
         return os.urandom(SURB_ID_SIZE)
-        
+
     def handle_response(self, response):
         assert response is not None
 

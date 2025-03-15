@@ -127,6 +127,20 @@ impl ThinClient {
         })
     }
 
+    /// Generates a new random message ID of size MESSAGE_ID_SIZE.
+    pub fn new_message_id() -> Vec<u8> {
+        let mut id = vec![0; MESSAGE_ID_SIZE];
+        rand::thread_rng().fill_bytes(&mut id);
+        id
+    }
+
+    /// Generates a new random SURB ID of size SURB_ID_SIZE.
+    pub fn new_surb_id() -> Vec<u8> {
+        let mut id = vec![0; SURB_ID_SIZE];
+        rand::thread_rng().fill_bytes(&mut id);
+        id
+    }
+    
     pub async fn recv(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
         let mut socket = self.socket.lock().await;
         let mut length_prefix = [0; 4];
@@ -219,16 +233,113 @@ impl ThinClient {
         let _ = socket.shutdown().await;
         debug!("Connection closed.");
     }
+}
 
-    pub fn new_message_id() -> Vec<u8> {
-        let mut id = vec![0; MESSAGE_ID_SIZE];
-        rand::thread_rng().fill_bytes(&mut id);
-        id
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::UnixStream;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use std::collections::BTreeMap;
+    use tokio::io::{AsyncWriteExt, AsyncReadExt};
+    use serde_cbor::Value;
+    use tokio::test;
+
+    async fn setup_test_client() -> ThinClient {
+        let config = Config::new();
+        let (server, client) = UnixStream::pair().expect("Failed to create socket pair");
+        let thin_client = ThinClient {
+            socket: Arc::new(Mutex::new(client)),
+            config,
+        };
+        tokio::spawn(async move {
+            let mut server = server;
+            let mut buffer = [0; 1024];
+            while let Ok(size) = server.read(&mut buffer).await {
+                if size == 0 {
+                    break;
+                }
+                let _ = server.write_all(&buffer[..size]).await;
+            }
+        });
+
+        thin_client
     }
 
-    pub fn new_surb_id() -> Vec<u8> {
-        let mut id = vec![0; SURB_ID_SIZE];
-        rand::thread_rng().fill_bytes(&mut id);
-        id
+    #[test]
+    async fn test_send_message_without_reply() {
+        let client = setup_test_client().await;
+        let payload = b"Hello, world!".to_vec();
+        let dest_node = vec![1, 2, 3, 4];
+        let dest_queue = vec![5, 6, 7, 8];
+
+        let result = client.send_message_without_reply(&payload, dest_node.clone(), dest_queue.clone()).await;
+        assert!(result.is_ok(), "send_message_without_reply failed");
+    }
+
+    #[test]
+    async fn test_send_message_with_surb() {
+        let client = setup_test_client().await;
+        let surb_id = vec![9, 9, 9, 9];
+        let payload = b"Hello, SURB!".to_vec();
+        let dest_node = vec![1, 2, 3, 4];
+        let dest_queue = vec![5, 6, 7, 8];
+
+        let result = client.send_message(surb_id.clone(), &payload, dest_node.clone(), dest_queue.clone()).await;
+        assert!(result.is_ok(), "send_message failed");
+    }
+
+    #[test]
+    async fn test_send_reliable_message() {
+        let client = setup_test_client().await;
+        let message_id = vec![42, 42, 42, 42];
+        let payload = b"Reliable message".to_vec();
+        let dest_node = vec![1, 2, 3, 4];
+        let dest_queue = vec![5, 6, 7, 8];
+
+        let result = client.send_reliable_message(message_id.clone(), &payload, dest_node.clone(), dest_queue.clone()).await;
+        assert!(result.is_ok(), "send_reliable_message failed");
+    }
+
+    #[test]
+    async fn test_recv_message() {
+        let client = setup_test_client().await;
+
+        let mut socket = client.socket.lock().await;
+        let test_response = BTreeMap::from([
+            (Value::Text("test_key".to_string()), Value::Text("test_value".to_string())),
+        ]);
+        let encoded_response = to_vec(&Value::Map(test_response.clone())).expect("Failed to encode CBOR");
+        let length_prefix = (encoded_response.len() as u32).to_be_bytes();
+        
+        socket.write_all(&length_prefix).await.unwrap();
+        socket.write_all(&encoded_response).await.unwrap();
+
+        drop(socket);
+
+        let response = client.recv().await.expect("Failed to receive message");
+        assert_eq!(response, test_response, "Received message does not match expected");
+    }
+
+    #[test]
+    async fn test_config_event_handling() {
+        let mut config = Config::new();
+        let received_events = Arc::new(StdMutex::new(Vec::new()));
+
+        let received_events_clone = Arc::clone(&received_events);
+        config.on_connection_status = Some(Arc::new(move |event| {
+            received_events_clone.lock().unwrap().push(event.clone());
+        }));
+
+        let test_event = BTreeMap::from([
+            (Value::Text("is_connected".to_string()), Value::Bool(true)),
+        ]);
+
+        config.handle_event("connection_status_event", &test_event);
+        let events = received_events.lock().unwrap();
+        assert_eq!(events.len(), 1, "No events received");
+        assert_eq!(events[0], test_event, "Received event does not match expected");
     }
 }
