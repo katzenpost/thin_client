@@ -5,41 +5,40 @@
 
 use std::error::Error;
 use std::fmt;
+use std::io;
 
 #[derive(Debug)]
 pub enum ThinClientError {
     ConnectError,
-    IoError(std::io::Error),
+    IoError(io::Error),
+    CborError(serde_cbor::Error),
+    InvalidResponse,
+    UnexpectedEOF,
 }
 
 impl fmt::Display for ThinClientError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::ThinClientError::*;
         match *self {
-	    ConnectError => write!(f, "Connect error."),
-	    IoError(_) => write!(f, "IO error."),
-	    
+            ThinClientError::ConnectError => write!(f, "Failed to connect to server."),
+            ThinClientError::IoError(ref err) => write!(f, "IO error: {}", err),
+            ThinClientError::CborError(ref err) => write!(f, "CBOR parsing error: {}", err),
+            ThinClientError::InvalidResponse => write!(f, "Received an invalid response."),
+            ThinClientError::UnexpectedEOF => write!(f, "Unexpected EOF while reading socket."),
         }
     }
 }
 
-impl Error for ThinClientError {
-    fn description(&self) -> &str {
-        "I'm a SphinxUnwrapError."
-    }
+impl Error for ThinClientError {}
 
-    fn cause(&self) -> Option<&dyn Error> {
-        use self::ThinClientError::*;
-        match *self {
-            ConnectError => None,
-	    IoError(_) => None,
-        }
-    }
-}
-
-// Implementing `From` for converting `std::io::Error` to `ThinClientError`
-impl From<std::io::Error> for ThinClientError {
-    fn from(err: std::io::Error) -> Self {
+impl From<io::Error> for ThinClientError {
+    fn from(err: io::Error) -> Self {
         ThinClientError::IoError(err)
     }
 }
+
+impl From<serde_cbor::Error> for ThinClientError {
+    fn from(err: serde_cbor::Error) -> Self {
+        ThinClientError::CborError(err)
+    }
+}
+
