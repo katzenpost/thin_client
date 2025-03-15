@@ -264,6 +264,7 @@ class ThinClient:
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
         request = {
+            "id" :message_id,
             "with_surb": True,
             "is_arq_send_op": True,
             "payload": payload,
