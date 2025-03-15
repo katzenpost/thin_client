@@ -3,24 +3,26 @@
 
 pub mod error;
 
-use blake2::{Blake2b, Digest};
-use generic_array::typenum::U32;
-use rand::RngCore;
-use serde_cbor::{from_slice, to_vec, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::os::unix::net::UnixStream as StdUnixStream;
-use std::os::unix::io::FromRawFd;
+
 use tokio::net::UnixStream;
 use tokio::sync::{Mutex, RwLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task;
+
+use serde_cbor::{from_slice, to_vec, Value};
+use blake2::{Blake2b, Digest};
+use generic_array::typenum::U32;
+use rand::RngCore;
 use log::{debug, info, error};
+
 use crate::error::ThinClientError;
 
 // Constants
 const SURB_ID_SIZE: usize = 16;
 const MESSAGE_ID_SIZE: usize = 16;
+const DAEMON_SOCKET: &str = "\0katzenpost";
 
 #[derive(Debug, Clone)]
 pub struct ServiceDescriptor {
@@ -73,33 +75,70 @@ pub struct ThinClient {
 }
 
 impl ThinClient {
-    pub async fn new(config: Config) -> Result<Self, ThinClientError> {
-        let mut client_id = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut client_id);
 
-        let sock_fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-        if sock_fd < 0 {
-            return Err(ThinClientError::IoError(std::io::Error::last_os_error()));
-        }
+    pub async fn new(config: Config) -> Result<Arc<Self>, ThinClientError> {
+	let mut client_id = [0u8; 16];
+	rand::thread_rng().fill_bytes(&mut client_id);
+	let abstract_name = format!("\0katzenpost_rust_thin_client_{:x?}", client_id);
 
-        let std_stream = unsafe { StdUnixStream::from_raw_fd(sock_fd) };
-        std_stream.set_nonblocking(true)?;
-        let socket = UnixStream::from_std(std_stream)?;
+	debug!("Binding to abstract Unix socket: {}", abstract_name);
 
-        Ok(Self {
+	let socket = UnixStream::connect(DAEMON_SOCKET).await.map_err(ThinClientError::IoError)?;
+	let client = Arc::new(Self {
             socket: Arc::new(Mutex::new(socket)),
             config,
             pki_doc: Arc::new(RwLock::new(None)),
-        })
-    }
+	});
 
+	let client_clone = Arc::clone(&client);  // ✅ Clone before moving into `start`
+	client_clone.start().await;              // ✅ Calls `start` without moving `client`
+
+	Ok(client)
+    }
+    
+    /// Starts the ThinClient, connects to the daemon, and processes initial responses.
     pub async fn start(self: Arc<Self>) {
-        debug!("Starting ThinClient");
+        debug!("Connecting to daemon at: {}", DAEMON_SOCKET);
+
+        let mut socket = self.socket.lock().await;
+        match UnixStream::connect(DAEMON_SOCKET).await {
+            Ok(new_socket) => {
+                *socket = new_socket;
+                debug!("Connected to daemon.");
+            }
+            Err(err) => {
+                error!("Failed to connect to daemon: {}", err);
+                return;
+            }
+        }
+
+        debug!("Waiting for initial daemon responses...");
+
+        // Expect first message: connection status event
+        if let Ok(response) = self.recv().await {
+            if response.contains_key(&Value::Text("connection_status_event".to_string())) {
+                self.handle_response(response).await;
+            } else {
+                error!("Expected connection status event, but received something else.");
+            }
+        }
+
+        // Expect second message: PKI document event
+        if let Ok(response) = self.recv().await {
+            if response.contains_key(&Value::Text("new_pki_document_event".to_string())) {
+                self.handle_response(response).await;
+            } else {
+                error!("Expected PKI document event, but received something else.");
+            }
+        }
+
+        debug!("Starting background worker loop");
+        let client = Arc::clone(&self);
         task::spawn(async move {
-            self.worker_loop().await;
+            client.worker_loop().await;
         });
     }
-
+    
     pub async fn stop(&self) {
         let mut socket = self.socket.lock().await;
         let _ = socket.shutdown().await;
