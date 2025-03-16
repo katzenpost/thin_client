@@ -9,11 +9,13 @@ use std::os::unix::io::FromRawFd;
 use std::ptr;
 use libc::{sockaddr_un, AF_UNIX, SOCK_STREAM};
 
-use tokio::net::UnixStream;
 use tokio::sync::{Mutex, RwLock};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task;
 use tokio::task::JoinHandle;
+use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::net::tcp::OwnedReadHalf;
+use tokio::net::tcp::OwnedWriteHalf;
 
 use serde_cbor::{from_slice, to_vec, Value};
 use blake2::{Blake2b, Digest};
@@ -72,126 +74,63 @@ impl Config {
 }
 
 pub struct ThinClient {
-    shutdown: Arc<AtomicBool>,
-    socket: Arc<Mutex<UnixStream>>,
+    read_half: Mutex<OwnedReadHalf>,
+    write_half: Mutex<OwnedWriteHalf>,
     config: Config,
     pki_doc: Arc<RwLock<Option<BTreeMap<Value, Value>>>>,
     worker_task: Mutex<Option<JoinHandle<()>>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl ThinClient {
 
     pub async fn new(config: Config) -> Result<Arc<Self>, ThinClientError> {
-        let mut client_id = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut client_id);
-        let abstract_name = format!("katzenpost_rust_thin_client_{:x?}", client_id);
-        let abstract_name_bytes = format!("\0{}", abstract_name);
+	let server_addr = "127.0.0.1:64331"; // 🔹 TCP server address
 
-        debug!("Binding to abstract Unix socket: {}", abstract_name);
+	debug!("🔗 Connecting to TCP server at {}", server_addr);
 
-        let sock_fd = unsafe { libc::socket(AF_UNIX, SOCK_STREAM, 0) };
-        if sock_fd < 0 {
-            return Err(ThinClientError::IoError(std::io::Error::last_os_error()));
-        }
-
-        let mut addr: sockaddr_un = unsafe { std::mem::zeroed() };
-        addr.sun_family = AF_UNIX as u16;
-
-        let path_bytes = abstract_name_bytes.as_bytes();
-        if path_bytes.len() > addr.sun_path.len() {
-            return Err(ThinClientError::IoError(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Socket path too long",
-            )));
-        }
-
-        unsafe {
-            ptr::copy_nonoverlapping(
-                path_bytes.as_ptr() as *const i8,
-                addr.sun_path.as_mut_ptr(),
-                path_bytes.len(),
-            );
-        }
-
-        let addr_len = path_bytes.len() + std::mem::size_of_val(&addr.sun_family);
-
-        if unsafe {
-            libc::bind(
-                sock_fd,
-                &addr as *const _ as *const _,
-                addr_len as u32,
-            )
-        } < 0 {
-            return Err(ThinClientError::IoError(std::io::Error::last_os_error()));
-        }
-
-        let std_socket = unsafe { std::os::unix::net::UnixStream::from_raw_fd(sock_fd) };
-        std_socket.set_nonblocking(true)?;
-        let socket = UnixStream::from_std(std_socket)?;
-
-        let client = Arc::new(Self {
-            socket: Arc::new(Mutex::new(socket)),
-            config,
-            pki_doc: Arc::new(RwLock::new(None)),
-            shutdown: Arc::new(AtomicBool::new(false)),
-            worker_task: Mutex::new(None),
-        });
-
-        {
-            let mut socket = client.socket.lock().await;
-            match UnixStream::connect(DAEMON_SOCKET).await {
-                Ok(new_socket) => {
-                    *socket = new_socket;
-                    debug!("Connected to daemon.");
-                }
-                Err(err) => {
-                    error!("Failed to connect to daemon: {}", err);
-                    return Err(ThinClientError::IoError(err));
-                }
+	// 🔹 Create a TCP connection
+	let socket = match TcpStream::connect(server_addr).await {
+            Ok(stream) => {
+		debug!("✅ Successfully connected to TCP server.");
+		stream
             }
-        }
-
-        debug!("Waiting for initial daemon responses...");
-
-        if let Ok(response) = client.recv().await {
-            if response.contains_key(&Value::Text("connection_status_event".to_string())) {
-                client.handle_response(response).await;
-            } else {
-                error!("Expected connection status event, but received something else.");
+            Err(err) => {
+		error!("❌ Failed to connect to TCP server: {}", err);
+		return Err(ThinClientError::IoError(err));
             }
-        }
+	};
+	let (read_half, write_half) = socket.into_split(); // Split into independent halves
+	let client = Arc::new(Self {
+            read_half: Mutex::new(read_half),
+            write_half: Mutex::new(write_half),
+	    config,
+	    pki_doc: Arc::new(RwLock::new(None)),
+	    shutdown: Arc::new(AtomicBool::new(false)),
+	    worker_task: Mutex::new(None),
+	});
 
-        if let Ok(response) = client.recv().await {
-            if response.contains_key(&Value::Text("new_pki_document_event".to_string())) {
-                client.handle_response(response).await;
-            } else {
-                error!("Expected PKI document event, but received something else.");
-            }
-        }
+	// 🔹 Start the worker loop
+	let client_clone = Arc::clone(&client);
+	let task = tokio::spawn(async move { client_clone.worker_loop().await });
 
-        debug!("Starting background worker loop");
-        let client_clone = Arc::clone(&client);
-        let inner_client_clone = Arc::clone(&client_clone); // Clone before lock
-        let mut worker_task_guard = client_clone.worker_task.lock().await; // acquire lock
-        *worker_task_guard = Some(task::spawn(async move {
-            inner_client_clone.worker_loop().await;
-        }));
-
-        debug!("ThinClient successfully initialized and connected.");
-        Ok(client)
+	*client.worker_task.lock().await = Some(task);
+	Ok(client)
     }
-    
+
     pub async fn stop(&self) {
-        debug!("Stopping ThinClient...");
+	debug!("Stopping ThinClient...");
 
-        self.shutdown.store(true, Ordering::Relaxed);
-        let mut socket = self.socket.lock().await;
-        let _ = socket.shutdown().await;
+	self.shutdown.store(true, Ordering::Relaxed);
 
-        if let Some(worker) = self.worker_task.lock().await.as_ref() {
+	let mut write_half = self.write_half.lock().await;
+	let _ = write_half.shutdown().await;
+
+	if let Some(worker) = self.worker_task.lock().await.as_ref() {
             worker.abort();
-        }
-        debug!("✅ ThinClient stopped.");
+	}
+
+	debug!("✅ ThinClient stopped.");
     }
 
     pub fn new_message_id() -> Vec<u8> {
@@ -219,47 +158,87 @@ impl ThinClient {
     }
 
     pub async fn recv(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
-        let mut socket = self.socket.lock().await;
-        let mut length_prefix = [0; 4];
-        socket.read_exact(&mut length_prefix).await?;
-        let message_length = u32::from_be_bytes(length_prefix) as usize;
+	let mut length_prefix = [0; 4];
 
-        let mut buffer = vec![0; message_length];
-        socket.read_exact(&mut buffer).await?;
+	let mut read_half = self.read_half.lock().await;
+	read_half.read_exact(&mut length_prefix).await?;
+	let message_length = u32::from_be_bytes(length_prefix) as usize;
 
-        let response: BTreeMap<Value, Value> = from_slice(&buffer)?;
-        Ok(response)
+	let mut buffer = vec![0; message_length];
+	read_half.read_exact(&mut buffer).await?;
+
+	let response: BTreeMap<Value, Value> = from_slice(&buffer)?;
+	Ok(response)
+    }
+    
+    fn parse_status(&self, event: &BTreeMap<Value, Value>) {
+        debug!("🔍 Parsing connection status event...");
+        assert!(event.get(&Value::Text("is_connected".to_string())) == Some(&Value::Bool(true)), "❌ Connection status mismatch!");
+        debug!("✅ Connection status verified.");
+    }
+
+    async fn parse_pki_doc(&self, event: &BTreeMap<Value, Value>) {
+        debug!("📜 Parsing PKI document event...");
+
+        if let Some(Value::Bytes(payload)) = event.get(&Value::Text("payload".to_string())) {
+            match serde_cbor::from_slice::<BTreeMap<Value, Value>>(payload) {
+                Ok(raw_pki_doc) => {
+                    self.update_pki_document(raw_pki_doc).await;
+                    debug!("✅ PKI document successfully parsed.");
+                }
+                Err(err) => {
+                    error!("❌ Failed to parse PKI document: {:?}", err);
+                }
+            }
+        } else {
+            error!("❌ Missing 'payload' field in PKI document event.");
+        }
+    }
+
+    fn mark_reply_received(&self) {
+        debug!("📥 Marking reply as received.");
+        // Placeholder for setting an event flag if needed
     }
 
     pub async fn handle_response(&self, response: BTreeMap<Value, Value>) {
-        for (event_name, event) in response {
-            let Value::Text(event_name_str) = event_name else {
-                continue;
-            };
+        assert!(!response.is_empty(), "❌ Received an empty response!");
 
-            let Value::Map(event_data) = event else {
-                continue;
-            };
-
-            if event_name_str == "new_pki_document_event" {
-                self.update_pki_document(event_data.clone()).await;
+        if let Some(Value::Map(event)) = response.get(&Value::Text("connection_status_event".to_string())) {
+            debug!("🔄 Connection status event received.");
+            self.parse_status(event);
+            if let Some(cb) = self.config.on_connection_status.as_ref() {
+                cb(event);
             }
-
-            let callback = match event_name_str.as_str() {
-                "connection_status_event" => &self.config.on_connection_status,
-                "new_pki_document_event" => &self.config.on_new_pki_document,
-                "message_sent_event" => &self.config.on_message_sent,
-                "message_reply_event" => &self.config.on_message_reply,
-                _ => {
-                    error!("Unknown event type: {}", event_name_str);
-                    continue;
-                }
-            };
-
-            if let Some(cb) = callback {
-                cb(&event_data);
-            }
+            return;
         }
+
+        if let Some(Value::Map(event)) = response.get(&Value::Text("new_pki_document_event".to_string())) {
+            debug!("📜 New PKI document event received.");
+            self.parse_pki_doc(event).await;
+            if let Some(cb) = self.config.on_new_pki_document.as_ref() {
+                cb(event);
+            }
+            return;
+        }
+
+        if let Some(Value::Map(event)) = response.get(&Value::Text("message_sent_event".to_string())) {
+            debug!("📨 Message sent event received.");
+            if let Some(cb) = self.config.on_message_sent.as_ref() {
+                cb(event);
+            }
+            return;
+        }
+
+        if let Some(Value::Map(event)) = response.get(&Value::Text("message_reply_event".to_string())) {
+            debug!("📩 Message reply event received.");
+            self.mark_reply_received();
+            if let Some(cb) = self.config.on_message_reply.as_ref() {
+                cb(event);
+            }
+            return;
+        }
+
+        error!("❌ Unknown event type received: {:?}", response);
     }
 
     pub async fn worker_loop(&self) {
@@ -275,55 +254,76 @@ impl ThinClient {
     }
 
     pub async fn send_cbor_request(&self, request: BTreeMap<Value, Value>) -> Result<(), ThinClientError> {
-        let encoded_request = to_vec(&Value::Map(request))?;
-        let mut socket = self.socket.lock().await;
-        let length_prefix = (encoded_request.len() as u32).to_be_bytes();
-        socket.write_all(&length_prefix).await?;
-        socket.write_all(&encoded_request).await?;
-        info!("Message sent successfully.");
-        Ok(())
+	let encoded_request = serde_cbor::to_vec(&serde_cbor::Value::Map(request))?;
+
+	let mut write_half = self.write_half.lock().await;
+	let length_prefix = (encoded_request.len() as u32).to_be_bytes();
+	write_half.write_all(&length_prefix).await?;
+	write_half.write_all(&encoded_request).await?;
+
+	debug!("✅ Request sent successfully.");
+	Ok(())
     }
 
-    pub async fn send_message_without_reply(&self, payload: &[u8], dest_node: Vec<u8>, dest_queue: Vec<u8>) -> Result<(), ThinClientError> {
-        let mut request = BTreeMap::new();
-        request.insert(Value::Text("with_surb".to_string()), Value::Bool(false));
-        request.insert(Value::Text("is_send_op".to_string()), Value::Bool(true));
-        request.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
-        request.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
-        request.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
+    pub async fn send_message_without_reply(
+	&self, 
+	payload: &[u8], 
+	dest_node: Vec<u8>, 
+	dest_queue: Vec<u8>
+    ) -> Result<(), ThinClientError> {
+	let mut request = BTreeMap::new();
+	request.insert(Value::Text("with_surb".to_string()), Value::Bool(false));
+	request.insert(Value::Text("is_send_op".to_string()), Value::Bool(true));
+	request.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
+	request.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
+	request.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
 
-        self.send_cbor_request(request).await
+	self.send_cbor_request(request).await
     }
 
-    pub async fn send_message(&self, surb_id: Vec<u8>, payload: &[u8], dest_node: Vec<u8>, dest_queue: Vec<u8>) -> Result<(), ThinClientError> {
-        let mut request = BTreeMap::new();
-        request.insert(Value::Text("with_surb".to_string()), Value::Bool(true));
-        request.insert(Value::Text("surbid".to_string()), Value::Bytes(surb_id));
-        request.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
-        request.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
-        request.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
-        request.insert(Value::Text("is_send_op".to_string()), Value::Bool(true));
+    pub async fn send_message(
+	&self, 
+	surb_id: Vec<u8>, 
+	payload: &[u8], 
+	dest_node: Vec<u8>, 
+	dest_queue: Vec<u8>
+    ) -> Result<(), ThinClientError> {
+	let mut request = BTreeMap::new();
+	request.insert(Value::Text("with_surb".to_string()), Value::Bool(true));
+	request.insert(Value::Text("surbid".to_string()), Value::Bytes(surb_id));
+	request.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
+	request.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
+	request.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
+	request.insert(Value::Text("is_send_op".to_string()), Value::Bool(true));
 
-        self.send_cbor_request(request).await
+	self.send_cbor_request(request).await
     }
 
-    pub async fn send_reliable_message(&self, message_id: Vec<u8>, payload: &[u8], dest_node: Vec<u8>, dest_queue: Vec<u8>) -> Result<(), ThinClientError> {
-        let mut request = BTreeMap::new();
-        request.insert(Value::Text("id".to_string()), Value::Bytes(message_id));
-        request.insert(Value::Text("with_surb".to_string()), Value::Bool(true));
-        request.insert(Value::Text("is_arq_send_op".to_string()), Value::Bool(true));
-        request.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
-        request.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
-        request.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
+    pub async fn send_reliable_message(
+	&self, 
+	message_id: Vec<u8>, 
+	payload: &[u8], 
+	dest_node: Vec<u8>, 
+	dest_queue: Vec<u8>
+    ) -> Result<(), ThinClientError> {
+	let mut request = BTreeMap::new();
+	request.insert(Value::Text("id".to_string()), Value::Bytes(message_id));
+	request.insert(Value::Text("with_surb".to_string()), Value::Bool(true));
+	request.insert(Value::Text("is_arq_send_op".to_string()), Value::Bool(true));
+	request.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
+	request.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
+	request.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
 
-        self.send_cbor_request(request).await
+	self.send_cbor_request(request).await
     }
+    
 }
 
 fn find_services(capability: &str, doc: &BTreeMap<Value, Value>) -> Vec<ServiceDescriptor> {
     let mut services = Vec::new();
 
     let Some(Value::Array(nodes)) = doc.get(&Value::Text("ServiceNodes".to_string())) else {
+        println!("❌ No 'ServiceNodes' found in PKI document.");
         return services;
     };
 
@@ -331,10 +331,17 @@ fn find_services(capability: &str, doc: &BTreeMap<Value, Value>) -> Vec<ServiceD
         let Value::Bytes(node_bytes) = node else { continue };
         let Ok(mynode) = from_slice::<BTreeMap<Value, Value>>(node_bytes) else { continue };
 
+        // 🔍 Print available capabilities in each node
+        if let Some(Value::Map(details)) = mynode.get(&Value::Text("omitempty".to_string())) {
+            println!("🔍 Available Capabilities: {:?}", details.keys());
+        }
+
         let Some(Value::Map(details)) = mynode.get(&Value::Text("omitempty".to_string())) else { continue };
         let Some(Value::Map(service)) = details.get(&Value::Text(capability.to_string())) else { continue };
         let Some(Value::Text(endpoint)) = service.get(&Value::Text("endpoint".to_string())) else { continue };
 
+	println!("returning a service descriptor!");
+	    
         services.push(ServiceDescriptor {
             recipient_queue_id: endpoint.as_bytes().to_vec(),
             mix_descriptor: mynode,
