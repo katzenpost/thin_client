@@ -1,4 +1,4 @@
-use thin_client::{ThinClient, Config, ServerAddr};
+use thin_client::{ThinClient, Config, ServerAddr, pretty_print_pki_doc};
 use serde_cbor::Value;
 use std::collections::BTreeMap;
 use tokio::time::{timeout, Duration};
@@ -81,7 +81,11 @@ async fn run_client() -> Result<(), Box<dyn std::error::Error>> {
         return Err("❌ PKI document not received in time.".into());
     }
 
-    println!("✅ PKI document received. Proceeding...");
+    println!("✅ Pretty printing PKI document:");
+    let doc = client.pki_document().await;
+    pretty_print_pki_doc(&doc);
+    println!("AFTER Pretty printing PKI document");
+
 
     let service_desc = client.get_service("echo").await?;
     println!("got service descriptor for echo service");

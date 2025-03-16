@@ -13,11 +13,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf as TcpReadHalf, OwnedWriteHalf as TcpWriteHalf};
 use tokio::net::unix::{OwnedReadHalf as UnixReadHalf, OwnedWriteHalf as UnixWriteHalf};
 
+use serde_json::json;
 use serde_cbor::{from_slice, Value};
+
 use blake2::{Blake2b, Digest};
 use generic_array::typenum::U32;
 use rand::RngCore;
-use log::{debug, error};
+use log::{debug, info, error};
 
 use crate::error::ThinClientError;
 
@@ -167,6 +169,10 @@ impl ThinClient {
         let mut pki_doc_lock = self.pki_doc.write().await;
         *pki_doc_lock = Some(new_pki_doc);
         debug!("PKI document updated.");
+    }
+
+    pub async fn pki_document(&self) -> BTreeMap<Value, Value> {
+        self.pki_doc.read().await.clone().expect("❌ PKI document is missing!")
     }
 
     pub async fn get_service(&self, service_name: &str) -> Result<ServiceDescriptor, ThinClientError> {
@@ -407,4 +413,91 @@ fn find_services(capability: &str, doc: &BTreeMap<Value, Value>) -> Vec<ServiceD
     }
 
     services
+}
+
+
+
+/// Converts a CBOR `Value` into a human-readable JSON format.
+fn convert_to_pretty_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::Text(s) => serde_json::Value::String(s.clone()),
+        Value::Integer(i) => json!(*i),
+        Value::Bytes(b) => json!(hex::encode(b)), // Encode byte arrays as hex strings
+        Value::Array(arr) => serde_json::Value::Array(arr.iter().map(convert_to_pretty_json).collect()),
+        Value::Map(map) => {
+            let converted_map: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(key, value)| {
+                    let key_str = match key {
+                        Value::Text(s) => s.clone(),
+                        _ => format!("{:?}", key),
+                    };
+                    (key_str, convert_to_pretty_json(value))
+                })
+                .collect();
+            serde_json::Value::Object(converted_map)
+        }
+        _ => serde_json::Value::Null, // Handle unexpected CBOR types
+    }
+}
+
+/// Recursively decodes CBOR-encoded nodes inside arrays, returning `Vec<Value>` (serde_cbor).
+fn decode_cbor_nodes(nodes: &[Value]) -> Vec<Value> {
+    nodes
+        .iter()
+        .filter_map(|node| match node {
+            Value::Bytes(blob) => serde_cbor::from_slice::<BTreeMap<Value, Value>>(blob)
+                .ok()
+                .map(Value::Map),
+            _ => Some(node.clone()), // Preserve non-CBOR values as they are
+        })
+        .collect()
+}
+
+/// Pretty prints a full PKI document with decoded CBOR nodes.
+pub fn pretty_print_pki_doc(doc: &BTreeMap<Value, Value>) {
+    let mut new_doc = BTreeMap::new();
+
+    // Decode "GatewayNodes"
+    if let Some(Value::Array(gateway_nodes)) = doc.get(&Value::Text("GatewayNodes".to_string())) {
+        new_doc.insert(Value::Text("GatewayNodes".to_string()), Value::Array(decode_cbor_nodes(gateway_nodes)));
+    }
+
+    // Decode "ServiceNodes"
+    if let Some(Value::Array(service_nodes)) = doc.get(&Value::Text("ServiceNodes".to_string())) {
+        new_doc.insert(Value::Text("ServiceNodes".to_string()), Value::Array(decode_cbor_nodes(service_nodes)));
+    }
+
+    // Decode "Topology" (flatten nested arrays of CBOR blobs)
+    if let Some(Value::Array(topology_layers)) = doc.get(&Value::Text("Topology".to_string())) {
+        let decoded_topology: Vec<Value> = topology_layers
+            .iter()
+            .flat_map(|layer| match layer {
+                Value::Array(layer_nodes) => decode_cbor_nodes(layer_nodes),
+                _ => vec![],
+            })
+            .collect();
+
+        new_doc.insert(Value::Text("Topology".to_string()), Value::Array(decoded_topology));
+    }
+
+    // Copy and decode all other fields that might contain CBOR blobs
+    for (key, value) in doc.iter() {
+        if !matches!(key, Value::Text(s) if ["GatewayNodes", "ServiceNodes", "Topology"].contains(&s.as_str())) {
+            let key_str = key.clone();
+            let decoded_value = match value {
+                Value::Bytes(blob) => serde_cbor::from_slice::<BTreeMap<Value, Value>>(blob)
+                    .ok()
+                    .map(Value::Map)
+                    .unwrap_or(value.clone()), // Fallback to original if not CBOR
+                _ => value.clone(),
+            };
+
+            new_doc.insert(key_str, decoded_value);
+        }
+    }
+
+    // Convert to pretty JSON format right before printing
+    let pretty_json = convert_to_pretty_json(&Value::Map(new_doc));
+    println!("{}", serde_json::to_string_pretty(&pretty_json).unwrap());
 }
