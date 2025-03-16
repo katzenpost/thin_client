@@ -5,29 +5,24 @@ pub mod error;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use std::os::unix::io::FromRawFd;
-use std::ptr;
-use libc::{sockaddr_un, AF_UNIX, SOCK_STREAM};
 
 use tokio::sync::{Mutex, RwLock};
-use tokio::task;
 use tokio::task::JoinHandle;
-use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
-use tokio::net::tcp::OwnedReadHalf;
-use tokio::net::tcp::OwnedWriteHalf;
+use tokio::net::{TcpStream, UnixStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf as TcpReadHalf, OwnedWriteHalf as TcpWriteHalf};
+use tokio::net::unix::{OwnedReadHalf as UnixReadHalf, OwnedWriteHalf as UnixWriteHalf};
 
-use serde_cbor::{from_slice, to_vec, Value};
+use serde_cbor::{from_slice, Value};
 use blake2::{Blake2b, Digest};
 use generic_array::typenum::U32;
 use rand::RngCore;
-use log::{debug, info, error};
+use log::{debug, error};
 
 use crate::error::ThinClientError;
 
 const SURB_ID_SIZE: usize = 16;
 const MESSAGE_ID_SIZE: usize = 16;
-const DAEMON_SOCKET: &str = "\0katzenpost";
 
 #[derive(Debug, Clone)]
 pub struct ServiceDescriptor {
@@ -73,9 +68,25 @@ impl Config {
     }
 }
 
+/// Explicitly defines whether we're using TCP or Unix sockets
+pub enum ServerAddr {
+    Tcp(String),         // "192.168.1.100:64331"
+    Unix(String),        // "/tmp/thinclient.sock" or abstract "katzenpost"
+}
+
+pub enum ReadHalf {
+    Tcp(TcpReadHalf),
+    Unix(UnixReadHalf),
+}
+
+pub enum WriteHalf {
+    Tcp(TcpWriteHalf),
+    Unix(UnixWriteHalf),
+}
+
 pub struct ThinClient {
-    read_half: Mutex<OwnedReadHalf>,
-    write_half: Mutex<OwnedWriteHalf>,
+    read_half: Mutex<ReadHalf>,
+    write_half: Mutex<WriteHalf>,
     config: Config,
     pki_doc: Arc<RwLock<Option<BTreeMap<Value, Value>>>>,
     worker_task: Mutex<Option<JoinHandle<()>>>,
@@ -84,37 +95,40 @@ pub struct ThinClient {
 
 impl ThinClient {
 
-    pub async fn new(config: Config) -> Result<Arc<Self>, ThinClientError> {
-	let server_addr = "127.0.0.1:64331"; // 🔹 TCP server address
-
-	debug!("🔗 Connecting to TCP server at {}", server_addr);
-
-	// 🔹 Create a TCP connection
-	let socket = match TcpStream::connect(server_addr).await {
-            Ok(stream) => {
-		debug!("✅ Successfully connected to TCP server.");
-		stream
+    pub async fn new(server_addr: ServerAddr, config: Config) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+	let client = match server_addr {
+            ServerAddr::Tcp(addr) => {
+		let socket = TcpStream::connect(addr).await?;
+		let (read_half, write_half) = socket.into_split();
+		Arc::new(Self {
+                    read_half: Mutex::new(ReadHalf::Tcp(read_half)),
+                    write_half: Mutex::new(WriteHalf::Tcp(write_half)),
+                    config,
+                    pki_doc: Arc::new(RwLock::new(None)),
+                    worker_task: Mutex::new(None),
+                    shutdown: Arc::new(AtomicBool::new(false)),
+		})
             }
-            Err(err) => {
-		error!("❌ Failed to connect to TCP server: {}", err);
-		return Err(ThinClientError::IoError(err));
+            ServerAddr::Unix(path) => {
+		let socket = UnixStream::connect(path).await?;
+		let (read_half, write_half) = socket.into_split();
+		Arc::new(Self {
+                    read_half: Mutex::new(ReadHalf::Unix(read_half)),
+                    write_half: Mutex::new(WriteHalf::Unix(write_half)),
+                    config,
+                    pki_doc: Arc::new(RwLock::new(None)),
+                    worker_task: Mutex::new(None),
+                    shutdown: Arc::new(AtomicBool::new(false)),
+		})
             }
 	};
-	let (read_half, write_half) = socket.into_split(); // Split into independent halves
-	let client = Arc::new(Self {
-            read_half: Mutex::new(read_half),
-            write_half: Mutex::new(write_half),
-	    config,
-	    pki_doc: Arc::new(RwLock::new(None)),
-	    shutdown: Arc::new(AtomicBool::new(false)),
-	    worker_task: Mutex::new(None),
-	});
 
-	// 🔹 Start the worker loop
 	let client_clone = Arc::clone(&client);
 	let task = tokio::spawn(async move { client_clone.worker_loop().await });
 
 	*client.worker_task.lock().await = Some(task);
+
+	debug!("✅ ThinClient initialized and worker loop started.");
 	Ok(client)
     }
 
@@ -124,15 +138,19 @@ impl ThinClient {
 	self.shutdown.store(true, Ordering::Relaxed);
 
 	let mut write_half = self.write_half.lock().await;
-	let _ = write_half.shutdown().await;
 
-	if let Some(worker) = self.worker_task.lock().await.as_ref() {
+	let _ = match &mut *write_half {
+            WriteHalf::Tcp(wh) => wh.shutdown().await,
+            WriteHalf::Unix(wh) => wh.shutdown().await,
+	};
+
+	if let Some(worker) = self.worker_task.lock().await.take() {
             worker.abort();
 	}
 
 	debug!("✅ ThinClient stopped.");
     }
-
+    
     pub fn new_message_id() -> Vec<u8> {
         let mut id = vec![0; MESSAGE_ID_SIZE];
         rand::thread_rng().fill_bytes(&mut id);
@@ -160,14 +178,45 @@ impl ThinClient {
     pub async fn recv(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
 	let mut length_prefix = [0; 4];
 
-	let mut read_half = self.read_half.lock().await;
-	read_half.read_exact(&mut length_prefix).await?;
+	debug!("📥 Waiting to read message length...");
+
+	{
+            let mut read_half = self.read_half.lock().await;
+            match &mut *read_half {
+		ReadHalf::Tcp(rh) => rh.read_exact(&mut length_prefix).await.map_err(ThinClientError::IoError)?,
+		ReadHalf::Unix(rh) => rh.read_exact(&mut length_prefix).await.map_err(ThinClientError::IoError)?,
+            };
+	}
+
 	let message_length = u32::from_be_bytes(length_prefix) as usize;
+	debug!("📥 Message length received: {}", message_length);
 
 	let mut buffer = vec![0; message_length];
-	read_half.read_exact(&mut buffer).await?;
 
-	let response: BTreeMap<Value, Value> = from_slice(&buffer)?;
+	debug!("📥 Waiting to read message payload...");
+
+	{
+            let mut read_half = self.read_half.lock().await;
+            match &mut *read_half {
+		ReadHalf::Tcp(rh) => rh.read_exact(&mut buffer).await.map_err(ThinClientError::IoError)?,
+		ReadHalf::Unix(rh) => rh.read_exact(&mut buffer).await.map_err(ThinClientError::IoError)?,
+            };
+	}
+
+	debug!("📥 Raw CBOR data received ({} bytes): {:?}", buffer.len(), buffer);
+
+	let response: BTreeMap<Value, Value> = match from_slice(&buffer) {
+            Ok(parsed) => {
+		debug!("✅ Successfully parsed response.");
+		parsed
+            }
+            Err(err) => {
+		error!("❌ Failed to parse CBOR: {:?}", err);
+		return Err(ThinClientError::CborError(err));
+            }
+	};
+
+	debug!("📥 Parsed response content: {:?}", response);
 	Ok(response)
     }
     
@@ -255,16 +304,25 @@ impl ThinClient {
 
     pub async fn send_cbor_request(&self, request: BTreeMap<Value, Value>) -> Result<(), ThinClientError> {
 	let encoded_request = serde_cbor::to_vec(&serde_cbor::Value::Map(request))?;
+	let length_prefix = (encoded_request.len() as u32).to_be_bytes();
 
 	let mut write_half = self.write_half.lock().await;
-	let length_prefix = (encoded_request.len() as u32).to_be_bytes();
-	write_half.write_all(&length_prefix).await?;
-	write_half.write_all(&encoded_request).await?;
+
+	match &mut *write_half {
+            WriteHalf::Tcp(wh) => {
+		wh.write_all(&length_prefix).await?;
+		wh.write_all(&encoded_request).await?;
+            }
+            WriteHalf::Unix(wh) => {
+		wh.write_all(&length_prefix).await?;
+		wh.write_all(&encoded_request).await?;
+            }
+	}
 
 	debug!("✅ Request sent successfully.");
 	Ok(())
     }
-
+    
     pub async fn send_message_without_reply(
 	&self, 
 	payload: &[u8], 

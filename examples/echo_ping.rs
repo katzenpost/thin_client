@@ -1,4 +1,4 @@
-use thin_client::{ThinClient, Config};
+use thin_client::{ThinClient, Config, ServerAddr};
 use serde_cbor::Value;
 use std::collections::BTreeMap;
 use tokio::time::{timeout, Duration};
@@ -60,8 +60,11 @@ async fn run_client() -> Result<(), Box<dyn std::error::Error>> {
         ..Config::new()
     };
 
+    let server_address = "127.0.0.1:64331"; // Change to Unix socket if needed
+    let server_addr = ServerAddr::Tcp(server_address.to_string());
+
     println!("🚀 Initializing ThinClient...");
-    let client = ThinClient::new(cfg).await?;
+    let client = ThinClient::new(server_addr, cfg).await?;
 
     println!("⏳ Waiting for PKI document...");
     let result = timeout(Duration::from_secs(5), async {
