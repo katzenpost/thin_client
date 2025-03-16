@@ -19,13 +19,15 @@ use serde_cbor::{from_slice, Value};
 use blake2::{Blake2b, Digest};
 use generic_array::typenum::U32;
 use rand::RngCore;
-use log::{debug, info, error};
+use log::{debug, error};
 
 use crate::error::ThinClientError;
 
 const SURB_ID_SIZE: usize = 16;
 const MESSAGE_ID_SIZE: usize = 16;
 
+/// ServiceDescriptor is used when we are searching the PKI
+/// document for a specific service.
 #[derive(Debug, Clone)]
 pub struct ServiceDescriptor {
     pub recipient_queue_id: Vec<u8>,
@@ -33,6 +35,8 @@ pub struct ServiceDescriptor {
 }
 
 impl ServiceDescriptor {
+    /// Here we convert the given descriptor into a destination
+    /// that we can use to send a message on the mixnet.
     pub fn to_destination(&self) -> (Vec<u8>, Vec<u8>) {
         let identity_key = self
             .mix_descriptor
@@ -51,6 +55,8 @@ impl ServiceDescriptor {
     }
 }
 
+/// Our configuration defines some callbacks which the thin client will envoke
+/// when it receives the corresponding event from the client daemon.
 #[derive(Clone)]
 pub struct Config {
     pub on_connection_status: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
@@ -76,16 +82,19 @@ pub enum ServerAddr {
     Unix(String),        // "/tmp/thinclient.sock" or abstract "katzenpost"
 }
 
+/// This represent the read half of our network socket.
 pub enum ReadHalf {
     Tcp(TcpReadHalf),
     Unix(UnixReadHalf),
 }
 
+/// This represent the write half of our network socket.
 pub enum WriteHalf {
     Tcp(TcpWriteHalf),
     Unix(UnixWriteHalf),
 }
 
+/// This is our ThinClient type which encapsulates our thin client.
 pub struct ThinClient {
     read_half: Mutex<ReadHalf>,
     write_half: Mutex<WriteHalf>,
@@ -97,6 +106,7 @@ pub struct ThinClient {
 
 impl ThinClient {
 
+    /// Create a new thin cilent and connect it to the client daemon.
     pub async fn new(server_addr: ServerAddr, config: Config) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
 	let client = match server_addr {
             ServerAddr::Tcp(addr) => {
@@ -134,6 +144,7 @@ impl ThinClient {
 	Ok(client)
     }
 
+    /// Stop the thin client.
     pub async fn stop(&self) {
 	debug!("Stopping ThinClient...");
 
@@ -152,36 +163,40 @@ impl ThinClient {
 
 	debug!("✅ ThinClient stopped.");
     }
-    
+
+    /// Generates a new message ID.
     pub fn new_message_id() -> Vec<u8> {
         let mut id = vec![0; MESSAGE_ID_SIZE];
         rand::thread_rng().fill_bytes(&mut id);
         id
     }
 
+    /// Generates a new SURB ID.
     pub fn new_surb_id() -> Vec<u8> {
         let mut id = vec![0; SURB_ID_SIZE];
         rand::thread_rng().fill_bytes(&mut id);
         id
     }
 
-    pub async fn update_pki_document(&self, new_pki_doc: BTreeMap<Value, Value>) {
+    async fn update_pki_document(&self, new_pki_doc: BTreeMap<Value, Value>) {
         let mut pki_doc_lock = self.pki_doc.write().await;
         *pki_doc_lock = Some(new_pki_doc);
         debug!("PKI document updated.");
     }
 
+    /// Returns our latest retrieved PKI document.
     pub async fn pki_document(&self) -> BTreeMap<Value, Value> {
         self.pki_doc.read().await.clone().expect("❌ PKI document is missing!")
     }
 
+    /// Given a service name this returns a ServiceDescriptor if the service exists.
     pub async fn get_service(&self, service_name: &str) -> Result<ServiceDescriptor, ThinClientError> {
         let doc = self.pki_doc.read().await.clone().ok_or(ThinClientError::MissingPkiDocument)?;
         let services = find_services(service_name, &doc);
         services.into_iter().next().ok_or(ThinClientError::ServiceNotFound)
     }
 
-    pub async fn recv(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
+    async fn recv(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
 	let mut length_prefix = [0; 4];
 
 	debug!("📥 Waiting to read message length...");
@@ -255,7 +270,7 @@ impl ThinClient {
         // Placeholder for setting an event flag if needed
     }
 
-    pub async fn handle_response(&self, response: BTreeMap<Value, Value>) {
+    async fn handle_response(&self, response: BTreeMap<Value, Value>) {
         assert!(!response.is_empty(), "❌ Received an empty response!");
 
         if let Some(Value::Map(event)) = response.get(&Value::Text("connection_status_event".to_string())) {
@@ -296,7 +311,7 @@ impl ThinClient {
         error!("❌ Unknown event type received: {:?}", response);
     }
 
-    pub async fn worker_loop(&self) {
+    async fn worker_loop(&self) {
         debug!("Worker loop started");
         while !self.shutdown.load(Ordering::Relaxed) {
             match self.recv().await {
@@ -308,7 +323,7 @@ impl ThinClient {
         debug!("Worker loop exited.");
     }
 
-    pub async fn send_cbor_request(&self, request: BTreeMap<Value, Value>) -> Result<(), ThinClientError> {
+    async fn send_cbor_request(&self, request: BTreeMap<Value, Value>) -> Result<(), ThinClientError> {
 	let encoded_request = serde_cbor::to_vec(&serde_cbor::Value::Map(request))?;
 	let length_prefix = (encoded_request.len() as u32).to_be_bytes();
 
@@ -328,7 +343,9 @@ impl ThinClient {
 	debug!("✅ Request sent successfully.");
 	Ok(())
     }
-    
+
+    /// Sends a message encapsulated in a Sphinx packet without any SURB.
+    /// No reply will be possible.
     pub async fn send_message_without_reply(
 	&self, 
 	payload: &[u8], 
@@ -345,6 +362,15 @@ impl ThinClient {
 	self.send_cbor_request(request).await
     }
 
+    /// This method takes a message payload, a destination node,
+    /// destination queue ID and a SURB ID and sends a message along
+    /// with a SURB so that you can later receive the reply along with
+    /// the SURBID you choose.  This method of sending messages should
+    /// be considered to be asynchronous because it does NOT actually
+    /// wait until the client daemon sends the message. Nor does it
+    /// wait for a reply. The only blocking aspect to it's behavior is
+    /// merely blocking until the client daemon receives our request
+    /// to send a message.
     pub async fn send_message(
 	&self, 
 	surb_id: Vec<u8>, 
@@ -363,6 +389,11 @@ impl ThinClient {
 	self.send_cbor_request(request).await
     }
 
+    /// This method takes a message payload, a destination node,
+    /// destination queue ID and a message ID and reliably sends a message.
+    /// This uses a simple ARQ to resend the message if a reply wasn't received.
+    /// The given message ID will be used to identify the reply since a SURB ID
+    /// can only be used once.
     pub async fn send_reliable_message(
 	&self, 
 	message_id: Vec<u8>, 
@@ -383,7 +414,8 @@ impl ThinClient {
     
 }
 
-fn find_services(capability: &str, doc: &BTreeMap<Value, Value>) -> Vec<ServiceDescriptor> {
+/// Find a specific mixnet service if it exists.
+pub fn find_services(capability: &str, doc: &BTreeMap<Value, Value>) -> Vec<ServiceDescriptor> {
     let mut services = Vec::new();
 
     let Some(Value::Array(nodes)) = doc.get(&Value::Text("ServiceNodes".to_string())) else {
@@ -415,9 +447,6 @@ fn find_services(capability: &str, doc: &BTreeMap<Value, Value>) -> Vec<ServiceD
     services
 }
 
-
-
-/// Converts a CBOR `Value` into a human-readable JSON format.
 fn convert_to_pretty_json(value: &Value) -> serde_json::Value {
     match value {
         Value::Text(s) => serde_json::Value::String(s.clone()),
@@ -441,7 +470,6 @@ fn convert_to_pretty_json(value: &Value) -> serde_json::Value {
     }
 }
 
-/// Recursively decodes CBOR-encoded nodes inside arrays, returning `Vec<Value>` (serde_cbor).
 fn decode_cbor_nodes(nodes: &[Value]) -> Vec<Value> {
     nodes
         .iter()
@@ -454,7 +482,7 @@ fn decode_cbor_nodes(nodes: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// Pretty prints a full PKI document with decoded CBOR nodes.
+/// Pretty prints a PKI document.
 pub fn pretty_print_pki_doc(doc: &BTreeMap<Value, Value>) {
     let mut new_doc = BTreeMap::new();
 
