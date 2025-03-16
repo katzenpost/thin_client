@@ -94,7 +94,8 @@ pub enum WriteHalf {
     Unix(UnixWriteHalf),
 }
 
-/// This is our ThinClient type which encapsulates our thin client.
+/// This is our ThinClient type which encapsulates our thin client
+/// connection management and message processing.
 pub struct ThinClient {
     read_half: Mutex<ReadHalf>,
     write_half: Mutex<WriteHalf>,
@@ -144,7 +145,7 @@ impl ThinClient {
 	Ok(client)
     }
 
-    /// Stop the thin client.
+    /// Stop our async worker task and disconnect the thin client.
     pub async fn stop(&self) {
 	debug!("Stopping ThinClient...");
 
@@ -189,7 +190,8 @@ impl ThinClient {
         self.pki_doc.read().await.clone().expect("❌ PKI document is missing!")
     }
 
-    /// Given a service name this returns a ServiceDescriptor if the service exists.
+    /// Given a service name this returns a ServiceDescriptor if the service exists
+    /// in the current PKI document.
     pub async fn get_service(&self, service_name: &str) -> Result<ServiceDescriptor, ThinClientError> {
         let doc = self.pki_doc.read().await.clone().ok_or(ThinClientError::MissingPkiDocument)?;
         let services = find_services(service_name, &doc);
@@ -482,7 +484,8 @@ fn decode_cbor_nodes(nodes: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// Pretty prints a PKI document.
+/// Pretty prints a PKI document which you can gather from the client
+/// with it's `pki_document` method, documented above.
 pub fn pretty_print_pki_doc(doc: &BTreeMap<Value, Value>) {
     let mut new_doc = BTreeMap::new();
 
