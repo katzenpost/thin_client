@@ -1,10 +1,15 @@
 [package]
-name = "thin_client"
-version = "0.0.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
+name = "katzenpost_thin_client"
+version = "0.0.1"
+edition = "2024"
+authors = ["David Stainton"]
+homepage = "https://katzenpost.network"
+description = "This rust crate provides an async thin client library for Katzenpost, a post quantum decryption mixnet."
+documentation = "https://github.com/katzenpost/website/blob/main/content/en/docs/client_integration.md"
+repository = "https://github.com/katzenpost/thin_client"
+license = "AGPL-3.0-only"
+readme = "README.md"
+keywords = ["katzenpost", "cryptography", "sphinx", "mixnet"]
 
 [dependencies]
 libc = "0.2.152"
@@ -18,4 +23,4 @@ env_logger = "0.11"
 hex = "0.4"
 tokio = { version = "1", features = ["full"] }
 generic-array = "0.14.0"
-typenum = "1.16"  # Explicitly add typenum, which provides `U32`
+typenum = "1.16"
