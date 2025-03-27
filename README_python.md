@@ -1,5 +1,5 @@
 
-# katzepost_thinclient
+# katzenpost_thinclient
 
 *A thin client for sending and receiving messages via a Katzenpost mix network.*
 
