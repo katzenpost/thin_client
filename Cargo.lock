@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "katzenpost_thin_client"
-version = "0.0.4"
+version = "0.0.2"
 dependencies = [
  "blake2",
  "env_logger",
