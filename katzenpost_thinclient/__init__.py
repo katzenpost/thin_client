@@ -30,6 +30,7 @@ def blake2_256_sum(data):
     return hashlib.blake2b(data, digest_size=32).digest()
 
 class ServiceDescriptor:
+    """ServiceDescriptor describes a mixnet service that you can interact with."""
     def __init__(self, recipient_queue_id, mix_descriptor):
         self.recipient_queue_id = recipient_queue_id
         self.mix_descriptor = mix_descriptor
@@ -56,6 +57,9 @@ def find_services(capability, doc):
     return services
     
 class Config:
+    """
+    Config is the configuration object for the ThinClient.
+    """
     def __init__(self, on_connection_status=None, on_new_pki_document=None,
                  on_message_sent=None, on_message_reply=None):
         self.on_connection_status = on_connection_status
@@ -104,6 +108,9 @@ class ThinClient:
         self.socket.setblocking(False)
 
     async def start(self, loop):
+        """start the thing client, connect to the client daemon,
+        start our async event processing."""
+        
         self.logger.debug("connecting to daemon")
 
         daemon_address = "katzenpost"
@@ -131,6 +138,7 @@ class ThinClient:
         return self.config
         
     def stop(self):
+        """stop the thin client"""
         self.logger.debug("closing connection to daemon")
         self.socket.close()
         self.task.cancel()
@@ -168,6 +176,7 @@ class ThinClient:
         self.logger.debug("parse status success")
 
     def pki_document(self):
+        """return our latest copy of the PKI document"""
         return self.pki_doc
         
     def parse_pki_doc(self, event):
@@ -179,6 +188,7 @@ class ThinClient:
         self.logger.debug("parse pki doc success")
 
     def get_services(self, capability):
+        """return a list of services with the given capability string"""
         doc = self.pki_document()
         if doc == None:
             raise Exception("pki doc is nil")
@@ -188,13 +198,17 @@ class ThinClient:
         return descriptors
 
     def get_service(self, service_name):
+        """given a service name, return a service descriptor if one exists.
+        if more than one service with that name exists then pick one at random."""
         service_descriptors = self.get_services(service_name)
         return random.choice(service_descriptors)
 
     def new_message_id(self):
+        """generate a new message ID"""
         return os.urandom(MESSAGE_ID_SIZE)
 
     def new_surb_id(self):
+        """generate a new SURB ID"""
         return os.urandom(SURB_ID_SIZE)
 
     def handle_response(self, response):
@@ -222,6 +236,7 @@ class ThinClient:
             return
 
     def send_message_without_reply(self, payload, dest_node, dest_queue):
+        """Send a message without expecting a reply (no SURB)."""
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
         request = {
@@ -241,6 +256,7 @@ class ThinClient:
             self.logger.error(f"Error sending message: {e}")
 
     def send_message(self, surb_id, payload, dest_node, dest_queue):
+        """Send a message with a SURB to allow replies from the recipient."""
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
         request = {
@@ -261,6 +277,7 @@ class ThinClient:
             self.logger.error(f"Error sending message: {e}")
 
     def send_reliable_message(self, message_id, payload, dest_node, dest_queue):
+        """Send a reliable ARQ message using a message ID to match the reply."""
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
         request = {
@@ -281,6 +298,7 @@ class ThinClient:
             self.logger.error(f"Error sending message: {e}")
 
     def pretty_print_pki_doc(self, doc):
+        """Pretty-print a parsed PKI document including nodes and topology."""
         assert doc is not None
         assert doc['GatewayNodes'] is not None
         assert doc['ServiceNodes'] is not None
@@ -310,4 +328,5 @@ class ThinClient:
         pretty_print_obj(new_doc)
 
     async def await_message_reply(self):
+        """Wait asynchronously until a message reply is received."""
         await self.reply_received_event.wait()
