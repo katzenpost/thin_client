@@ -7,6 +7,7 @@ authors = [
 ]
 description = "A thinclient for the Katzenpost client daemon"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.8"
 classifiers = [
     "Intended Audience :: Developers",
@@ -32,3 +33,4 @@ test = [
     "pytest",
     "pytest-cov",
 ]
+
