@@ -8,7 +8,7 @@ description = "This rust crate provides an async thin client library for Katzenp
 documentation = "https://docs.rs/katzenpost_thin_client/latest/katzenpost_thin_client/"
 repository = "https://github.com/katzenpost/thin_client"
 license = "AGPL-3.0-only"
-readme = "README.md"
+readme = "README_rust.md"
 keywords = ["katzenpost", "cryptography", "sphinx", "mixnet"]
 
 [dependencies]
