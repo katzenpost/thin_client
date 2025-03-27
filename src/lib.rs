@@ -19,6 +19,7 @@
 //! Thin client example usage::
 //!
 //!
+//! ```
 //! use thin_client::{ThinClient, Config, ServerAddr, pretty_print_pki_doc};
 //! use serde_cbor::Value;
 //! use std::collections::BTreeMap;
@@ -141,7 +142,7 @@
 //!     let rt = Runtime::new().unwrap();
 //!     rt.block_on(run_client()).unwrap();
 //! }
-//!
+//! ```
 //!
 //!
 //! # See Also

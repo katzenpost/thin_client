@@ -1,11 +1,11 @@
 [package]
 name = "katzenpost_thin_client"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 authors = ["David Stainton"]
 homepage = "https://katzenpost.network"
 description = "This rust crate provides an async thin client library for Katzenpost, a post quantum decryption mixnet."
-documentation = "https://github.com/katzenpost/website/blob/main/content/en/docs/client_integration.md"
+documentation = "https://docs.rs/katzenpost_thin_client/latest/katzenpost_thin_client/"
 repository = "https://github.com/katzenpost/thin_client"
 license = "AGPL-3.0-only"
 readme = "README.md"
