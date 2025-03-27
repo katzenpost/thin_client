@@ -5,6 +5,9 @@ A thin client library is designed to talk to the katzenpost mixnet client daemon
 It's kind of like a dumb terminal, it doesn't know how to do much besides
 message passing. All the hard work is done by the client daemon.
 
+Here's our thin client integration guide:
+https://github.com/katzenpost/website/blob/main/content/en/docs/client_integration.md
+
 Here's the client2 daemon source code:
 https://github.com/katzenpost/katzenpost/tree/main/client2
 

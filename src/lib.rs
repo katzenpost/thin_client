@@ -1,6 +1,156 @@
 // SPDX-FileCopyrightText: Copyright (C) 2025 David Stainton
 // SPDX-License-Identifier: AGPL-3.0-only
 
+//! A thin client for sending and receiving messages via a Katzenpost
+//! mix network.
+//!
+//! This crate provides a thin client library for interacting with a
+//! Katzenpost mixnet, suitable for desktop and mobile applications.
+//!
+//! A mix network is a type of anonymous communications network.
+//! What's a thin client library? It's code you can use as a
+//! depencency in your application so that it can interact with
+//! services on the mix network. The Katzenpost client daemon is a
+//! multiplexing client; many applications on the same device can use
+//! their thin client libraries to connect to the daemon and interact
+//! with mixnet services concurrently.
+//!
+//! This example can be found here: https://github.com/katzenpost/thin_client/blob/main/examples/echo_ping.rs
+//! Thin client example usage::
+//!
+//!
+//! use thin_client::{ThinClient, Config, ServerAddr, pretty_print_pki_doc};
+//! use serde_cbor::Value;
+//! use std::collections::BTreeMap;
+//! use tokio::time::{timeout, Duration};
+//! use std::sync::{Arc, Mutex};
+//! use tokio::runtime::Runtime;
+//!
+//! struct ClientState {
+//!     reply_message: Arc<Mutex<Option<BTreeMap<Value, Value>>>>,
+//!     pki_received: Arc<Mutex<bool>>,
+//! }
+//!
+//! impl ClientState {
+//!     fn new() -> Self {
+//!         Self {
+//!             reply_message: Arc::new(Mutex::new(None)),
+//!             pki_received: Arc::new(Mutex::new(false)),
+//!         }
+//!     }
+//!
+//!     fn save_reply(&self, reply: &BTreeMap<Value, Value>) {
+//!         let mut stored_reply = self.reply_message.lock().unwrap();
+//!         *stored_reply = Some(reply.clone());
+//!     }
+//!
+//!     fn set_pki_received(&self) {
+//!         let mut pki_flag = self.pki_received.lock().unwrap();
+//!         *pki_flag = true;
+//!     }
+//!
+//!     fn is_pki_received(&self) -> bool {
+//!         *self.pki_received.lock().unwrap()
+//!     }
+//!
+//!     fn await_message_reply(&self) -> Option<BTreeMap<Value, Value>> {
+//!         let stored_reply = self.reply_message.lock().unwrap();
+//!         stored_reply.clone()
+//!     }
+//! }
+//!
+//! async fn run_client() -> Result<(), Box<dyn std::error::Error>> {
+//!     let state = Arc::new(ClientState::new());
+//!     let state_for_reply = Arc::clone(&state);
+//!     let state_for_pki = Arc::clone(&state);
+//!
+//!     let cfg = Config {
+//!         on_new_pki_document: Some(Arc::new(move |_pki_doc| {
+//!             println!("✅ PKI document received.");
+//!             state_for_pki.set_pki_received();
+//!         })),
+//!         on_message_reply: Some(Arc::new(move |reply| {
+//!             println!("📩 Received a reply!");
+//!             state_for_reply.save_reply(reply);
+//!         })),
+//!         ..Config::new()
+//!     };
+//!
+//!     let server_address = "127.0.0.1:64331"; // Change to Unix socket if needed
+//!     let server_addr = ServerAddr::Tcp(server_address.to_string());
+//!
+//!     println!("🚀 Initializing ThinClient...");
+//!     let client = ThinClient::new(server_addr, cfg).await?;
+//!
+//!     println!("⏳ Waiting for PKI document...");
+//!     let result = timeout(Duration::from_secs(5), async {
+//!         loop {
+//!             if state.is_pki_received() {
+//!                 break;
+//!             }
+//!             tokio::task::yield_now().await;
+//!         }
+//!     })
+//!     .await;
+//!
+//!     if result.is_err() {
+//!         return Err("❌ PKI document not received in time.".into());
+//!     }
+//!
+//!     println!("✅ Pretty printing PKI document:");
+//!     let doc = client.pki_document().await;
+//!     pretty_print_pki_doc(&doc);
+//!     println!("AFTER Pretty printing PKI document");
+//!
+//!     let service_desc = client.get_service("echo").await?;
+//!     println!("got service descriptor for echo service");
+//!
+//!     let surb_id = ThinClient::new_surb_id();
+//!     let payload = b"hello echo 123".to_vec();
+//!     let (dest_node, dest_queue) = service_desc.to_destination();
+//!
+//!     println!("before calling send_message");
+//!     client.send_message(surb_id, &payload, dest_node, dest_queue).await?;
+//!     println!("after calling send_message");
+//!
+//!     println!("⏳ Waiting for message reply...");
+//!     let state_for_reply_wait = Arc::clone(&state);
+//!
+//!     let result = timeout(Duration::from_secs(5), async move {
+//!         loop {
+//!             if let Some(reply) = state_for_reply_wait.await_message_reply() {
+//!                 if let Some(Value::Bytes(payload2)) = reply.get(&Value::Text("payload".to_string())) {
+//!                     let payload2 = &payload2[..payload.len()];
+//!                     assert_eq!(payload, payload2, "Reply does not match payload!");
+//!                     println!("✅ Received valid reply, stopping client.");
+//!                     return Ok::<(), Box<dyn std::error::Error>>(());
+//!                 }
+//!             }
+//!             tokio::task::yield_now().await;
+//!         }
+//!     }).await;
+//!
+//!     result.map_err(|e| Box::new(e))??;
+//!     client.stop().await;
+//!     println!("✅ Client stopped successfully.");
+//!     Ok(())
+//! }
+//!
+//! fn main() {
+//!     println!("Hello, world!");
+//!     let rt = Runtime::new().unwrap();
+//!     rt.block_on(run_client()).unwrap();
+//! }
+//!
+//!
+//!
+//! # See Also
+//!
+//! - [katzenpost thin client rust docs](https://docs.rs/katzenpost_thin_client/latest/katzenpost_thin_client/)
+//! - [katzenpost website](https://katzenpost.mixnetworks.org/)
+//! - [katzepost client integration guide](https://katzenpost.network/docs/client_integration/)
+//! - [katzenpost thin client protocol specification](https://katzenpost.network/docs/specs/connector.html)
+
 pub mod error;
 
 use std::collections::BTreeMap;
@@ -23,7 +173,16 @@ use log::{debug, error};
 
 use crate::error::ThinClientError;
 
+/// The size in bytes of a SURB (Single-Use Reply Block) identifier.
+///
+/// SURB IDs are used to correlate replies with the original message sender.
+/// Each SURB ID must be unique and is typically randomly generated.
 const SURB_ID_SIZE: usize = 16;
+
+/// The size in bytes of a message identifier.
+///
+/// Message IDs are used to track outbound messages and correlate them with replies.
+/// Like SURB IDs, these are expected to be randomly generated and unique.
 const MESSAGE_ID_SIZE: usize = 16;
 
 /// ServiceDescriptor is used when we are searching the PKI
