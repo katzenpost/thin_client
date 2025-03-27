@@ -28,6 +28,9 @@ https://github.com/katzenpost/thin_client
 
 # Documentation
 
+Here's our python API docs:
+https://katzenpost.network/docs/python_thin_client.html
+
 Here's our thin client integration guide:
 https://github.com/katzenpost/website/blob/main/content/en/docs/client_integration.md
 
