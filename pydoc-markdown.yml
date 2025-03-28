@@ -1,0 +1,7 @@
+loaders:
+  - type: python
+    search_path: ["."]
+    modules: ["katzenpost_thinclient"]
+
+renderer:
+  type: markdown
