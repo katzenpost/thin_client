@@ -1,6 +1,55 @@
 # SPDX-FileCopyrightText: Copyright (C) 2024 David Stainton
 # SPDX-License-Identifier: AGPL-3.0-only
 
+"""
+Katzenpost Python Thin Client
+=============================
+
+This module provides a minimal async Python client for communicating with the
+Katzenpost client daemon over an abstract Unix domain socket. It allows
+applications to send and receive messages via the mix network by interacting
+with the daemon.
+
+The thin client handles:
+- Connecting to the local daemon
+- Sending messages
+- Receiving events and responses from the daemon
+- Accessing the current PKI document and service descriptors
+
+All cryptographic operations, including PQ Noise transport, Sphinx
+packet construction, and retransmission mechanisms are handled by the
+client daemon, and not this thin client library.
+
+For more information, see our client integration guide:
+https://katzenpost.network/docs/client_integration/
+
+
+Usage Example
+-------------
+
+```python
+import asyncio
+from thinclient import ThinClient, Config
+
+def on_message_reply(event):
+    print("Got reply:", event)
+
+async def main():
+    cfg = Config(on_message_reply=on_message_reply)
+    client = ThinClient(cfg)
+    loop = asyncio.get_running_loop()
+    await client.start(loop)
+
+    service = client.get_service("echo")
+    surb_id = client.new_surb_id()
+    client.send_message(surb_id, "hello mixnet", *service.to_destination())
+
+    await client.await_message_reply()
+
+asyncio.run(main())
+```
+"""
+
 import socket
 import struct
 import random
