@@ -156,6 +156,11 @@ pub mod error;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::fs;
+
+use serde::Deserialize;
+use serde_json::json;
+use serde_cbor::{from_slice, Value};
 
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -163,9 +168,6 @@ use tokio::net::{TcpStream, UnixStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf as TcpReadHalf, OwnedWriteHalf as TcpWriteHalf};
 use tokio::net::unix::{OwnedReadHalf as UnixReadHalf, OwnedWriteHalf as UnixWriteHalf};
-
-use serde_json::json;
-use serde_cbor::{from_slice, Value};
 
 use blake2::{Blake2b, Digest};
 use generic_array::typenum::U32;
@@ -215,10 +217,80 @@ impl ServiceDescriptor {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct Geometry {
+    #[serde(rename = "PacketLength")]
+    pub packet_length: usize,
+
+    #[serde(rename = "NrHops")]
+    pub nr_hops: usize,
+
+    #[serde(rename = "HeaderLength")]
+    pub header_length: usize,
+
+    #[serde(rename = "RoutingInfoLength")]
+    pub routing_info_length: usize,
+
+    #[serde(rename = "PerHopRoutingInfoLength")]
+    pub per_hop_routing_info_length: usize,
+
+    #[serde(rename = "SURBLength")]
+    pub surb_length: usize,
+
+    #[serde(rename = "SphinxPlaintextHeaderLength")]
+    pub sphinx_plaintext_header_length: usize,
+
+    #[serde(rename = "PayloadTagLength")]
+    pub payload_tag_length: usize,
+
+    #[serde(rename = "ForwardPayloadLength")]
+    pub forward_payload_length: usize,
+
+    #[serde(rename = "UserForwardPayloadLength")]
+    pub user_forward_payload_length: usize,
+
+    #[serde(rename = "NextNodeHopLength")]
+    pub next_node_hop_length: usize,
+
+    #[serde(rename = "SPRPKeyMaterialLength")]
+    pub sprp_key_material_length: usize,
+
+    #[serde(rename = "NIKEName")]
+    pub nike_name: String,
+
+    #[serde(rename = "KEMName")]
+    pub kem_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConfigFile {
+    #[serde(rename = "SphinxGeometry")]
+    pub sphinx_geometry: Geometry,
+
+    #[serde(rename = "Network")]
+    pub network: String,
+
+    #[serde(rename = "Address")]
+    pub address: String,
+}
+
+impl ConfigFile {
+    pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(path)?;
+        let config: ConfigFile = toml::from_str(&contents)?;
+        Ok(config)
+    }
+}
+
+
 /// Our configuration defines some callbacks which the thin client will envoke
 /// when it receives the corresponding event from the client daemon.
 #[derive(Clone)]
 pub struct Config {
+    pub network: String,
+    pub address: String,
+    pub sphinx_geometry: Geometry,
+
     pub on_connection_status: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
     pub on_new_pki_document: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
     pub on_message_sent: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
@@ -226,20 +298,20 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new() -> Self {
-        Self {
+    pub fn new(filepath: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(filepath)?;
+        let parsed: ConfigFile = toml::from_str(&contents)?;
+
+        Ok(Self {
+            network: parsed.network,
+            address: parsed.address,
+            sphinx_geometry: parsed.sphinx_geometry,
             on_connection_status: None,
             on_new_pki_document: None,
             on_message_sent: None,
             on_message_reply: None,
-        }
+        })
     }
-}
-
-/// Explicitly defines whether we're using TCP or Unix sockets
-pub enum ServerAddr {
-    Tcp(String),         // "192.168.1.100:64331"
-    Unix(String),        // "/tmp/thinclient.sock" or abstract "katzenpost"
 }
 
 /// This represent the read half of our network socket.
@@ -268,10 +340,10 @@ pub struct ThinClient {
 impl ThinClient {
 
     /// Create a new thin cilent and connect it to the client daemon.
-    pub async fn new(server_addr: ServerAddr, config: Config) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
-	let client = match server_addr {
-            ServerAddr::Tcp(addr) => {
-		let socket = TcpStream::connect(addr).await?;
+    pub async fn new(config: Config) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+	let client = match config.network.to_uppercase().as_str() {
+            "TCP" => {
+		let socket = TcpStream::connect(&config.address).await?;
 		let (read_half, write_half) = socket.into_split();
 		Arc::new(Self {
                     read_half: Mutex::new(ReadHalf::Tcp(read_half)),
@@ -282,7 +354,14 @@ impl ThinClient {
                     shutdown: Arc::new(AtomicBool::new(false)),
 		})
             }
-            ServerAddr::Unix(path) => {
+            "UNIX" => {
+		let path = if config.address.starts_with('@') {
+                    let mut p = String::from("\0");
+                    p.push_str(&config.address[1..]);
+                    p
+		} else {
+                    config.address.clone()
+		};
 		let socket = UnixStream::connect(path).await?;
 		let (read_half, write_half) = socket.into_split();
 		Arc::new(Self {
@@ -293,6 +372,9 @@ impl ThinClient {
                     worker_task: Mutex::new(None),
                     shutdown: Arc::new(AtomicBool::new(false)),
 		})
+            }
+	    _ => {
+		return Err(format!("Unknown network type: {}", config.network).into());
             }
 	};
 

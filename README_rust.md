@@ -40,7 +40,7 @@ Add katzenpost_thin_client to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rstructor = "0.0.4"
+katzenpost_thin_client = "0.0.4"
 ```
 
 

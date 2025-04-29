@@ -1,9 +1,16 @@
-use thin_client::{ThinClient, Config, ServerAddr, pretty_print_pki_doc};
-use serde_cbor::Value;
+
+use std::env;
 use std::collections::BTreeMap;
-use tokio::time::{timeout, Duration};
 use std::sync::{Arc, Mutex};
+use std::process;
+
+use tokio::time::{timeout, Duration};
 use tokio::runtime::Runtime;
+
+use serde_cbor::Value;
+
+use katzenpost_thin_client::{ThinClient, Config, pretty_print_pki_doc};
+
 
 struct ClientState {
     reply_message: Arc<Mutex<Option<BTreeMap<Value, Value>>>>,
@@ -38,33 +45,36 @@ impl ClientState {
     }
 }
 
+
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: {} <config_path>", args[0]);
+        process::exit(1);
+    }
+    let config_path = &args[1];
+
     let rt = Runtime::new().unwrap();
-    rt.block_on(run_client()).unwrap();
+    rt.block_on(run_client(config_path)).unwrap();
 }
 
-async fn run_client() -> Result<(), Box<dyn std::error::Error>> {
+async fn run_client(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(ClientState::new());
     let state_for_reply = Arc::clone(&state);
     let state_for_pki = Arc::clone(&state);
 
-    let cfg = Config {
-        on_new_pki_document: Some(Arc::new(move |_pki_doc| {
-            println!("✅ PKI document received.");
-            state_for_pki.set_pki_received();
-        })),
-        on_message_reply: Some(Arc::new(move |reply| {
-            println!("📩 Received a reply!");
-            state_for_reply.save_reply(reply);
-        })),
-        ..Config::new()
-    };
-
-    let server_address = "127.0.0.1:64331"; // Change to Unix socket if needed
-    let server_addr = ServerAddr::Tcp(server_address.to_string());
+    let mut cfg = Config::new(config_path)?;
+    cfg.on_new_pki_document = Some(Arc::new(move |_pki_doc| {
+        println!("✅ PKI document received.");
+        state_for_pki.set_pki_received();
+    }));
+    cfg.on_message_reply = Some(Arc::new(move |reply| {
+        println!("📩 Received a reply!");
+        state_for_reply.save_reply(reply);
+    }));
 
     println!("🚀 Initializing ThinClient...");
-    let client = ThinClient::new(server_addr, cfg).await?;
+    let client = ThinClient::new(cfg).await?;
 
     println!("⏳ Waiting for PKI document...");
     let result = timeout(Duration::from_secs(5), async {
