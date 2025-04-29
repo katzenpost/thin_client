@@ -60,7 +60,7 @@ import os
 import asyncio
 import cbor2
 import pprintpp
-
+import toml
 import hashlib
 
 # SURB_ID_SIZE is the size in bytes for the
@@ -70,6 +70,72 @@ SURB_ID_SIZE = 16
 # MESSAGE_ID_SIZE is the size in bytes for an ID
 # which is unique to the sent message.
 MESSAGE_ID_SIZE = 16
+
+
+class Geometry:
+    """Geometry represents the Sphinx Geometry and is used by the
+    `ConfigFile` type to load our TOML config file."""
+    def __init__(self, **kwargs):
+        self.PacketLength = kwargs.get('PacketLength')
+        self.NrHops = kwargs.get('NrHops')
+        self.HeaderLength = kwargs.get('HeaderLength')
+        self.RoutingInfoLength = kwargs.get('RoutingInfoLength')
+        self.PerHopRoutingInfoLength = kwargs.get('PerHopRoutingInfoLength')
+        self.SURBLength = kwargs.get('SURBLength')
+        self.SphinxPlaintextHeaderLength = kwargs.get('SphinxPlaintextHeaderLength')
+        self.PayloadTagLength = kwargs.get('PayloadTagLength')
+        self.ForwardPayloadLength = kwargs.get('ForwardPayloadLength')
+        self.UserForwardPayloadLength = kwargs.get('UserForwardPayloadLength')
+        self.NextNodeHopLength = kwargs.get('NextNodeHopLength')
+        self.SPRPKeyMaterialLength = kwargs.get('SPRPKeyMaterialLength')
+        self.NIKEName = kwargs.get('NIKEName', "")
+        self.KEMName = kwargs.get('KEMName', "")
+
+    def __str__(self):
+        return (
+            f"PacketLength: {self.PacketLength}\n"
+            f"NrHops: {self.NrHops}\n"
+            f"HeaderLength: {self.HeaderLength}\n"
+            f"RoutingInfoLength: {self.RoutingInfoLength}\n"
+            f"PerHopRoutingInfoLength: {self.PerHopRoutingInfoLength}\n"
+            f"SURBLength: {self.SURBLength}\n"
+            f"SphinxPlaintextHeaderLength: {self.SphinxPlaintextHeaderLength}\n"
+            f"PayloadTagLength: {self.PayloadTagLength}\n"
+            f"ForwardPayloadLength: {self.ForwardPayloadLength}\n"
+            f"UserForwardPayloadLength: {self.UserForwardPayloadLength}\n"
+            f"NextNodeHopLength: {self.NextNodeHopLength}\n"
+            f"SPRPKeyMaterialLength: {self.SPRPKeyMaterialLength}\n"
+            f"NIKEName: {self.NIKEName}\n"
+            f"KEMName: {self.KEMName}"
+        )
+
+class ConfigFile:
+    """
+    ConfigFile represents everything loaded from a TOML file:
+    network, address, and geometry.
+    """
+    def __init__(self, network, address, geometry):
+        self.network = network
+        self.address = address
+        self.geometry = geometry
+
+    @classmethod
+    def load(cls, toml_path):
+        with open(toml_path, 'r') as f:
+            data = toml.load(f)
+        network = data.get('network')
+        address = data.get('address')
+        geometry_data = data.get('geometry', {})
+        geometry = Geometry(**geometry_data)
+        return cls(network, address, geometry)
+
+    def __str__(self):
+        return (
+            f"Network: {self.network}\n"
+            f"Address: {self.address}\n"
+            f"Geometry:\n{self.geometry}"
+        )
+
 
 def pretty_print_obj(obj):
     pp = pprintpp.PrettyPrinter(indent=4)
@@ -104,13 +170,24 @@ def find_services(capability, doc):
                 )
                 services.append(service_desc)
     return services
-    
+
+
 class Config:
     """
     Config is the configuration object for the ThinClient.
     """
-    def __init__(self, on_connection_status=None, on_new_pki_document=None,
-                 on_message_sent=None, on_message_reply=None):
+    def __init__(self, filepath,
+                 on_connection_status=None,
+                 on_new_pki_document=None,
+                 on_message_sent=None,
+                 on_message_reply=None):
+
+        cfgfile = ConfigFile.load(filepath)
+
+        self.network = cfgfile.network
+        self.address = cfgfile.address
+        self.geometry = cfgfile.geometry
+
         self.on_connection_status = on_connection_status
         self.on_new_pki_document = on_new_pki_document
         self.on_message_sent = on_message_sent
@@ -148,6 +225,12 @@ class ThinClient:
         handler = logging.StreamHandler(sys.stderr)
         self.logger.addHandler(handler)
 
+        if self.config.network is None:
+            raise RuntimeError("config.network is None")
+
+        if self.config.network.upper().startswith("TCP"):
+            raise RuntimeError("TCP not yet supported in this python thin client")
+
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         random_bytes = [random.randint(0, 255) for _ in range(16)]
         hex_string = ''.join(format(byte, '02x') for byte in random_bytes)
@@ -162,9 +245,12 @@ class ThinClient:
         
         self.logger.debug("connecting to daemon")
 
-        daemon_address = "katzenpost"
-        # Abstract names in Unix domain sockets start with a null byte ('\0').
-        server_addr = '\0' + daemon_address
+        daemon_address = self.config.address
+        if daemon_address.startswith("@"):
+            server_addr = '\0' + daemon_address[1:]
+        else:
+            server_addr = daemon_address
+
         await loop.sock_connect(self.socket, server_addr)
 
         # 1st message is always a status event

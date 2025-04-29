@@ -1,10 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (C) 2024 David Stainton
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import os
 import asyncio
 import pytest
+import tempfile
+import toml
 
-from thinclient import ThinClient, Config, pretty_print_obj
+from katzenpost_thinclient import ThinClient, Config, pretty_print_obj
 
 
 # Global variable to store the reply
@@ -17,30 +20,55 @@ def save_reply(reply):
 
 @pytest.mark.asyncio
 async def test_thin_client_send_receive_integration_test():
-    cfg = Config(on_message_reply=save_reply)
-    client = ThinClient(cfg)
-    loop = asyncio.get_event_loop()
-    await client.start(loop)
+    # Create config content with [geometry] section
+    config_data = {
+        "network": "katzenpost",
+        "address": "@katzenpost",
+        "geometry": {
+            "PacketLength": 512,
+            "NrHops": 5,
+            "HeaderLength": 256,
+            "RoutingInfoLength": 160,
+            "PerHopRoutingInfoLength": 32,
+            "SURBLength": 300,
+            "SphinxPlaintextHeaderLength": 2,
+            "PayloadTagLength": 32,
+            "ForwardPayloadLength": 200,
+            "UserForwardPayloadLength": 100,
+            "NextNodeHopLength": 48,
+            "SPRPKeyMaterialLength": 32,
+            "NIKEName": "MyNIKE"
+        }
+    }
 
-    service_desc = client.get_service("echo")
-    surb_id = client.new_surb_id()
-    payload = "hello"
-    dest = service_desc.to_destination()
+    # Write it to a temp TOML file
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".toml", delete=False) as tmp:
+        toml.dump(config_data, tmp)
+        tmp_path = tmp.name
 
-    print(f"TEST DESTINATION: {dest}\n\n")
+    try:
+        cfg = Config(tmp_path, on_message_reply=save_reply)
+        client = ThinClient(cfg)
+        loop = asyncio.get_event_loop()
+        await client.start(loop)
 
-    client.send_message(surb_id, payload, dest[0], dest[1])
+        service_desc = client.get_service("echo")
+        surb_id = client.new_surb_id()
+        payload = "hello"
+        dest = service_desc.to_destination()
 
-    # Wait for the reply to be received
-    await client.await_message_reply()
+        print(f"TEST DESTINATION: {dest}\n\n")
 
-    # Access the global variable to print the reply
-    global reply_message
+        client.send_message(surb_id, payload, dest[0], dest[1])
 
-    payload2 = reply_message['payload']
-    payload2 = payload2[0:len(payload)]
+        await client.await_message_reply()
 
-    assert len(payload) == len(payload2)
-    assert payload2.decode() == payload
+        global reply_message
+        payload2 = reply_message['payload'][:len(payload)]
 
-    client.stop()
+        assert payload2.decode() == payload
+
+        client.stop()
+
+    finally:
+        os.unlink(tmp_path)  # Clean up temp file
