@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import asyncio
-from thinclient import ThinClient, Config
+from katzenpost_thinclient import ThinClient, Config
 
 class ClientState:
     def __init__(self):
@@ -11,7 +11,8 @@ class ClientState:
 
 async def main():
     state = ClientState()
-    cfg = Config(on_message_reply=state.save_reply)
+    docker_mixnet_thinclient_cfg = "../../katzenpost/docker/voting_mixnet/client2/thinclient.toml"    
+    cfg = Config(docker_mixnet_thinclient_cfg, on_message_reply=state.save_reply)
     client = ThinClient(cfg)
     loop = asyncio.get_event_loop()
     await client.start(loop)

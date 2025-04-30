@@ -35,7 +35,7 @@ def on_message_reply(event):
     print("Got reply:", event)
 
 async def main():
-    cfg = Config(on_message_reply=on_message_reply)
+    cfg = Config("./thinclient.toml", on_message_reply=on_message_reply)
     client = ThinClient(cfg)
     loop = asyncio.get_running_loop()
     await client.start(loop)
@@ -123,9 +123,9 @@ class ConfigFile:
     def load(cls, toml_path):
         with open(toml_path, 'r') as f:
             data = toml.load(f)
-        network = data.get('network')
-        address = data.get('address')
-        geometry_data = data.get('geometry', {})
+        network = data.get('Network')
+        address = data.get('Address')
+        geometry_data = data.get('Geometry', {})
         geometry = Geometry(**geometry_data)
         return cls(network, address, geometry)
 
@@ -228,16 +228,35 @@ class ThinClient:
         if self.config.network is None:
             raise RuntimeError("config.network is None")
 
-        if self.config.network.upper().startswith("TCP"):
-            raise RuntimeError("TCP not yet supported in this python thin client")
+        network = self.config.network.lower()
 
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        random_bytes = [random.randint(0, 255) for _ in range(16)]
-        hex_string = ''.join(format(byte, '02x') for byte in random_bytes)
-        abstract_name = f"katzenpost_python_thin_client_{hex_string}"
-        abstract_address = f"\0{abstract_name}"
-        self.socket.bind(abstract_address)
+        if network.lower().startswith("tcp"):
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            host, port_str = self.config.address.split(":")
+            self.server_addr = (host, int(port_str))
+        elif network.lower().startswith("unix"):
+            self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+            if self.config.address.startswith("@"):
+                # Abstract UNIX socket: leading @ means first byte is null
+                abstract_name = self.config.address[1:]
+                self.server_addr = f"\0{abstract_name}"
+
+                # Bind to a unique abstract socket for this client
+                random_bytes = [random.randint(0, 255) for _ in range(16)]
+                hex_string = ''.join(format(byte, '02x') for byte in random_bytes)
+                client_abstract = f"\0katzenpost_python_thin_client_{hex_string}"
+                self.socket.bind(client_abstract)
+            else:
+                # Filesystem UNIX socket
+                self.server_addr = self.config.address
+
+            self.socket.setblocking(False)
+        else:
+            raise RuntimeError(f"Unknown network type: {self.config.network}")
+
         self.socket.setblocking(False)
+
 
     async def start(self, loop):
         """start the thing client, connect to the client daemon,
@@ -245,11 +264,16 @@ class ThinClient:
         
         self.logger.debug("connecting to daemon")
 
-        daemon_address = self.config.address
-        if daemon_address.startswith("@"):
-            server_addr = '\0' + daemon_address[1:]
+        if self.config.network.lower().startswith("tcp"):
+            host, port_str = self.config.address.split(":")
+            server_addr = (host, int(port_str))
+        elif self.config.network.lower().startswith("unix"):
+            if self.config.address.startswith("@"):
+                server_addr = '\0' + self.config.address[1:]
+            else:
+                server_addr = self.config.address
         else:
-            server_addr = daemon_address
+            raise RuntimeError(f"Unknown network type: {self.config.network}")
 
         await loop.sock_connect(self.socket, server_addr)
 

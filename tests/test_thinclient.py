@@ -20,55 +20,32 @@ def save_reply(reply):
 
 @pytest.mark.asyncio
 async def test_thin_client_send_receive_integration_test():
-    # Create config content with [geometry] section
-    config_data = {
-        "network": "katzenpost",
-        "address": "@katzenpost",
-        "geometry": {
-            "PacketLength": 512,
-            "NrHops": 5,
-            "HeaderLength": 256,
-            "RoutingInfoLength": 160,
-            "PerHopRoutingInfoLength": 32,
-            "SURBLength": 300,
-            "SphinxPlaintextHeaderLength": 2,
-            "PayloadTagLength": 32,
-            "ForwardPayloadLength": 200,
-            "UserForwardPayloadLength": 100,
-            "NextNodeHopLength": 48,
-            "SPRPKeyMaterialLength": 32,
-            "NIKEName": "MyNIKE"
-        }
-    }
 
-    # Write it to a temp TOML file
-    with tempfile.NamedTemporaryFile(mode="w+", suffix=".toml", delete=False) as tmp:
-        toml.dump(config_data, tmp)
-        tmp_path = tmp.name
+    katzenpost_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "katzenpost"))
+    config_path = os.path.join(katzenpost_root, "docker/voting_mixnet/client2/thinclient.toml")
 
-    try:
-        cfg = Config(tmp_path, on_message_reply=save_reply)
-        client = ThinClient(cfg)
-        loop = asyncio.get_event_loop()
-        await client.start(loop)
+    assert os.path.exists(config_path), f"Missing config file: {config_path}"
 
-        service_desc = client.get_service("echo")
-        surb_id = client.new_surb_id()
-        payload = "hello"
-        dest = service_desc.to_destination()
+    cfg = Config(config_path, on_message_reply=save_reply)
+    client = ThinClient(cfg)
+    loop = asyncio.get_event_loop()
+    await client.start(loop)
 
-        print(f"TEST DESTINATION: {dest}\n\n")
+    service_desc = client.get_service("echo")
+    surb_id = client.new_surb_id()
+    payload = "hello"
+    dest = service_desc.to_destination()
 
-        client.send_message(surb_id, payload, dest[0], dest[1])
+    print(f"TEST DESTINATION: {dest}\n\n")
 
-        await client.await_message_reply()
+    client.send_message(surb_id, payload, dest[0], dest[1])
 
-        global reply_message
-        payload2 = reply_message['payload'][:len(payload)]
+    await client.await_message_reply()
 
-        assert payload2.decode() == payload
+    global reply_message
+    payload2 = reply_message['payload'][:len(payload)]
 
-        client.stop()
+    assert payload2.decode() == payload
 
-    finally:
-        os.unlink(tmp_path)  # Clean up temp file
+    client.stop()
+
