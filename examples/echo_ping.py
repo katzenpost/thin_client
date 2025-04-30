@@ -11,7 +11,7 @@ class ClientState:
 
 async def main():
     state = ClientState()
-    docker_mixnet_thinclient_cfg = "../../katzenpost/docker/voting_mixnet/client2/thinclient.toml"    
+    docker_mixnet_thinclient_cfg = "../../katzenpost/docker/voting_mixnet/client2/thinclient.toml"
     cfg = Config(docker_mixnet_thinclient_cfg, on_message_reply=state.save_reply)
     client = ThinClient(cfg)
     loop = asyncio.get_event_loop()

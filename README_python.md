@@ -45,7 +45,61 @@ pip install katzenpost_thiclient
 ```
 
 
-# Code Examples
+# Running Code Examples
+
+In the `tests/` directory AND the `examples/` directory you'll find
+some simple python examples that use this library. However both of
+them refer to the path to the katzenpost docker mixnet's client2's
+thinclient's config, like so:
+
+```python
+
+docker_mixnet_thinclient_cfg = "../../katzenpost/docker/voting_mixnet/client2/thinclient.toml"
+```
+
+These examples are meant to be runned after starting a katzenpost docker mixnet.
+Firstly, start the docker mixnet. For details instructions, go here: https://katzenpost.network/docs/admin_guide/docker.html
+We'll be working with the Katzenpost monorepo to get the docker mixnet started: https://github.com/katzenpost/katzenpost
+
+```bash
+
+cd katzenpost/docker
+make start wait run-ping
+```
+
+Once our docker mixnet is fully started up then we can start the client2 daemon:
+
+```bash
+
+cd katzenpost/client2
+make warpedclientdaemon
+cd cmd/kpclientd
+./kpclientd -c ../../../docker/voting_mixnet/client2/client.toml
+```
+
+The above client2/client.toml should have been created by the docker Makefile
+(via the `make start` command above) which sets up a new docker mixnet. Next we can
+finally run our test and examples:
+
+
+```bash
+
+pytest
+```
+
+and
+
+```bash
+
+cd examples
+python fetch_pki_doc.py
+# blah blah informative output
+python echo_ping.py
+# blah blah informative output
+```
+
+
+# Additional Code Examples
 
 We have two working example python programs that use this
 thin client library:
