@@ -34,5 +34,6 @@ exclude = ["venv_test"]
 test = [
     "pytest",
     "pytest-cov",
+    "pytest-asyncio"
 ]
 

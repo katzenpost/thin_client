@@ -51,8 +51,10 @@ Our example rust mixnet client is here:
 
 * https://github.com/katzenpost/thin_client/blob/main/examples/echo_ping.rs
 
-Firstly, start the docker mixnet. For details instructions, go here: https://katzenpost.network/docs/admin_guide/docker.html
-We'll be working with the Katzenpost monorepo to get the docker mixnet started: https://github.com/katzenpost/katzenpost
+Firstly, start the docker mixnet. For details instructions, go here:
+https://katzenpost.network/docs/admin_guide/docker.html We'll be
+working with the Katzenpost monorepo to get the docker mixnet started:
+https://github.com/katzenpost/katzenpost
 
 ```bash
 
@@ -70,9 +72,10 @@ cd cmd/kpclientd
 ./kpclientd -c ../../../docker/voting_mixnet/client2/client.toml
 ```
 
-The above client2/client.toml should have been created by the `make start` command above
-which sets up a new docker mixnet. Next we can finally run our example rust client, specifying
-the correct file path to the thin client configuration file:
+The above client2/client.toml should have been created by the `make
+start` command above which sets up a new docker mixnet. Next we can
+finally run our example rust client, specifying the correct file path
+to the thin client configuration file:
 
 
 ```bash
@@ -83,7 +86,7 @@ cargo run --example echo_ping -- ./katzenpost/docker/voting_mixnet/client2/thinc
 
 ## Compatibility
 
-Works with Katzenpost v0.0.40 or later.
+Works with Katzenpost v0.0.49 or later.
 
 
 
