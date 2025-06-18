@@ -569,13 +569,22 @@ class ThinClient:
         """
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
-        request = {
+
+        # Create the SendMessage structure
+        send_message = {
+            "id": None,  # No ID for fire-and-forget messages
             "with_surb": False,
-            "is_send_op": True,
-            "payload": payload,
+            "surbid": None,  # No SURB ID for fire-and-forget messages
             "destination_id_hash": dest_node,
             "recipient_queue_id": dest_queue,
+            "payload": payload,
         }
+
+        # Wrap in the new Request structure
+        request = {
+            "send_message": send_message
+        }
+
         cbor_request = cbor2.dumps(request)
         length_prefix = struct.pack('>I', len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
@@ -597,14 +606,22 @@ class ThinClient:
         """
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
-        request = {
+
+        # Create the SendMessage structure
+        send_message = {
+            "id": None,  # No ID for regular messages
             "with_surb": True,
             "surbid": surb_id,
             "destination_id_hash": dest_node,
             "recipient_queue_id": dest_queue,
             "payload": payload,
-            "is_send_op": True,
         }
+
+        # Wrap in the new Request structure
+        request = {
+            "send_message": send_message
+        }
+
         cbor_request = cbor2.dumps(request)
         length_prefix = struct.pack('>I', len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
@@ -626,14 +643,22 @@ class ThinClient:
         """
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
-        request = {
-            "id" :message_id,
+
+        # Create the SendARQMessage structure
+        send_arq_message = {
+            "id": message_id,
             "with_surb": True,
-            "is_arq_send_op": True,
-            "payload": payload,
+            "surbid": None,  # ARQ messages don't use SURB IDs directly
             "destination_id_hash": dest_node,
             "recipient_queue_id": dest_queue,
+            "payload": payload,
         }
+
+        # Wrap in the new Request structure
+        request = {
+            "send_arq_message": send_arq_message
+        }
+
         cbor_request = cbor2.dumps(request)
         length_prefix = struct.pack('>I', len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request

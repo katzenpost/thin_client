@@ -597,17 +597,23 @@ impl ThinClient {
     /// Sends a message encapsulated in a Sphinx packet without any SURB.
     /// No reply will be possible.
     pub async fn send_message_without_reply(
-	&self, 
-	payload: &[u8], 
-	dest_node: Vec<u8>, 
+	&self,
+	payload: &[u8],
+	dest_node: Vec<u8>,
 	dest_queue: Vec<u8>
     ) -> Result<(), ThinClientError> {
+	// Create the SendMessage structure
+	let mut send_message = BTreeMap::new();
+	send_message.insert(Value::Text("id".to_string()), Value::Null); // No ID for fire-and-forget messages
+	send_message.insert(Value::Text("with_surb".to_string()), Value::Bool(false));
+	send_message.insert(Value::Text("surbid".to_string()), Value::Null); // No SURB ID for fire-and-forget messages
+	send_message.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
+	send_message.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
+	send_message.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
+
+	// Wrap in the new Request structure
 	let mut request = BTreeMap::new();
-	request.insert(Value::Text("with_surb".to_string()), Value::Bool(false));
-	request.insert(Value::Text("is_send_op".to_string()), Value::Bool(true));
-	request.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
-	request.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
-	request.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
+	request.insert(Value::Text("send_message".to_string()), Value::Map(send_message));
 
 	self.send_cbor_request(request).await
     }
@@ -622,19 +628,24 @@ impl ThinClient {
     /// merely blocking until the client daemon receives our request
     /// to send a message.
     pub async fn send_message(
-	&self, 
-	surb_id: Vec<u8>, 
-	payload: &[u8], 
-	dest_node: Vec<u8>, 
+	&self,
+	surb_id: Vec<u8>,
+	payload: &[u8],
+	dest_node: Vec<u8>,
 	dest_queue: Vec<u8>
     ) -> Result<(), ThinClientError> {
+	// Create the SendMessage structure
+	let mut send_message = BTreeMap::new();
+	send_message.insert(Value::Text("id".to_string()), Value::Null); // No ID for regular messages
+	send_message.insert(Value::Text("with_surb".to_string()), Value::Bool(true));
+	send_message.insert(Value::Text("surbid".to_string()), Value::Bytes(surb_id));
+	send_message.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
+	send_message.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
+	send_message.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
+
+	// Wrap in the new Request structure
 	let mut request = BTreeMap::new();
-	request.insert(Value::Text("with_surb".to_string()), Value::Bool(true));
-	request.insert(Value::Text("surbid".to_string()), Value::Bytes(surb_id));
-	request.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
-	request.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
-	request.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
-	request.insert(Value::Text("is_send_op".to_string()), Value::Bool(true));
+	request.insert(Value::Text("send_message".to_string()), Value::Map(send_message));
 
 	self.send_cbor_request(request).await
     }
@@ -645,19 +656,24 @@ impl ThinClient {
     /// The given message ID will be used to identify the reply since a SURB ID
     /// can only be used once.
     pub async fn send_reliable_message(
-	&self, 
-	message_id: Vec<u8>, 
-	payload: &[u8], 
-	dest_node: Vec<u8>, 
+	&self,
+	message_id: Vec<u8>,
+	payload: &[u8],
+	dest_node: Vec<u8>,
 	dest_queue: Vec<u8>
     ) -> Result<(), ThinClientError> {
+	// Create the SendARQMessage structure
+	let mut send_arq_message = BTreeMap::new();
+	send_arq_message.insert(Value::Text("id".to_string()), Value::Bytes(message_id));
+	send_arq_message.insert(Value::Text("with_surb".to_string()), Value::Bool(true));
+	send_arq_message.insert(Value::Text("surbid".to_string()), Value::Null); // ARQ messages don't use SURB IDs directly
+	send_arq_message.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
+	send_arq_message.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
+	send_arq_message.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
+
+	// Wrap in the new Request structure
 	let mut request = BTreeMap::new();
-	request.insert(Value::Text("id".to_string()), Value::Bytes(message_id));
-	request.insert(Value::Text("with_surb".to_string()), Value::Bool(true));
-	request.insert(Value::Text("is_arq_send_op".to_string()), Value::Bool(true));
-	request.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
-	request.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
-	request.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
+	request.insert(Value::Text("send_arq_message".to_string()), Value::Map(send_arq_message));
 
 	self.send_cbor_request(request).await
     }
