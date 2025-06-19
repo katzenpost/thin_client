@@ -677,7 +677,172 @@ impl ThinClient {
 
 	self.send_cbor_request(request).await
     }
-    
+
+    /// Creates a new pigeonhole channel and returns the channel ID and read capability.
+    pub async fn create_channel(&self) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("create_channel".to_string()), Value::Map(BTreeMap::new()));
+
+        self.send_cbor_request(request).await?;
+
+        // Wait for CreateChannelReply
+        loop {
+            let response = self.recv().await?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("create_channel_reply".to_string())) {
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("CreateChannel failed: {}", err)));
+                }
+
+                let channel_id = reply.get(&Value::Text("channel_id".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
+
+                let read_cap = reply.get(&Value::Text("read_cap".to_string()))
+                    .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing read_cap in response".to_string()))?;
+
+                return Ok((channel_id, read_cap));
+            }
+
+            // Handle other events but continue waiting for our reply
+            self.handle_response(response).await;
+        }
+    }
+
+    /// Creates a read channel from a read capability.
+    pub async fn create_read_channel(&self, read_cap: &BTreeMap<Value, Value>) -> Result<Vec<u8>, ThinClientError> {
+        let mut create_read_channel = BTreeMap::new();
+        create_read_channel.insert(Value::Text("read_cap".to_string()), Value::Map(read_cap.clone()));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("create_read_channel".to_string()), Value::Map(create_read_channel));
+
+        self.send_cbor_request(request).await?;
+
+        // Wait for CreateReadChannelReply
+        loop {
+            let response = self.recv().await?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("create_read_channel_reply".to_string())) {
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("CreateReadChannel failed: {}", err)));
+                }
+
+                let channel_id = reply.get(&Value::Text("channel_id".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
+
+                return Ok(channel_id);
+            }
+
+            // Handle other events but continue waiting for our reply
+            self.handle_response(response).await;
+        }
+    }
+
+    /// Writes data to a pigeonhole channel.
+    pub async fn write_channel(&self, channel_id: &[u8], payload: &[u8]) -> Result<(), ThinClientError> {
+        let mut write_channel = BTreeMap::new();
+        write_channel.insert(Value::Text("channel_id".to_string()), Value::Bytes(channel_id.to_vec()));
+        write_channel.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("write_channel".to_string()), Value::Map(write_channel));
+
+        self.send_cbor_request(request).await?;
+
+        // Wait for WriteChannelReply
+        loop {
+            let response = self.recv().await?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("write_channel_reply".to_string())) {
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("WriteChannel failed: {}", err)));
+                }
+
+                return Ok(());
+            }
+
+            // Handle other events but continue waiting for our reply
+            self.handle_response(response).await;
+        }
+    }
+
+    /// Reads data from a pigeonhole channel.
+    pub async fn read_channel(&self, channel_id: &[u8], message_id: Option<&[u8]>) -> Result<Vec<u8>, ThinClientError> {
+        let msg_id = match message_id {
+            Some(id) => id.to_vec(),
+            None => {
+                let mut id = vec![0u8; 16];
+                use rand::RngCore;
+                rand::thread_rng().fill_bytes(&mut id);
+                id
+            }
+        };
+
+        let mut read_channel = BTreeMap::new();
+        read_channel.insert(Value::Text("channel_id".to_string()), Value::Bytes(channel_id.to_vec()));
+        read_channel.insert(Value::Text("id".to_string()), Value::Bytes(msg_id));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("read_channel".to_string()), Value::Map(read_channel));
+
+        self.send_cbor_request(request).await?;
+
+        // Wait for ReadChannelReply
+        loop {
+            let response = self.recv().await?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("read_channel_reply".to_string())) {
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("ReadChannel failed: {}", err)));
+                }
+
+                let payload = reply.get(&Value::Text("payload".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing payload in response".to_string()))?;
+
+                return Ok(payload);
+            }
+
+            // Handle other events but continue waiting for our reply
+            self.handle_response(response).await;
+        }
+    }
+
+    /// Copies data from a pigeonhole channel to replicas via courier.
+    pub async fn copy_channel(&self, channel_id: &[u8]) -> Result<(), ThinClientError> {
+        let mut msg_id = vec![0u8; 16];
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut msg_id);
+
+        let mut copy_channel = BTreeMap::new();
+        copy_channel.insert(Value::Text("channel_id".to_string()), Value::Bytes(channel_id.to_vec()));
+        copy_channel.insert(Value::Text("id".to_string()), Value::Bytes(msg_id));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("copy_channel".to_string()), Value::Map(copy_channel));
+
+        self.send_cbor_request(request).await?;
+
+        // Wait for CopyChannelReply
+        loop {
+            let response = self.recv().await?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("copy_channel_reply".to_string())) {
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("CopyChannel failed: {}", err)));
+                }
+
+                return Ok(());
+            }
+
+            // Handle other events but continue waiting for our reply
+            self.handle_response(response).await;
+        }
+    }
+
 }
 
 /// Find a specific mixnet service if it exists.

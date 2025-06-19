@@ -11,6 +11,7 @@ pub enum ThinClientError {
     ConnectError,
     MissingPkiDocument,
     ServiceNotFound,
+    Other(String),
 }
 
 impl fmt::Display for ThinClientError {
@@ -21,6 +22,7 @@ impl fmt::Display for ThinClientError {
             ThinClientError::ConnectError => write!(f, "Connection error."),
             ThinClientError::MissingPkiDocument => write!(f, "Missing PKI document."),
             ThinClientError::ServiceNotFound => write!(f, "Service not found."),
+            ThinClientError::Other(msg) => write!(f, "Error: {}", msg),
         }
     }
 }

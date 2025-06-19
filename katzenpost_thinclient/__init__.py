@@ -315,6 +315,11 @@ class ThinClient:
         self.pki_doc = None
         self.config = config
         self.reply_received_event = asyncio.Event()
+        self.channel_reply_event = asyncio.Event()
+        self.channel_reply_data = None
+        # For handling async read channel responses with message ID correlation
+        self.pending_read_channels = {}  # message_id -> asyncio.Event
+        self.read_channel_responses = {}  # message_id -> payload
         self.logger = logging.getLogger('thinclient')
         self.logger.setLevel(logging.DEBUG)
         handler = logging.StreamHandler(sys.stderr)
@@ -558,6 +563,52 @@ class ThinClient:
             self.config.handle_message_reply_event(reply)
             return
 
+        # Handle channel API replies
+        if response.get("create_channel_reply") is not None:
+            self.logger.debug("channel create_channel_reply event")
+            self.channel_reply_data = response
+            self.channel_reply_event.set()
+            return
+
+        if response.get("create_read_channel_reply") is not None:
+            self.logger.debug("channel create_read_channel_reply event")
+            self.channel_reply_data = response
+            self.channel_reply_event.set()
+            return
+
+        if response.get("write_channel_reply") is not None:
+            self.logger.debug("channel write_channel_reply event")
+            self.channel_reply_data = response
+            self.channel_reply_event.set()
+            return
+
+        if response.get("copy_channel_reply") is not None:
+            self.logger.debug("channel copy_channel_reply event")
+            self.channel_reply_data = response
+            self.channel_reply_event.set()
+            return
+
+        if response.get("read_channel_reply") is not None:
+            reply = response["read_channel_reply"]
+            message_id = reply.get("message_id")
+
+            if message_id is not None:
+                message_id_bytes = bytes(message_id) if isinstance(message_id, list) else message_id
+
+                # Check if this is the immediate success response (no payload) or the actual data response (with payload)
+                if reply.get("payload") is not None:
+                    # This is the actual data response - store it and signal waiting coroutine
+                    self.logger.debug(f"read_channel_reply with payload for message_id {message_id_bytes.hex()[:16]}...")
+                    self.read_channel_responses[message_id_bytes] = reply["payload"]
+
+                    # Signal the waiting coroutine if it exists
+                    if message_id_bytes in self.pending_read_channels:
+                        self.pending_read_channels[message_id_bytes].set()
+                else:
+                    # This is the immediate success response - just log it
+                    self.logger.debug(f"read_channel_reply immediate success for message_id {message_id_bytes.hex()[:16]}...")
+            return
+
     def send_message_without_reply(self, payload, dest_node, dest_queue):
         """
         Send a fire-and-forget message with no SURB or reply handling.
@@ -708,3 +759,253 @@ class ThinClient:
         Asynchronously block until a reply is received from the daemon.
         """
         await self.reply_received_event.wait()
+
+    # Channel API methods
+
+    async def create_channel(self):
+        """
+        Create a new pigeonhole channel.
+
+        Returns:
+            tuple: (channel_id, read_cap) where channel_id is 32 bytes and read_cap is the read capability.
+
+        Raises:
+            Exception: If the channel creation fails.
+        """
+        request = {
+            "create_channel": {}
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            # Clear previous reply data and reset event
+            self.channel_reply_data = None
+            self.channel_reply_event.clear()
+
+            self.socket.send(length_prefixed_request)
+            self.logger.info("CreateChannel request sent successfully.")
+
+            # Wait for CreateChannelReply via the background worker
+            await self.channel_reply_event.wait()
+
+            if self.channel_reply_data and self.channel_reply_data.get("create_channel_reply"):
+                reply = self.channel_reply_data["create_channel_reply"]
+                if reply.get("err"):
+                    raise Exception(f"CreateChannel failed: {reply['err']}")
+                return reply["channel_id"], reply["read_cap"]
+            else:
+                raise Exception("No create_channel_reply received")
+
+        except Exception as e:
+            self.logger.error(f"Error creating channel: {e}")
+            raise
+
+    async def create_read_channel(self, read_cap):
+        """
+        Create a read channel from a read capability.
+
+        Args:
+            read_cap: The read capability object.
+
+        Returns:
+            bytes: The 32-byte channel ID.
+
+        Raises:
+            Exception: If the read channel creation fails.
+        """
+        request = {
+            "create_read_channel": {
+                "read_cap": read_cap
+            }
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            # Clear previous reply data and reset event
+            self.channel_reply_data = None
+            self.channel_reply_event.clear()
+
+            self.socket.send(length_prefixed_request)
+            self.logger.info("CreateReadChannel request sent successfully.")
+
+            # Wait for CreateReadChannelReply via the background worker
+            await self.channel_reply_event.wait()
+
+            if self.channel_reply_data and self.channel_reply_data.get("create_read_channel_reply"):
+                reply = self.channel_reply_data["create_read_channel_reply"]
+                if reply.get("err"):
+                    raise Exception(f"CreateReadChannel failed: {reply['err']}")
+                return reply["channel_id"]
+            else:
+                raise Exception("No create_read_channel_reply received")
+
+        except Exception as e:
+            self.logger.error(f"Error creating read channel: {e}")
+            raise
+
+    async def write_channel(self, channel_id, payload):
+        """
+        Write data to a pigeonhole channel.
+
+        Note: This is an asynchronous operation that sends data through the mixnet.
+        The method returns immediately after sending the request - it does not wait
+        for confirmation that the data was successfully written to the channel.
+
+        Args:
+            channel_id (bytes): The 32-byte channel ID.
+            payload (bytes or str): The data to write to the channel.
+
+        Raises:
+            Exception: If the request fails to send.
+        """
+        if not isinstance(payload, bytes):
+            payload = payload.encode('utf-8')
+
+        request = {
+            "write_channel": {
+                "channel_id": channel_id,
+                "payload": payload
+            }
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            self.socket.send(length_prefixed_request)
+            self.logger.info("WriteChannel request sent successfully.")
+            # Note: We do NOT wait for a WriteChannelReply as this is an async operation
+            # The daemon will send the data through the mixnet and any reply will come
+            # later via the normal message handling mechanism
+
+        except Exception as e:
+            self.logger.error(f"Error writing to channel: {e}")
+            raise
+
+    async def read_channel(self, channel_id, message_id=None, timeout=30.0):
+        """
+        Read data from a pigeonhole channel.
+
+        Args:
+            channel_id (bytes): The 32-byte channel ID.
+            message_id (bytes, optional): The 16-byte message ID for correlation. If None, generates a new one.
+            timeout (float): Timeout in seconds for the read operation.
+
+        Returns:
+            bytes: The payload read from the channel.
+
+        Raises:
+            Exception: If the read operation fails or times out.
+        """
+        if message_id is None:
+            message_id = self.new_message_id()
+
+        # Set up correlation for the async response
+        read_event = asyncio.Event()
+        self.pending_read_channels[message_id] = read_event
+
+        request = {
+            "read_channel": {
+                "channel_id": channel_id,
+                "id": message_id
+            }
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            self.socket.send(length_prefixed_request)
+            self.logger.info(f"ReadChannel request sent for message_id {message_id.hex()[:16]}...")
+
+            # Wait for the actual data response (not the immediate success response)
+            try:
+                await asyncio.wait_for(read_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                # Clean up
+                if message_id in self.pending_read_channels:
+                    del self.pending_read_channels[message_id]
+                raise Exception(f"ReadChannel timed out after {timeout} seconds - no data available")
+
+            # Get the payload from the stored response
+            if message_id in self.read_channel_responses:
+                payload = self.read_channel_responses[message_id]
+                # Clean up
+                del self.read_channel_responses[message_id]
+                del self.pending_read_channels[message_id]
+                return payload
+            else:
+                # Clean up
+                if message_id in self.pending_read_channels:
+                    del self.pending_read_channels[message_id]
+                raise Exception("No payload received in read_channel_reply")
+
+        except Exception as e:
+            # Clean up on error
+            if message_id in self.pending_read_channels:
+                del self.pending_read_channels[message_id]
+            if message_id in self.read_channel_responses:
+                del self.read_channel_responses[message_id]
+            self.logger.error(f"Error reading from channel: {e}")
+            raise
+
+    async def copy_channel(self, channel_id, timeout=60.0):
+        """
+        Copy data from a pigeonhole channel to replicas via courier.
+
+        Note: This operation only works on write channels (channels created with create_channel).
+        Read channels (created with create_read_channel) cannot be copied.
+
+        Args:
+            channel_id (bytes): The 32-byte channel ID.
+            timeout (float): Timeout in seconds for the copy operation.
+
+        Raises:
+            Exception: If the copy operation fails.
+        """
+        message_id = self.new_message_id()
+
+        request = {
+            "copy_channel": {
+                "channel_id": channel_id,
+                "id": message_id
+            }
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            # Clear previous reply data and reset event
+            self.channel_reply_data = None
+            self.channel_reply_event.clear()
+
+            self.socket.send(length_prefixed_request)
+            self.logger.info("CopyChannel request sent successfully.")
+
+            # Wait for CopyChannelReply via the background worker with timeout
+            try:
+                await asyncio.wait_for(self.channel_reply_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                raise Exception(f"CopyChannel timed out after {timeout} seconds")
+
+            if self.channel_reply_data and self.channel_reply_data.get("copy_channel_reply"):
+                reply = self.channel_reply_data["copy_channel_reply"]
+                if reply.get("err"):
+                    raise Exception(f"CopyChannel failed: {reply['err']}")
+                return  # Success
+            else:
+                raise Exception("No copy_channel_reply received")
+
+        except Exception as e:
+            self.logger.error(f"Error copying channel: {e}")
+            raise
