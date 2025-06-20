@@ -19,7 +19,7 @@
 //! Thin client example usage::
 //!
 //!
-//! ```rust
+//! ```rust,no_run
 //! use std::env;
 //! use std::collections::BTreeMap;
 //! use std::sync::{Arc, Mutex};
@@ -678,20 +678,30 @@ impl ThinClient {
 	self.send_cbor_request(request).await
     }
 
-    /// Creates a new pigeonhole channel and returns the channel ID and read capability.
-    pub async fn create_channel(&self) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
+    /// Creates a new pigeonhole write channel and returns the channel ID, read capability, write capability, and current message index.
+    pub async fn create_write_channel(&self, box_owner_cap: Option<&BTreeMap<Value, Value>>, message_box_index: Option<&BTreeMap<Value, Value>>) -> Result<(Vec<u8>, BTreeMap<Value, Value>, BTreeMap<Value, Value>, BTreeMap<Value, Value>), ThinClientError> {
+        let mut create_write_channel = BTreeMap::new();
+
+        if let Some(cap) = box_owner_cap {
+            create_write_channel.insert(Value::Text("box_owner_cap".to_string()), Value::Map(cap.clone()));
+        }
+
+        if let Some(index) = message_box_index {
+            create_write_channel.insert(Value::Text("message_box_index".to_string()), Value::Map(index.clone()));
+        }
+
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("create_channel".to_string()), Value::Map(BTreeMap::new()));
+        request.insert(Value::Text("create_write_channel".to_string()), Value::Map(create_write_channel));
 
         self.send_cbor_request(request).await?;
 
-        // Wait for CreateChannelReply
+        // Wait for CreateWriteChannelReply
         loop {
             let response = self.recv().await?;
 
-            if let Some(Value::Map(reply)) = response.get(&Value::Text("create_channel_reply".to_string())) {
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("create_write_channel_reply".to_string())) {
                 if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
-                    return Err(ThinClientError::Other(format!("CreateChannel failed: {}", err)));
+                    return Err(ThinClientError::Other(format!("CreateWriteChannel failed: {}", err)));
                 }
 
                 let channel_id = reply.get(&Value::Text("channel_id".to_string()))
@@ -702,7 +712,15 @@ impl ThinClient {
                     .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing read_cap in response".to_string()))?;
 
-                return Ok((channel_id, read_cap));
+                let box_owner_cap = reply.get(&Value::Text("box_owner_cap".to_string()))
+                    .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing box_owner_cap in response".to_string()))?;
+
+                let next_message_index = reply.get(&Value::Text("next_message_index".to_string()))
+                    .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing next_message_index in response".to_string()))?;
+
+                return Ok((channel_id, read_cap, box_owner_cap, next_message_index));
             }
 
             // Handle other events but continue waiting for our reply
@@ -710,10 +728,21 @@ impl ThinClient {
         }
     }
 
+    /// Creates a new pigeonhole channel and returns the channel ID and read capability.
+    /// This is a convenience method that calls create_write_channel with nil parameters.
+    pub async fn create_channel(&self) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
+        let (channel_id, read_cap, _, _) = self.create_write_channel(None, None).await?;
+        Ok((channel_id, read_cap))
+    }
+
     /// Creates a read channel from a read capability.
-    pub async fn create_read_channel(&self, read_cap: &BTreeMap<Value, Value>) -> Result<Vec<u8>, ThinClientError> {
+    pub async fn create_read_channel(&self, read_cap: &BTreeMap<Value, Value>, message_box_index: Option<&BTreeMap<Value, Value>>) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
         let mut create_read_channel = BTreeMap::new();
         create_read_channel.insert(Value::Text("read_cap".to_string()), Value::Map(read_cap.clone()));
+
+        if let Some(index) = message_box_index {
+            create_read_channel.insert(Value::Text("message_box_index".to_string()), Value::Map(index.clone()));
+        }
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("create_read_channel".to_string()), Value::Map(create_read_channel));
@@ -733,7 +762,11 @@ impl ThinClient {
                     .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
 
-                return Ok(channel_id);
+                let next_message_index = reply.get(&Value::Text("next_message_index".to_string()))
+                    .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing next_message_index in response".to_string()))?;
+
+                return Ok((channel_id, next_message_index));
             }
 
             // Handle other events but continue waiting for our reply
@@ -741,8 +774,9 @@ impl ThinClient {
         }
     }
 
-    /// Writes data to a pigeonhole channel.
-    pub async fn write_channel(&self, channel_id: &[u8], payload: &[u8]) -> Result<(), ThinClientError> {
+    /// Prepares a write message for a pigeonhole channel and returns the SendMessage payload and next MessageBoxIndex.
+    /// The thin client must then call send_message with the returned payload to actually send the message.
+    pub async fn write_channel(&self, channel_id: &[u8], payload: &[u8]) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
         let mut write_channel = BTreeMap::new();
         write_channel.insert(Value::Text("channel_id".to_string()), Value::Bytes(channel_id.to_vec()));
         write_channel.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
@@ -761,7 +795,15 @@ impl ThinClient {
                     return Err(ThinClientError::Other(format!("WriteChannel failed: {}", err)));
                 }
 
-                return Ok(());
+                let send_message_payload = reply.get(&Value::Text("send_message_payload".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing send_message_payload in response".to_string()))?;
+
+                let next_message_index = reply.get(&Value::Text("next_message_index".to_string()))
+                    .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing next_message_index in response".to_string()))?;
+
+                return Ok((send_message_payload, next_message_index));
             }
 
             // Handle other events but continue waiting for our reply
@@ -769,8 +811,9 @@ impl ThinClient {
         }
     }
 
-    /// Reads data from a pigeonhole channel.
-    pub async fn read_channel(&self, channel_id: &[u8], message_id: Option<&[u8]>) -> Result<Vec<u8>, ThinClientError> {
+    /// Prepares a read query for a pigeonhole channel and returns the SendMessage payload and next MessageBoxIndex.
+    /// The thin client must then call send_message with the returned payload to actually send the query.
+    pub async fn read_channel(&self, channel_id: &[u8], message_id: Option<&[u8]>) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
         let msg_id = match message_id {
             Some(id) => id.to_vec(),
             None => {
@@ -799,11 +842,15 @@ impl ThinClient {
                     return Err(ThinClientError::Other(format!("ReadChannel failed: {}", err)));
                 }
 
-                let payload = reply.get(&Value::Text("payload".to_string()))
+                let send_message_payload = reply.get(&Value::Text("send_message_payload".to_string()))
                     .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
-                    .ok_or_else(|| ThinClientError::Other("Missing payload in response".to_string()))?;
+                    .ok_or_else(|| ThinClientError::Other("Missing send_message_payload in response".to_string()))?;
 
-                return Ok(payload);
+                let next_message_index = reply.get(&Value::Text("next_message_index".to_string()))
+                    .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing next_message_index in response".to_string()))?;
+
+                return Ok((send_message_payload, next_message_index));
             }
 
             // Handle other events but continue waiting for our reply

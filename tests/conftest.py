@@ -49,6 +49,11 @@ def check_daemon_available():
         return False
 
 
+def is_daemon_available():
+    """Alias for check_daemon_available for consistency."""
+    return check_daemon_available()
+
+
 @pytest.fixture(scope="session")
 def config_path():
     """Provide the config path for tests."""

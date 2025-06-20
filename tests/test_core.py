@@ -19,6 +19,12 @@ def save_reply(event):
 @pytest.mark.asyncio
 async def test_thin_client_send_receive_integration_test():
     """Test basic send/receive functionality with the echo service."""
+    from .conftest import is_daemon_available
+
+    # Skip test if daemon is not available
+    if not is_daemon_available():
+        pytest.skip("Katzenpost client daemon not available")
+
     katzenpost_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "katzenpost"))
     config_path = os.path.join(katzenpost_root, "docker/voting_mixnet/client2/thinclient.toml")
 
@@ -27,25 +33,30 @@ async def test_thin_client_send_receive_integration_test():
     cfg = Config(config_path, on_message_reply=save_reply)
     client = ThinClient(cfg)
     loop = asyncio.get_event_loop()
-    await client.start(loop)
 
-    service_desc = client.get_service("echo")
-    surb_id = client.new_surb_id()
-    payload = "hello"
-    dest = service_desc.to_destination()
+    try:
+        await client.start(loop)
 
-    print(f"TEST DESTINATION: {dest}")
+        service_desc = client.get_service("echo")
+        surb_id = client.new_surb_id()
+        payload = "hello"
+        dest = service_desc.to_destination()
 
-    client.send_message(surb_id, payload, dest[0], dest[1])
+        print(f"TEST DESTINATION: {dest}")
 
-    await client.await_message_reply()
+        client.send_message(surb_id, payload, dest[0], dest[1])
 
-    global reply_message
-    payload2 = reply_message['payload'][:len(payload)]
+        await client.await_message_reply()
 
-    assert payload2.decode() == payload
+        global reply_message
+        payload2 = reply_message['payload'][:len(payload)]
 
-    client.stop()
+        assert payload2.decode() == payload
+
+        print("✅ Echo service integration test passed!")
+
+    finally:
+        client.stop()
 
 
 @pytest.mark.asyncio
