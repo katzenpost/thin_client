@@ -239,9 +239,9 @@ def find_services(capability, doc):
     for node in doc['ServiceNodes']:
         mynode = cbor2.loads(node)
 
-        # Check if the node has services in omitempty field
-        if 'omitempty' in mynode:
-            for cap, details in mynode['omitempty'].items():
+        # Check if the node has services in Kaetzchen field (fixed from omitempty)
+        if 'Kaetzchen' in mynode:
+            for cap, details in mynode['Kaetzchen'].items():
                 if cap == capability:
                     service_desc = ServiceDescriptor(
                         recipient_queue_id=bytes(details['endpoint'], 'utf-8'),
