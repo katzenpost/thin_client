@@ -749,19 +749,19 @@ class ThinClient:
 
     # Channel API methods
 
-    async def create_write_channel(self, box_owner_cap=None, message_box_index=None):
+    async def create_write_channel(self, write_cap=None, message_box_index=None):
         """
         Create a new pigeonhole write channel.
 
         Args:
-            box_owner_cap: Optional BoxOwnerCap for resuming an existing channel.
+            write_cap: Optional WriteCap for resuming an existing channel.
             message_box_index: Optional MessageBoxIndex for resuming from a specific position.
 
         Returns:
-            tuple: (channel_id, read_cap, box_owner_cap, next_message_index) where:
-                - channel_id is 32 bytes
+            tuple: (channel_id, read_cap, write_cap, next_message_index) where:
+                - channel_id is 16-bit channel ID
                 - read_cap is the read capability for sharing
-                - box_owner_cap is the write capability for persistence
+                - write_cap is the write capability for persistence
                 - next_message_index is the current position for crash consistency
 
         Raises:
@@ -769,8 +769,8 @@ class ThinClient:
         """
         request_data = {}
 
-        if box_owner_cap is not None:
-            request_data["box_owner_cap"] = box_owner_cap
+        if write_cap is not None:
+            request_data["write_cap"] = write_cap
 
         if message_box_index is not None:
             request_data["message_box_index"] = message_box_index
@@ -798,7 +798,7 @@ class ThinClient:
                 reply = self.channel_reply_data["create_write_channel_reply"]
                 if reply.get("err"):
                     raise Exception(f"CreateWriteChannel failed: {reply['err']}")
-                return reply["channel_id"], reply["read_cap"], reply["box_owner_cap"], reply["next_message_index"]
+                return reply["channel_id"], reply["read_cap"], reply["write_cap"], reply["next_message_index"]
             else:
                 raise Exception("No create_write_channel_reply received")
 
@@ -812,7 +812,7 @@ class ThinClient:
         This is a convenience method that calls create_write_channel with no parameters.
 
         Returns:
-            tuple: (channel_id, read_cap) where channel_id is 32 bytes and read_cap is the read capability.
+            tuple: (channel_id, read_cap) where channel_id is 16-bit channel ID and read_cap is the read capability.
 
         Raises:
             Exception: If the channel creation fails.
@@ -830,7 +830,7 @@ class ThinClient:
 
         Returns:
             tuple: (channel_id, next_message_index) where:
-                - channel_id is the 32-byte channel ID
+                - channel_id is the 16-bit channel ID
                 - next_message_index is the current position for crash consistency
 
         Raises:
@@ -880,7 +880,7 @@ class ThinClient:
         The thin client must then call send_message with the returned payload to actually send the message.
 
         Args:
-            channel_id (bytes): The 32-byte channel ID.
+            channel_id (int): The 16-bit channel ID.
             payload (bytes or str): The data to write to the channel.
 
         Returns:
@@ -934,7 +934,7 @@ class ThinClient:
         The thin client must then call send_message with the returned payload to actually send the query.
 
         Args:
-            channel_id (bytes): The 32-byte channel ID.
+            channel_id (int): The 16-bit channel ID.
             message_id (bytes, optional): The 16-byte message ID for correlation. If None, generates a new one.
 
         Returns:
@@ -990,7 +990,7 @@ class ThinClient:
         Read channels (created with create_read_channel) cannot be copied.
 
         Args:
-            channel_id (bytes): The 32-byte channel ID.
+            channel_id (int): The 16-bit channel ID.
             timeout (float): Timeout in seconds for the copy operation.
 
         Raises:

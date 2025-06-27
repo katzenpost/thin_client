@@ -27,7 +27,7 @@ async def test_channel_complete_workflow(thin_client, timeout_config):
     # Step 1: Create write channel (new crash-consistent API)
     print("🔍 DEBUG: Step 1 - Creating write channel with new crash-consistent API...")
     try:
-        channel_id, read_cap, box_owner_cap, current_index = await asyncio.wait_for(
+        channel_id, read_cap, write_cap, current_index = await asyncio.wait_for(
             client.create_write_channel(),
             timeout=timeout_config['channel_timeout']
         )
@@ -38,13 +38,13 @@ async def test_channel_complete_workflow(thin_client, timeout_config):
 
     assert channel_id is not None, "Channel ID should not be None"
     assert read_cap is not None, "Read capability should not be None"
-    assert box_owner_cap is not None, "Box owner capability should not be None"
+    assert write_cap is not None, "Write capability should not be None"
     assert current_index is not None, "Current message index should not be None"
-    assert len(channel_id) == 32, "Channel ID should be 32 bytes"
+    assert isinstance(channel_id, int), "Channel ID should be an integer (16-bit)"
 
-    print(f"✅ Write channel created: {channel_id.hex()[:16]}...")
+    print(f"✅ Write channel created: {channel_id}")
     print(f"📖 Read capability size: {len(str(read_cap))} bytes")
-    print(f"🔑 Box owner capability available for crash recovery")
+    print(f"🔑 Write capability available for crash recovery")
     print(f"📍 Current message index available for crash recovery")
 
     # Step 2: Prepare write message (new crash-consistent API)
@@ -93,9 +93,9 @@ async def test_channel_complete_workflow(thin_client, timeout_config):
 
     assert read_channel_id is not None, "Read channel ID should not be None"
     assert read_current_index is not None, "Read current index should not be None"
-    assert len(read_channel_id) == 32, "Read channel ID should be 32 bytes"
+    assert isinstance(read_channel_id, int), "Read channel ID should be an integer (16-bit)"
 
-    print(f"✅ Read channel created: {read_channel_id.hex()[:16]}...")
+    print(f"✅ Read channel created: {read_channel_id}")
     print(f"📍 Read current index available for crash recovery")
 
     # Step 4: Prepare read query from write channel (new crash-consistent API)
