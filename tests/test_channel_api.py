@@ -14,7 +14,7 @@ import os
 import time
 import hashlib
 
-from katzenpost_thinclient import ThinClient, Config
+from katzenpost_thinclient import ThinClient, Config, find_services
 
 
 class ChannelTestState:
@@ -136,46 +136,7 @@ async def send_query_and_wait(client, channel_id, message_payload, node_hash, qu
     return None
 
 
-def find_courier_service(pki_doc):
-    """
-    Find a courier service from the PKI document.
 
-    Args:
-        pki_doc: The PKI document dictionary
-
-    Returns:
-        tuple: (node_id_hash, queue_id) for the courier service
-    """
-    if 'ServiceNodes' not in pki_doc:
-        raise ValueError("No ServiceNodes found in PKI document")
-
-    for i, node_data in enumerate(pki_doc['ServiceNodes']):
-        # Parse the CBOR-encoded node data
-        import cbor2
-        node = cbor2.loads(node_data)
-
-        # Check if this node has courier capability (it's in omitempty field)
-        if 'omitempty' in node:
-            for capability, details in node['omitempty'].items():
-                if capability == 'courier':
-                    # Calculate the node ID hash using Blake2b like Katzenpost does
-                    identity_key_raw = node['IdentityKey']
-
-                    if isinstance(identity_key_raw, list):
-                        identity_key = bytes(identity_key_raw)
-                    else:
-                        identity_key = bytes(identity_key_raw)
-
-                    # Use Blake2b hash with 32-byte digest size (like Katzenpost)
-                    node_id_hash = hashlib.blake2b(identity_key, digest_size=32).digest()
-
-                    # Get the queue ID
-                    queue_id = bytes(details['endpoint'], 'utf-8')
-
-                    print(f"Found courier service: node_hash={node_id_hash.hex()[:16]}..., queue_id={queue_id}")
-                    return node_id_hash, queue_id
-
-    raise ValueError("No courier service found in PKI document")
 
 
 @pytest.mark.asyncio
@@ -247,8 +208,46 @@ async def test_docker_courier_service_new_thinclient_api():
         current_epoch = alice_pki['Epoch']
         print(f"Using PKI document for epoch {current_epoch}")
         
-        # Find courier service
-        courier_node_hash, courier_queue_id = find_courier_service(alice_pki)
+        # Find courier service using the library's find_services function
+        # Debug the PKI document type and content
+        print(f"alice_pki type: {type(alice_pki)}")
+        print(f"alice_pki keys: {list(alice_pki.keys()) if isinstance(alice_pki, dict) else 'Not a dict'}")
+
+        # Handle case where pki_document() might return a string instead of dict
+        if isinstance(alice_pki, str):
+            import json
+            try:
+                alice_pki_dict = json.loads(alice_pki)
+                print("Successfully parsed PKI as JSON")
+            except json.JSONDecodeError:
+                print("Failed to parse PKI as JSON, trying CBOR")
+                import cbor2
+                alice_pki_dict = cbor2.loads(alice_pki.encode('utf-8'))
+        else:
+            alice_pki_dict = alice_pki
+
+        print(f"alice_pki_dict type: {type(alice_pki_dict)}")
+        print(f"alice_pki_dict keys: {list(alice_pki_dict.keys()) if isinstance(alice_pki_dict, dict) else 'Not a dict'}")
+        print(f"ServiceNodes type: {type(alice_pki_dict['ServiceNodes'])}")
+        print(f"ServiceNodes length: {len(alice_pki_dict['ServiceNodes'])}")
+        if len(alice_pki_dict['ServiceNodes']) > 0:
+            print(f"First ServiceNode type: {type(alice_pki_dict['ServiceNodes'][0])}")
+
+        courier_services = find_services("courier", alice_pki_dict)
+        if len(courier_services) == 0:
+            raise ValueError("No courier services found")
+
+        # Use the first courier service
+        courier_service = courier_services[0]
+
+        # Calculate the node ID hash using Blake2b like Katzenpost does
+        identity_key = bytes(courier_service.mix_descriptor['IdentityKey'])
+        courier_node_hash = hashlib.blake2b(identity_key, digest_size=32).digest()
+
+        # Get the queue ID
+        courier_queue_id = courier_service.recipient_queue_id
+
+        print(f"Found courier service: node_hash={courier_node_hash.hex()[:16]}..., queue_id={courier_queue_id}")
         
         # Alice creates write channel
         print("Alice: Creating write channel")
