@@ -669,6 +669,49 @@ class ThinClient:
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
 
+    def send_channel_query(self, channel_id, payload, dest_node, dest_queue):
+        """
+        Send a channel query (prepared by write_channel or read_channel) to the mixnet.
+        This method sets the ChannelID inside the Request for proper channel handling.
+
+        Args:
+            channel_id (int): The 16-bit channel ID.
+            payload (bytes): Channel query payload prepared by write_channel or read_channel.
+            dest_node (bytes): Destination node identity hash.
+            dest_queue (bytes): Destination recipient queue ID.
+        """
+        if not isinstance(payload, bytes):
+            payload = payload.encode('utf-8')  # Encoding the string to bytes
+
+        # Generate a new SURB ID
+        surb_id = self.new_surb_id()
+
+        # Create the SendMessage structure with ChannelID
+        send_message = {
+            "channel_id": channel_id,  # This is the key difference from send_message
+            "id": None,  # No ID for channel queries
+            "with_surb": True,
+            "surbid": surb_id,
+            "destination_id_hash": dest_node,
+            "recipient_queue_id": dest_queue,
+            "payload": payload,
+        }
+
+        # Wrap in the new Request structure
+        request = {
+            "send_message": send_message
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+        try:
+            self.socket.sendall(length_prefixed_request)
+            self.logger.info(f"Channel query sent successfully for channel {channel_id}.")
+        except Exception as e:
+            self.logger.error(f"Error sending channel query: {e}")
+            raise
+
     def send_reliable_message(self, message_id, payload, dest_node, dest_queue):
         """
         Send a reliable message using an ARQ mechanism and message ID.
