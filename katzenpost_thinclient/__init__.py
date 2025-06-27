@@ -63,6 +63,90 @@ import pprintpp
 import toml
 import hashlib
 
+# Export public API
+__all__ = [
+    'ThinClient',
+    'Config',
+    'ServiceDescriptor',
+    'find_services',
+    'extract_message_from_padded_payload',
+    'create_padded_payload'
+]
+
+
+def extract_message_from_padded_payload(padded_payload):
+    """
+    Extract the original message from a padded payload using Katzenpost padding scheme.
+
+    The padding scheme uses a 4-byte big-endian length prefix followed by the message
+    and then zero padding to fill the target size.
+
+    Format: [4-byte length prefix][message][padding]
+
+    Args:
+        padded_payload (bytes): The padded payload to extract from
+
+    Returns:
+        bytes: The original message
+
+    Raises:
+        ValueError: If the payload is invalid or too short
+    """
+    LENGTH_PREFIX_SIZE = 4
+
+    if len(padded_payload) < LENGTH_PREFIX_SIZE:
+        raise ValueError(f"Padded payload too short: {len(padded_payload)} bytes, need at least {LENGTH_PREFIX_SIZE}")
+
+    # Read the length prefix (big-endian)
+    message_length = struct.unpack('>I', padded_payload[0:4])[0]
+
+    if int(message_length) > len(padded_payload) - LENGTH_PREFIX_SIZE:
+        raise ValueError(f"Invalid message length {message_length}, padded payload only has {len(padded_payload) - LENGTH_PREFIX_SIZE} bytes after prefix")
+
+    # Extract the message
+    message = padded_payload[4:4+message_length]
+
+    return message
+
+
+def create_padded_payload(message, target_size):
+    """
+    Create a padded payload using Katzenpost padding scheme.
+
+    The padding scheme uses a 4-byte big-endian length prefix followed by the message
+    and then zero padding to fill the target size.
+
+    Format: [4-byte length prefix][message][padding]
+
+    Args:
+        message (bytes): The message to pad
+        target_size (int): The target size for the padded payload
+
+    Returns:
+        bytes: The padded payload
+
+    Raises:
+        ValueError: If the message is too large for the target size
+    """
+    LENGTH_PREFIX_SIZE = 4
+
+    if len(message) + LENGTH_PREFIX_SIZE > target_size:
+        raise ValueError(f"Message too large: {len(message)} bytes + {LENGTH_PREFIX_SIZE} prefix > {target_size} target size")
+
+    # Create the padded payload
+    padded_payload = bytearray(target_size)
+
+    # Write the length prefix (big-endian)
+    struct.pack_into('>I', padded_payload, 0, len(message))
+
+    # Copy the message data
+    padded_payload[4:4+len(message)] = message
+
+    # The rest is zero padding (already initialized to zero)
+
+    return bytes(padded_payload)
+
+
 # SURB_ID_SIZE is the size in bytes for the
 # Katzenpost SURB ID.
 SURB_ID_SIZE = 16
@@ -231,13 +315,15 @@ def find_services(capability, doc):
     for node in doc['ServiceNodes']:
         mynode = cbor2.loads(node)
 
-        for cap, details in mynode['omitempty'].items():
-            if cap == capability:
-                service_desc = ServiceDescriptor(
-                    recipient_queue_id=bytes(details['endpoint'], 'utf-8'),
-                    mix_descriptor=mynode
-                )
-                services.append(service_desc)
+        # Check if the node has services in omitempty field
+        if 'omitempty' in mynode:
+            for cap, details in mynode['omitempty'].items():
+                if cap == capability:
+                    service_desc = ServiceDescriptor(
+                        recipient_queue_id=bytes(details['endpoint'], 'utf-8'),
+                        mix_descriptor=mynode
+                    )
+                    services.append(service_desc)
     return services
 
 
@@ -1025,55 +1111,3 @@ class ThinClient:
             self.logger.error(f"Error preparing read from channel: {e}")
             raise
 
-    async def copy_channel(self, channel_id, timeout=60.0):
-        """
-        Copy data from a pigeonhole channel to replicas via courier.
-
-        Note: This operation only works on write channels (channels created with create_channel).
-        Read channels (created with create_read_channel) cannot be copied.
-
-        Args:
-            channel_id (int): The 16-bit channel ID.
-            timeout (float): Timeout in seconds for the copy operation.
-
-        Raises:
-            Exception: If the copy operation fails.
-        """
-        message_id = self.new_message_id()
-
-        request = {
-            "copy_channel": {
-                "channel_id": channel_id,
-                "id": message_id
-            }
-        }
-
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-
-        try:
-            # Clear previous reply data and reset event
-            self.channel_reply_data = None
-            self.channel_reply_event.clear()
-
-            self.socket.send(length_prefixed_request)
-            self.logger.info("CopyChannel request sent successfully.")
-
-            # Wait for CopyChannelReply via the background worker with timeout
-            try:
-                await asyncio.wait_for(self.channel_reply_event.wait(), timeout=timeout)
-            except asyncio.TimeoutError:
-                raise Exception(f"CopyChannel timed out after {timeout} seconds")
-
-            if self.channel_reply_data and self.channel_reply_data.get("copy_channel_reply"):
-                reply = self.channel_reply_data["copy_channel_reply"]
-                if reply.get("err"):
-                    raise Exception(f"CopyChannel failed: {reply['err']}")
-                return  # Success
-            else:
-                raise Exception("No copy_channel_reply received")
-
-        except Exception as e:
-            self.logger.error(f"Error copying channel: {e}")
-            raise
