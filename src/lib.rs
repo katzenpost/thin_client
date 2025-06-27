@@ -909,11 +909,11 @@ pub fn find_services(capability: &str, doc: &BTreeMap<Value, Value>) -> Vec<Serv
         let Ok(mynode) = from_slice::<BTreeMap<Value, Value>>(node_bytes) else { continue };
 
         // 🔍 Print available capabilities in each node
-        if let Some(Value::Map(details)) = mynode.get(&Value::Text("omitempty".to_string())) {
+        if let Some(Value::Map(details)) = mynode.get(&Value::Text("Kaetzchen".to_string())) {
             println!("🔍 Available Capabilities: {:?}", details.keys());
         }
 
-        let Some(Value::Map(details)) = mynode.get(&Value::Text("omitempty".to_string())) else { continue };
+        let Some(Value::Map(details)) = mynode.get(&Value::Text("Kaetzchen".to_string())) else { continue };
         let Some(Value::Map(service)) = details.get(&Value::Text(capability.to_string())) else { continue };
         let Some(Value::Text(endpoint)) = service.get(&Value::Text("endpoint".to_string())) else { continue };
 
