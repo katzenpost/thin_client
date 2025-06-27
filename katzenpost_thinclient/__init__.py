@@ -68,84 +68,8 @@ __all__ = [
     'ThinClient',
     'Config',
     'ServiceDescriptor',
-    'find_services',
-    'extract_message_from_padded_payload',
-    'create_padded_payload'
+    'find_services'
 ]
-
-
-def extract_message_from_padded_payload(padded_payload):
-    """
-    Extract the original message from a padded payload using Katzenpost padding scheme.
-
-    The padding scheme uses a 4-byte big-endian length prefix followed by the message
-    and then zero padding to fill the target size.
-
-    Format: [4-byte length prefix][message][padding]
-
-    Args:
-        padded_payload (bytes): The padded payload to extract from
-
-    Returns:
-        bytes: The original message
-
-    Raises:
-        ValueError: If the payload is invalid or too short
-    """
-    LENGTH_PREFIX_SIZE = 4
-
-    if len(padded_payload) < LENGTH_PREFIX_SIZE:
-        raise ValueError(f"Padded payload too short: {len(padded_payload)} bytes, need at least {LENGTH_PREFIX_SIZE}")
-
-    # Read the length prefix (big-endian)
-    message_length = struct.unpack('>I', padded_payload[0:4])[0]
-
-    if int(message_length) > len(padded_payload) - LENGTH_PREFIX_SIZE:
-        raise ValueError(f"Invalid message length {message_length}, padded payload only has {len(padded_payload) - LENGTH_PREFIX_SIZE} bytes after prefix")
-
-    # Extract the message
-    message = padded_payload[4:4+message_length]
-
-    return message
-
-
-def create_padded_payload(message, target_size):
-    """
-    Create a padded payload using Katzenpost padding scheme.
-
-    The padding scheme uses a 4-byte big-endian length prefix followed by the message
-    and then zero padding to fill the target size.
-
-    Format: [4-byte length prefix][message][padding]
-
-    Args:
-        message (bytes): The message to pad
-        target_size (int): The target size for the padded payload
-
-    Returns:
-        bytes: The padded payload
-
-    Raises:
-        ValueError: If the message is too large for the target size
-    """
-    LENGTH_PREFIX_SIZE = 4
-
-    if len(message) + LENGTH_PREFIX_SIZE > target_size:
-        raise ValueError(f"Message too large: {len(message)} bytes + {LENGTH_PREFIX_SIZE} prefix > {target_size} target size")
-
-    # Create the padded payload
-    padded_payload = bytearray(target_size)
-
-    # Write the length prefix (big-endian)
-    struct.pack_into('>I', padded_payload, 0, len(message))
-
-    # Copy the message data
-    padded_payload[4:4+len(message)] = message
-
-    # The rest is zero padding (already initialized to zero)
-
-    return bytes(padded_payload)
-
 
 # SURB_ID_SIZE is the size in bytes for the
 # Katzenpost SURB ID.
