@@ -160,6 +160,9 @@
 
 pub mod error;
 
+#[cfg(test)]
+mod test_channel_api;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::fs;
@@ -679,11 +682,11 @@ impl ThinClient {
     }
 
     /// Creates a new pigeonhole write channel and returns the channel ID, read capability, write capability, and current message index.
-    pub async fn create_write_channel(&self, box_owner_cap: Option<&BTreeMap<Value, Value>>, message_box_index: Option<&BTreeMap<Value, Value>>) -> Result<(Vec<u8>, BTreeMap<Value, Value>, BTreeMap<Value, Value>, BTreeMap<Value, Value>), ThinClientError> {
+    pub async fn create_write_channel(&self, write_cap: Option<&BTreeMap<Value, Value>>, message_box_index: Option<&BTreeMap<Value, Value>>) -> Result<(u16, BTreeMap<Value, Value>, BTreeMap<Value, Value>, BTreeMap<Value, Value>), ThinClientError> {
         let mut create_write_channel = BTreeMap::new();
 
-        if let Some(cap) = box_owner_cap {
-            create_write_channel.insert(Value::Text("box_owner_cap".to_string()), Value::Map(cap.clone()));
+        if let Some(cap) = write_cap {
+            create_write_channel.insert(Value::Text("write_cap".to_string()), Value::Map(cap.clone()));
         }
 
         if let Some(index) = message_box_index {
@@ -705,22 +708,22 @@ impl ThinClient {
                 }
 
                 let channel_id = reply.get(&Value::Text("channel_id".to_string()))
-                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u16), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
 
                 let read_cap = reply.get(&Value::Text("read_cap".to_string()))
                     .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing read_cap in response".to_string()))?;
 
-                let box_owner_cap = reply.get(&Value::Text("box_owner_cap".to_string()))
+                let write_cap = reply.get(&Value::Text("write_cap".to_string()))
                     .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
-                    .ok_or_else(|| ThinClientError::Other("Missing box_owner_cap in response".to_string()))?;
+                    .ok_or_else(|| ThinClientError::Other("Missing write_cap in response".to_string()))?;
 
                 let next_message_index = reply.get(&Value::Text("next_message_index".to_string()))
                     .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing next_message_index in response".to_string()))?;
 
-                return Ok((channel_id, read_cap, box_owner_cap, next_message_index));
+                return Ok((channel_id, read_cap, write_cap, next_message_index));
             }
 
             // Handle other events but continue waiting for our reply
@@ -730,13 +733,13 @@ impl ThinClient {
 
     /// Creates a new pigeonhole channel and returns the channel ID and read capability.
     /// This is a convenience method that calls create_write_channel with nil parameters.
-    pub async fn create_channel(&self) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
+    pub async fn create_channel(&self) -> Result<(u16, BTreeMap<Value, Value>), ThinClientError> {
         let (channel_id, read_cap, _, _) = self.create_write_channel(None, None).await?;
         Ok((channel_id, read_cap))
     }
 
     /// Creates a read channel from a read capability.
-    pub async fn create_read_channel(&self, read_cap: &BTreeMap<Value, Value>, message_box_index: Option<&BTreeMap<Value, Value>>) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
+    pub async fn create_read_channel(&self, read_cap: &BTreeMap<Value, Value>, message_box_index: Option<&BTreeMap<Value, Value>>) -> Result<(u16, BTreeMap<Value, Value>), ThinClientError> {
         let mut create_read_channel = BTreeMap::new();
         create_read_channel.insert(Value::Text("read_cap".to_string()), Value::Map(read_cap.clone()));
 
@@ -759,7 +762,7 @@ impl ThinClient {
                 }
 
                 let channel_id = reply.get(&Value::Text("channel_id".to_string()))
-                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u16), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
 
                 let next_message_index = reply.get(&Value::Text("next_message_index".to_string()))
@@ -776,9 +779,9 @@ impl ThinClient {
 
     /// Prepares a write message for a pigeonhole channel and returns the SendMessage payload and next MessageBoxIndex.
     /// The thin client must then call send_message with the returned payload to actually send the message.
-    pub async fn write_channel(&self, channel_id: &[u8], payload: &[u8]) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
+    pub async fn write_channel(&self, channel_id: u16, payload: &[u8]) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
         let mut write_channel = BTreeMap::new();
-        write_channel.insert(Value::Text("channel_id".to_string()), Value::Bytes(channel_id.to_vec()));
+        write_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
         write_channel.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
 
         let mut request = BTreeMap::new();
@@ -813,7 +816,7 @@ impl ThinClient {
 
     /// Prepares a read query for a pigeonhole channel and returns the SendMessage payload and next MessageBoxIndex.
     /// The thin client must then call send_message with the returned payload to actually send the query.
-    pub async fn read_channel(&self, channel_id: &[u8], message_id: Option<&[u8]>) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
+    pub async fn read_channel(&self, channel_id: u16, message_id: Option<&[u8]>) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
         let msg_id = match message_id {
             Some(id) => id.to_vec(),
             None => {
@@ -825,7 +828,7 @@ impl ThinClient {
         };
 
         let mut read_channel = BTreeMap::new();
-        read_channel.insert(Value::Text("channel_id".to_string()), Value::Bytes(channel_id.to_vec()));
+        read_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
         read_channel.insert(Value::Text("id".to_string()), Value::Bytes(msg_id));
 
         let mut request = BTreeMap::new();
@@ -859,13 +862,13 @@ impl ThinClient {
     }
 
     /// Copies data from a pigeonhole channel to replicas via courier.
-    pub async fn copy_channel(&self, channel_id: &[u8]) -> Result<(), ThinClientError> {
+    pub async fn copy_channel(&self, channel_id: u16) -> Result<(), ThinClientError> {
         let mut msg_id = vec![0u8; 16];
         use rand::RngCore;
         rand::thread_rng().fill_bytes(&mut msg_id);
 
         let mut copy_channel = BTreeMap::new();
-        copy_channel.insert(Value::Text("channel_id".to_string()), Value::Bytes(channel_id.to_vec()));
+        copy_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
         copy_channel.insert(Value::Text("id".to_string()), Value::Bytes(msg_id));
 
         let mut request = BTreeMap::new();
