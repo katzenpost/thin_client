@@ -41,7 +41,7 @@ https://github.com/katzenpost/website/blob/main/content/en/docs/client_integrati
 Install katzenpost using pip:
 
 ```bash
-pip install katzenpost_thiclient
+pip install katzenpost_thinclient
 ```
 
 or
