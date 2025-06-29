@@ -96,7 +96,6 @@ async def send_query_and_wait(client, channel_id, message_payload, node_hash, qu
         # Wait for reply with timeout
         try:
             await asyncio.wait_for(client.await_message_reply(), timeout=reply_timeout)
-            print(f"SUCCESS: Received reply on attempt {attempt}")
 
             # Check if we got a new reply
             if len(state.bob_replies) > initial_reply_count:
