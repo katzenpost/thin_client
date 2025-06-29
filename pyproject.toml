@@ -31,9 +31,13 @@ files = ["requirements.txt"]
 exclude = ["venv_test"]
 
 [project.optional-dependencies]
+dev = [
+    "mypy",
+    "types-toml"
+]
 test = [
     "pytest",
     "pytest-cov",
-    "pytest-asyncio"
+    "pytest-asyncio",
 ]
 

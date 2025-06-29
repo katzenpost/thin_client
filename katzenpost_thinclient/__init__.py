@@ -63,6 +63,10 @@ import pprintpp
 import toml
 import hashlib
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+  from typing import Tuple, Any, Dict, List, Callable
+
 # Export public API
 __all__ = [
     'ThinClient',
@@ -111,23 +115,23 @@ class Geometry:
         KEMName (str): Name of the KEM scheme (if used). Mutually exclusive with NIKEName.
     """
 
-    def __init__(self, **kwargs):
-        self.PacketLength = kwargs.get('PacketLength')
-        self.NrHops = kwargs.get('NrHops')
-        self.HeaderLength = kwargs.get('HeaderLength')
-        self.RoutingInfoLength = kwargs.get('RoutingInfoLength')
-        self.PerHopRoutingInfoLength = kwargs.get('PerHopRoutingInfoLength')
-        self.SURBLength = kwargs.get('SURBLength')
-        self.SphinxPlaintextHeaderLength = kwargs.get('SphinxPlaintextHeaderLength')
-        self.PayloadTagLength = kwargs.get('PayloadTagLength')
-        self.ForwardPayloadLength = kwargs.get('ForwardPayloadLength')
-        self.UserForwardPayloadLength = kwargs.get('UserForwardPayloadLength')
-        self.NextNodeHopLength = kwargs.get('NextNodeHopLength')
-        self.SPRPKeyMaterialLength = kwargs.get('SPRPKeyMaterialLength')
-        self.NIKEName = kwargs.get('NIKEName', "")
-        self.KEMName = kwargs.get('KEMName', "")
+    def __init__(self, *, PacketLength:int, NrHops:int, HeaderLength:int, RoutingInfoLength:int, PerHopRoutingInfoLength:int, SURBLength:int, SphinxPlaintextHeaderLength:int, PayloadTagLength:int, ForwardPayloadLength:int, UserForwardPayloadLength:int, NextNodeHopLength:int, SPRPKeyMaterialLength:int, NIKEName:str='', KEMName:str='') -> None:
+        self.PacketLength = PacketLength
+        self.NrHops = NrHops
+        self.HeaderLength = HeaderLength
+        self.RoutingInfoLength = RoutingInfoLength
+        self.PerHopRoutingInfoLength = PerHopRoutingInfoLength
+        self.SURBLength = SURBLength
+        self.SphinxPlaintextHeaderLength = SphinxPlaintextHeaderLength
+        self.PayloadTagLength = PayloadTagLength
+        self.ForwardPayloadLength = ForwardPayloadLength
+        self.UserForwardPayloadLength = UserForwardPayloadLength
+        self.NextNodeHopLength = NextNodeHopLength
+        self.SPRPKeyMaterialLength = SPRPKeyMaterialLength
+        self.NIKEName = NIKEName
+        self.KEMName = KEMName
 
-    def __str__(self):
+    def __str__(self) -> str:
         return (
             f"PacketLength: {self.PacketLength}\n"
             f"NrHops: {self.NrHops}\n"
@@ -150,22 +154,25 @@ class ConfigFile:
     ConfigFile represents everything loaded from a TOML file:
     network, address, and geometry.
     """
-    def __init__(self, network, address, geometry):
-        self.network = network
-        self.address = address
-        self.geometry = geometry
+    def __init__(self, network:str, address:str, geometry:Geometry) -> None:
+        self.network : str = network
+        self.address : str = address
+        self.geometry : Geometry = geometry
 
     @classmethod
-    def load(cls, toml_path):
+    def load(cls, toml_path:str) -> "ConfigFile":
         with open(toml_path, 'r') as f:
             data = toml.load(f)
         network = data.get('Network')
+        assert isinstance(network, str)
         address = data.get('Address')
-        geometry_data = data.get('Geometry', {})
-        geometry = Geometry(**geometry_data)
+        assert isinstance(address, str)
+        geometry_data = data.get('SphinxGeometry')
+        assert isinstance(geometry_data, dict)
+        geometry : Geometry = Geometry(**geometry_data)
         return cls(network, address, geometry)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return (
             f"Network: {self.network}\n"
             f"Address: {self.address}\n"
@@ -173,7 +180,7 @@ class ConfigFile:
         )
 
 
-def pretty_print_obj(obj):
+def pretty_print_obj(obj: "Any") -> None:
     """
     Pretty-print a Python object using indentation.
 
@@ -186,7 +193,7 @@ def pretty_print_obj(obj):
     pp = pprintpp.PrettyPrinter(indent=4)
     pp.pprint(obj)
 
-def blake2_256_sum(data):
+def blake2_256_sum(data:bytes) -> bytes:
     return hashlib.blake2b(data, digest_size=32).digest()
 
 class ServiceDescriptor:
@@ -207,15 +214,15 @@ class ServiceDescriptor:
             where the provider ID is a 32-byte BLAKE2b hash of the IdentityKey.
     """
 
-    def __init__(self, recipient_queue_id, mix_descriptor):
+    def __init__(self, recipient_queue_id:bytes, mix_descriptor: "Dict[Any,Any]") -> None:
         self.recipient_queue_id = recipient_queue_id
         self.mix_descriptor = mix_descriptor
 
-    def to_destination(self):
+    def to_destination(self) -> "Tuple[bytes,bytes]":
         provider_id_hash = blake2_256_sum(self.mix_descriptor['IdentityKey'])
         return (provider_id_hash, self.recipient_queue_id)
 
-def find_services(capability, doc):
+def find_services(capability:str, doc:"Dict[str,Any]") -> "List[ServiceDescriptor]":
     """
     Search the PKI document for services supporting the specified capability.
 
@@ -254,11 +261,11 @@ def find_services(capability, doc):
 class Config:
     """Config is the configuration object for the ThinClient."""
 
-    def __init__(self, filepath,
-                 on_connection_status=None,
-                 on_new_pki_document=None,
-                 on_message_sent=None,
-                 on_message_reply=None):
+    def __init__(self, filepath:str,
+                 on_connection_status:"Callable|None"=None,
+                 on_new_pki_document:"Callable|None"=None,
+                 on_message_sent:"Callable|None"=None,
+                 on_message_reply:"Callable|None"=None) -> None:
         """
         Initialize the Config object.
 
@@ -281,19 +288,19 @@ class Config:
         self.on_message_sent = on_message_sent
         self.on_message_reply = on_message_reply
 
-    def handle_connection_status_event(self, event):
+    def handle_connection_status_event(self, event: asyncio.Event) -> None:
         if self.on_connection_status:
             self.on_connection_status(event)
 
-    def handle_new_pki_document_event(self, event):
+    def handle_new_pki_document_event(self, event: asyncio.Event) -> None:
         if self.on_new_pki_document:
             self.on_new_pki_document(event)
 
-    def handle_message_sent_event(self, event):
+    def handle_message_sent_event(self, event: asyncio.Event) -> None:
         if self.on_message_sent:
             self.on_message_sent(event)
 
-    def handle_message_reply_event(self, event):
+    def handle_message_reply_event(self, event: asyncio.Event) -> None:
         if self.on_message_reply:
             self.on_message_reply(event)
 
@@ -312,7 +319,7 @@ class ThinClient:
     All cryptographic operations are handled by the daemon, not by this client.
     """
 
-    def __init__(self, config):
+    def __init__(self, config:Config) -> None:
         """
         Initialize the thin client with the given configuration.
 
@@ -322,14 +329,14 @@ class ThinClient:
         Raises:
             RuntimeError: If the network type is not recognized or config is incomplete.
         """
-        self.pki_doc = None
+        self.pki_doc : Dict[Any,Any] | None = None
         self.config = config
         self.reply_received_event = asyncio.Event()
         self.channel_reply_event = asyncio.Event()
-        self.channel_reply_data = None
+        self.channel_reply_data : Dict[Any,Any] | None = None
         # For handling async read channel responses with message ID correlation
-        self.pending_read_channels = {}  # message_id -> asyncio.Event
-        self.read_channel_responses = {}  # message_id -> payload
+        self.pending_read_channels : Dict[bytes,asyncio.Event] = {}  # message_id -> asyncio.Event
+        self.read_channel_responses : Dict[bytes,bytes] = {}  # message_id -> payload
         self.logger = logging.getLogger('thinclient')
         self.logger.setLevel(logging.DEBUG)
         handler = logging.StreamHandler(sys.stderr)
@@ -338,8 +345,8 @@ class ThinClient:
         if self.config.network is None:
             raise RuntimeError("config.network is None")
 
-        network = self.config.network.lower()
-
+        network: str = self.config.network.lower()
+        self.server_addr : str | Tuple[str,int]
         if network.lower().startswith("tcp"):
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             host, port_str = self.config.address.split(":")
@@ -368,7 +375,7 @@ class ThinClient:
         self.socket.setblocking(False)
 
 
-    async def start(self, loop):
+    async def start(self, loop:asyncio.AbstractEventLoop) -> None:
         """
         Start the thin client: establish connection to the daemon, read initial events,
         and begin the background event loop.
@@ -377,6 +384,7 @@ class ThinClient:
             loop (asyncio.AbstractEventLoop): The running asyncio event loop.
         """
         self.logger.debug("connecting to daemon")
+        server_addr : str | Tuple[str,int] = ''
 
         if self.config.network.lower().startswith("tcp"):
             host, port_str = self.config.address.split(":")
@@ -407,7 +415,7 @@ class ThinClient:
         self.logger.debug("starting read loop")
         self.task = loop.create_task(self.worker_loop(loop))
 
-    def get_config(self):
+    def get_config(self) -> Config:
         """
         Returns the current configuration object.
 
@@ -416,7 +424,7 @@ class ThinClient:
         """
         return self.config
         
-    def stop(self):
+    def stop(self) -> None:
         """
         Gracefully shut down the client and close its socket.
         """
@@ -424,7 +432,7 @@ class ThinClient:
         self.socket.close()
         self.task.cancel()
 
-    async def recv(self, loop):
+    async def recv(self, loop:asyncio.AbstractEventLoop) -> "Dict[Any,Any]":
         """
         Receive a CBOR-encoded message from the daemon.
 
@@ -448,7 +456,7 @@ class ThinClient:
         self.logger.debug(f"Received daemon response")
         return response
 
-    async def worker_loop(self, loop):
+    async def worker_loop(self, loop:asyncio.events.AbstractEventLoop) -> None:
         """
         Background task that listens for events and dispatches them.
         """
@@ -465,7 +473,7 @@ class ThinClient:
                 self.logger.error(f"Error reading from socket: {e}")
                 break
 
-    def parse_status(self, event):
+    def parse_status(self, event: "Dict[str,Any]") -> None:
         """
         Parse a connection status event and assert daemon connectivity.
         """
@@ -474,7 +482,7 @@ class ThinClient:
         assert event["is_connected"] == True
         self.logger.debug("parse status success")
 
-    def pki_document(self):
+    def pki_document(self) -> "Dict[str,Any] | None":
         """
         Retrieve the latest PKI document received.
 
@@ -482,19 +490,19 @@ class ThinClient:
             dict: Parsed CBOR PKI document.
         """
         return self.pki_doc
-        
-    def parse_pki_doc(self, event):
+
+    def parse_pki_doc(self, event: "Dict[str,Any]") -> None:
         """
         Parse and store a new PKI document received from the daemon.
         """
         self.logger.debug("parse pki doc")
-        assert event is not None        
+        assert event is not None
         assert event["payload"] is not None
         raw_pki_doc = cbor2.loads(event["payload"])
         self.pki_doc = raw_pki_doc
         self.logger.debug("parse pki doc success")
 
-    def get_services(self, capability):
+    def get_services(self, capability:str) -> "List[ServiceDescriptor]":
         """
         Look up all services in the PKI that advertise a given capability.
 
@@ -502,7 +510,7 @@ class ThinClient:
             capability (str): Capability name (e.g., "echo").
 
         Returns:
-            list[ServiceDescriptor]: Matching services.
+            list[ServiceDescriptor]: Matching services.xsy
 
         Raises:
             Exception: If PKI is missing or no services match.
@@ -515,7 +523,7 @@ class ThinClient:
             raise Exception("service not found in pki doc")
         return descriptors
 
-    def get_service(self, service_name):
+    def get_service(self, service_name:str) -> ServiceDescriptor:
         """
         Select a random service matching a capability.
 
@@ -528,7 +536,7 @@ class ThinClient:
         service_descriptors = self.get_services(service_name)
         return random.choice(service_descriptors)
 
-    def new_message_id(self):
+    def new_message_id(self) -> bytes:
         """
         Generate a new 16-byte message ID for use with ARQ sends.
 
@@ -537,7 +545,7 @@ class ThinClient:
         """
         return os.urandom(MESSAGE_ID_SIZE)
 
-    def new_surb_id(self):
+    def new_surb_id(self) -> bytes:
         """
         Generate a new 16-byte SURB ID for reply-capable sends.
 
@@ -546,7 +554,7 @@ class ThinClient:
         """
         return os.urandom(SURB_ID_SIZE)
 
-    def handle_response(self, response):
+    def handle_response(self, response: "Dict[str,Any]") -> None:
         """
         Dispatch a parsed CBOR response to the appropriate handler or callback.
         """
@@ -606,7 +614,7 @@ class ThinClient:
 
 
 
-    def send_message_without_reply(self, payload, dest_node, dest_queue):
+    def send_message_without_reply(self, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
         """
         Send a fire-and-forget message with no SURB or reply handling.
 
@@ -642,7 +650,7 @@ class ThinClient:
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
 
-    def send_message(self, surb_id, payload, dest_node, dest_queue):
+    def send_message(self, surb_id:bytes, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
         """
         Send a message using a SURB to allow the recipient to send a reply.
 
@@ -679,7 +687,7 @@ class ThinClient:
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
 
-    def send_channel_query(self, channel_id, payload, dest_node, dest_queue):
+    def send_channel_query(self, channel_id:int, payload:bytes, dest_node:bytes, dest_queue:bytes) -> None:
         """
         Send a channel query (prepared by write_channel or read_channel) to the mixnet.
         This method sets the ChannelID inside the Request for proper channel handling.
@@ -722,7 +730,7 @@ class ThinClient:
             self.logger.error(f"Error sending channel query: {e}")
             raise
 
-    def send_reliable_message(self, message_id, payload, dest_node, dest_queue):
+    def send_reliable_message(self, message_id:bytes, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
         """
         Send a reliable message using an ARQ mechanism and message ID.
 
@@ -759,7 +767,7 @@ class ThinClient:
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
 
-    def pretty_print_pki_doc(self, doc):
+    def pretty_print_pki_doc(self, doc: "Dict[str,Any]") -> None:
         """
         Pretty-print a parsed PKI document with fully decoded CBOR nodes.
 
@@ -794,7 +802,7 @@ class ThinClient:
         new_doc['Topology'] = topology
         pretty_print_obj(new_doc)
 
-    async def await_message_reply(self):
+    async def await_message_reply(self) -> None:
         """
         Asynchronously block until a reply is received from the daemon.
         """
@@ -802,7 +810,7 @@ class ThinClient:
 
     # Channel API methods
 
-    async def create_write_channel(self, write_cap=None, message_box_index=None):
+    async def create_write_channel(self, write_cap: "bytes|None "=None, message_box_index: "bytes|None"=None) -> "Tuple[bytes,bytes,bytes,bytes]":
         """
         Create a new pigeonhole write channel.
 
@@ -859,7 +867,7 @@ class ThinClient:
             self.logger.error(f"Error creating write channel: {e}")
             raise
 
-    async def create_channel(self):
+    async def create_channel(self) -> "Tuple[bytes,bytes]":
         """
         Create a new pigeonhole channel.
         This is a convenience method that calls create_write_channel with no parameters.
@@ -873,7 +881,7 @@ class ThinClient:
         channel_id, read_cap, _, _ = await self.create_write_channel()
         return channel_id, read_cap
 
-    async def create_read_channel(self, read_cap, message_box_index=None):
+    async def create_read_channel(self, read_cap:bytes, message_box_index: "bytes|None"=None) -> "Tuple[bytes,bytes]":
         """
         Create a read channel from a read capability.
 
@@ -927,7 +935,7 @@ class ThinClient:
             self.logger.error(f"Error creating read channel: {e}")
             raise
 
-    async def write_channel(self, channel_id, payload):
+    async def write_channel(self, channel_id: bytes, payload: "bytes|str") -> "Tuple[bytes,bytes]":
         """
         Prepare a write message for a pigeonhole channel and return the SendMessage payload and next MessageBoxIndex.
         The thin client must then call send_message with the returned payload to actually send the message.
@@ -981,7 +989,7 @@ class ThinClient:
             self.logger.error(f"Error preparing write to channel: {e}")
             raise
 
-    async def read_channel(self, channel_id, message_id=None):
+    async def read_channel(self, channel_id:bytes, message_id:"bytes|None"=None) -> "Tuple[bytes,bytes]":
         """
         Prepare a read query for a pigeonhole channel and return the SendMessage payload and next MessageBoxIndex.
         The thin client must then call send_message with the returned payload to actually send the query.
