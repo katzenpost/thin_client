@@ -989,19 +989,21 @@ class ThinClient:
             self.logger.error(f"Error preparing write to channel: {e}")
             raise
 
-    async def read_channel(self, channel_id:bytes, message_id:"bytes|None"=None) -> "Tuple[bytes,bytes]":
+    async def read_channel(self, channel_id:bytes, message_id:"bytes|None"=None, reply_index:"int|None"=None) -> "Tuple[bytes,bytes,int|None]":
         """
-        Prepare a read query for a pigeonhole channel and return the SendMessage payload and next MessageBoxIndex.
+        Prepare a read query for a pigeonhole channel and return the SendMessage payload, next MessageBoxIndex, and used ReplyIndex.
         The thin client must then call send_message with the returned payload to actually send the query.
 
         Args:
             channel_id (int): The 16-bit channel ID.
             message_id (bytes, optional): The 16-byte message ID for correlation. If None, generates a new one.
+            reply_index (int, optional): The index of the reply to return. If None, defaults to 0.
 
         Returns:
-            tuple: (send_message_payload, next_message_index) where:
+            tuple: (send_message_payload, next_message_index, used_reply_index) where:
                 - send_message_payload is the prepared payload for send_message
                 - next_message_index is the position to use after successful read
+                - used_reply_index is the reply index that was used (or None if not specified)
 
         Raises:
             Exception: If the read preparation fails.
@@ -1009,11 +1011,16 @@ class ThinClient:
         if message_id is None:
             message_id = self.new_message_id()
 
+        request_data = {
+            "channel_id": channel_id,
+            "message_id": message_id
+        }
+
+        if reply_index is not None:
+            request_data["reply_index"] = reply_index
+
         request = {
-            "read_channel": {
-                "channel_id": channel_id,
-                "id": message_id
-            }
+            "read_channel": request_data
         }
 
         cbor_request = cbor2.dumps(request)
@@ -1035,11 +1042,43 @@ class ThinClient:
                 reply = self.channel_reply_data["read_channel_reply"]
                 if reply.get("err"):
                     raise Exception(f"ReadChannel failed: {reply['err']}")
-                return reply["send_message_payload"], reply["next_message_index"]
+
+                used_reply_index = reply.get("reply_index")
+                return reply["send_message_payload"], reply["next_message_index"], used_reply_index
             else:
                 raise Exception("No read_channel_reply received")
 
         except Exception as e:
             self.logger.error(f"Error preparing read from channel: {e}")
+            raise
+
+    async def close_channel(self, channel_id: int) -> None:
+        """
+        Close a pigeonhole channel and clean up its resources.
+        This helps avoid running out of channel IDs by properly releasing them.
+        This operation is infallible - it sends the close request and returns immediately.
+
+        Args:
+            channel_id (int): The 16-bit channel ID to close.
+
+        Raises:
+            Exception: If the socket send operation fails.
+        """
+        request = {
+            "close_channel": {
+                "channel_id": channel_id
+            }
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            # CloseChannel is infallible - fire and forget, no reply expected
+            self.socket.send(length_prefixed_request)
+            self.logger.info(f"CloseChannel request sent for channel {channel_id}.")
+        except Exception as e:
+            self.logger.error(f"Error sending close channel request: {e}")
             raise
 

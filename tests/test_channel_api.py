@@ -289,10 +289,11 @@ async def test_docker_courier_service_new_thinclient_api():
         # Bob reads message
         print("Bob: Reading message")
         message_id = bob_client.new_message_id()
-        read_payload, bob_next_index = await bob_client.read_channel(bob_channel_id, message_id)
+        read_payload, bob_next_index, used_reply_index = await bob_client.read_channel(bob_channel_id, message_id)
         assert read_payload is not None
         assert len(read_payload) > 0
         print(f"Bob: Generated read payload ({len(read_payload)} bytes)")
+        print(f"Bob: Used reply index: {used_reply_index}")
         
         # Bob sends read query and waits for reply using helper function (like Go sendQueryAndWait)
         print("Bob: Sending read query and waiting for reply...")
@@ -315,6 +316,15 @@ async def test_docker_courier_service_new_thinclient_api():
         print(f"Received message: {received_message}")
 
         assert received_message == original_message, f"Bob should receive the original message. Expected: {original_message}, Got: {received_message}"
+
+        # Test close_channel functionality
+        print("Alice: Closing write channel")
+        await alice_client.close_channel(alice_channel_id)
+        print(f"Alice: Closed write channel {alice_channel_id}")
+
+        print("Bob: Closing read channel")
+        await bob_client.close_channel(bob_channel_id)
+        print(f"Bob: Closed read channel {bob_channel_id}")
 
         print("✅ Test completed successfully - message sent and received via channel API!")
         

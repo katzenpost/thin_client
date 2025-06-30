@@ -30,9 +30,13 @@ mod tests {
         // Test write_channel return type
         let _write_result: (Vec<u8>, BTreeMap<Value, Value>) = (payload.clone(), message_box_index.clone());
         
-        // Test read_channel return type
-        let _read_result: (Vec<u8>, BTreeMap<Value, Value>) = (payload, message_box_index);
-        
+        // Test read_channel return type (now includes optional reply_index)
+        let reply_index: Option<u8> = Some(0);
+        let _read_result: (Vec<u8>, BTreeMap<Value, Value>, Option<u8>) = (payload, message_box_index, reply_index);
+
+        // Test close_channel return type
+        let _close_result: () = ();
+
         // Test copy_channel return type
         let _copy_result: () = ();
         

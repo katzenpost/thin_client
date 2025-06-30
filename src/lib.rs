@@ -814,9 +814,9 @@ impl ThinClient {
         }
     }
 
-    /// Prepares a read query for a pigeonhole channel and returns the SendMessage payload and next MessageBoxIndex.
+    /// Prepares a read query for a pigeonhole channel and returns the SendMessage payload, next MessageBoxIndex, and used ReplyIndex.
     /// The thin client must then call send_message with the returned payload to actually send the query.
-    pub async fn read_channel(&self, channel_id: u16, message_id: Option<&[u8]>) -> Result<(Vec<u8>, BTreeMap<Value, Value>), ThinClientError> {
+    pub async fn read_channel(&self, channel_id: u16, message_id: Option<&[u8]>, reply_index: Option<u8>) -> Result<(Vec<u8>, BTreeMap<Value, Value>, Option<u8>), ThinClientError> {
         let msg_id = match message_id {
             Some(id) => id.to_vec(),
             None => {
@@ -829,7 +829,11 @@ impl ThinClient {
 
         let mut read_channel = BTreeMap::new();
         read_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
-        read_channel.insert(Value::Text("id".to_string()), Value::Bytes(msg_id));
+        read_channel.insert(Value::Text("message_id".to_string()), Value::Bytes(msg_id));
+
+        if let Some(idx) = reply_index {
+            read_channel.insert(Value::Text("reply_index".to_string()), Value::Integer(idx.into()));
+        }
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("read_channel".to_string()), Value::Map(read_channel));
@@ -853,12 +857,29 @@ impl ThinClient {
                     .and_then(|v| match v { Value::Map(m) => Some(m.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing next_message_index in response".to_string()))?;
 
-                return Ok((send_message_payload, next_message_index));
+                let used_reply_index = reply.get(&Value::Text("reply_index".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u8), _ => None });
+
+                return Ok((send_message_payload, next_message_index, used_reply_index));
             }
 
             // Handle other events but continue waiting for our reply
             self.handle_response(response).await;
         }
+    }
+
+    /// Closes a pigeonhole channel and cleans up its resources.
+    /// This helps avoid running out of channel IDs by properly releasing them.
+    /// This operation is infallible - it sends the close request and returns immediately.
+    pub async fn close_channel(&self, channel_id: u16) -> Result<(), ThinClientError> {
+        let mut close_channel = BTreeMap::new();
+        close_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("close_channel".to_string()), Value::Map(close_channel));
+
+        // CloseChannel is infallible - fire and forget, no reply expected
+        self.send_cbor_request(request).await
     }
 
     /// Copies data from a pigeonhole channel to replicas via courier.
