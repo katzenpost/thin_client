@@ -1,6 +1,6 @@
 [project]
 name = "katzenpost_thinclient"
-version = "0.0.6"
+version = "0.0.7"
 dynamic = ["dependencies"]
 authors = [
   { name="David Stainton", email="dstainton415@gmail.com" },
