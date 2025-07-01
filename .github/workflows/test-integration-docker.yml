@@ -69,15 +69,18 @@ jobs:
 
           mkdir -p testdata
 
-          # Try to find the correct client config file
+          # Try to find the correct client config file using absolute paths
           CLIENT_CONFIG=""
           if [ -f "../katzenpost/docker/voting_mixnet/client2/client.toml" ]; then
-            CLIENT_CONFIG="../katzenpost/docker/voting_mixnet/client2/client.toml"
+            CLIENT_CONFIG="$(realpath ../katzenpost/docker/voting_mixnet/client2/client.toml)"
           elif [ -f "../katzenpost/docker/voting_mixnet/client/client.toml" ]; then
-            CLIENT_CONFIG="../katzenpost/docker/voting_mixnet/client/client.toml"
+            CLIENT_CONFIG="$(realpath ../katzenpost/docker/voting_mixnet/client/client.toml)"
           else
             echo "=== Searching for any client.toml file ==="
             CLIENT_CONFIG=$(find ../katzenpost/docker/ -name "client.toml" -type f | head -1)
+            if [ -n "$CLIENT_CONFIG" ]; then
+              CLIENT_CONFIG="$(realpath $CLIENT_CONFIG)"
+            fi
           fi
 
           if [ -n "$CLIENT_CONFIG" ] && [ -f "$CLIENT_CONFIG" ]; then
@@ -87,6 +90,8 @@ jobs:
             ls -l testdata/thinclient.toml
             echo "=== Checking symlink target exists ==="
             ls -l "$CLIENT_CONFIG"
+            echo "=== Testing symlink can be read ==="
+            cat testdata/thinclient.toml | head -5
           else
             echo "=== ERROR: No client config file found ==="
             exit 1
