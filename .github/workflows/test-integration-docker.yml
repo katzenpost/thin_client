@@ -1,0 +1,58 @@
+name: Integration Tests with Docker Mixnet
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-integration-docker:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout thinclient repository
+        uses: actions/checkout@v4
+        with:
+          path: thinclient
+
+      - name: Checkout katzenpost repository  
+        uses: actions/checkout@v4
+        with:
+          repository: katzenpost/katzenpost
+          path: katzenpost
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install thinclient dependencies
+        run: |
+          cd thinclient
+          python -m pip install --upgrade pip
+          pip install -e .[test]
+
+      - name: Create symlink for thinclient config
+        run: |
+          cd thinclient
+          mkdir -p testdata
+          ln -sf ../katzenpost/docker/voting_mixnet/client2/client.toml testdata/thinclient.toml
+
+      - name: Start Docker mixnet and wait for consensus
+        run: |
+          cd katzenpost/docker
+          make start wait
+          sleep 5
+          make run-ping
+
+      - name: Run integration tests
+        run: |
+          cd thinclient
+          python -m pytest tests/test_channel_api.py -vvv --tb=long -m integration
+
+      - name: Stop Docker mixnet
+        if: always()
+        run: |
+          cd katzenpost/docker
+          make stop
