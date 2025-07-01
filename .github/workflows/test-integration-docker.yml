@@ -55,19 +55,22 @@ jobs:
       - name: Sleep for a few seconds to allow the mixnet to fully start
         run: sleep 5
 
-      - name: Create symlink for thinclient config
+      - name: Verify mixnet config exists and create symlink
         run: |
+          # Check if the config file was generated
+          ls -la katzenpost/docker/voting_mixnet/client2/
+          # Create symlink for thinclient config
           cd thinclient
           mkdir -p testdata
           ln -sf ../katzenpost/docker/voting_mixnet/client2/client.toml testdata/thinclient.toml
-          # Also create the path that conftest.py expects
-          mkdir -p client/testdata
-          ln -sf ../../katzenpost/docker/voting_mixnet/client2/client.toml client/testdata/thinclient.toml
+          # Verify the symlink works
+          ls -la testdata/
+          cat testdata/thinclient.toml | head -5
 
-      - name: Run integration tests
+      - name: Run all Python tests
         run: |
           cd thinclient
-          python -m pytest tests/ -vvv --tb=long -m integration
+          python -m pytest tests/ -vvv --tb=long --log-cli-level=DEBUG --log-cli-format="%(asctime)s [%(levelname)8s] %(name)s: %(message)s" --capture=no
 
       - name: Stop the mixnet
         if: always()
