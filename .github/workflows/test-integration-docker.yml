@@ -57,17 +57,17 @@ jobs:
 
       - name: Create symlink for thinclient config
         run: |
-          # Create symlink for thinclient config (mixnet configs should exist now)
           cd thinclient
+          echo "=== Current directory ==="
+          pwd
+          echo "=== Checking expected config path ==="
+          ls -l ../katzenpost/docker/voting_mixnet/client2/client.toml
+
           mkdir -p testdata
           ln -sf ../katzenpost/docker/voting_mixnet/client2/client.toml testdata/thinclient.toml
 
-          # Verify the symlink works
           echo "=== Verifying symlink ==="
-          ls -la testdata/
-          echo "=== Testing config file exists and is readable ==="
-          test -f testdata/thinclient.toml && echo "✅ Config file exists" || echo "❌ Config file missing"
-          test -r testdata/thinclient.toml && echo "✅ Config file readable" || echo "❌ Config file not readable"
+          ls -l testdata/thinclient.toml
 
       - name: Run all Python tests
         run: |
