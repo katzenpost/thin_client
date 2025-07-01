@@ -52,6 +52,9 @@ jobs:
         run: |
           cd katzenpost/docker && make start wait
 
+      - name: Brief pause to ensure mixnet is fully ready
+        run: sleep 5
+
       - name: Create symlink for thinclient config
         run: |
           cd thinclient
