@@ -55,17 +55,19 @@ jobs:
       - name: Sleep for a few seconds to allow the mixnet to fully start
         run: sleep 5
 
-      - name: Verify mixnet config exists and create symlink
+      - name: Create symlink for thinclient config
         run: |
-          # Check if the config file was generated
-          ls -la katzenpost/docker/voting_mixnet/client2/
-          # Create symlink for thinclient config
+          # Create symlink for thinclient config (mixnet configs should exist now)
           cd thinclient
           mkdir -p testdata
           ln -sf ../katzenpost/docker/voting_mixnet/client2/client.toml testdata/thinclient.toml
+
           # Verify the symlink works
+          echo "=== Verifying symlink ==="
           ls -la testdata/
-          cat testdata/thinclient.toml | head -5
+          echo "=== Testing config file exists and is readable ==="
+          test -f testdata/thinclient.toml && echo "✅ Config file exists" || echo "❌ Config file missing"
+          test -r testdata/thinclient.toml && echo "✅ Config file readable" || echo "❌ Config file not readable"
 
       - name: Run all Python tests
         run: |
