@@ -66,34 +66,36 @@ jobs:
           ls -la ../katzenpost/docker/voting_mixnet/ || echo "voting_mixnet directory not found"
           echo "=== Checking for client config files ==="
           find ../katzenpost/docker/ -name "*.toml" -type f | grep -i client || echo "No client config files found"
+          echo "=== Specifically looking for thinclient.toml files ==="
+          find ../katzenpost/docker/ -name "thinclient.toml" -type f
 
           mkdir -p testdata
 
-          # Try to find the correct client config file using absolute paths
-          CLIENT_CONFIG=""
-          if [ -f "../katzenpost/docker/voting_mixnet/client2/client.toml" ]; then
-            CLIENT_CONFIG="$(realpath ../katzenpost/docker/voting_mixnet/client2/client.toml)"
-          elif [ -f "../katzenpost/docker/voting_mixnet/client/client.toml" ]; then
-            CLIENT_CONFIG="$(realpath ../katzenpost/docker/voting_mixnet/client/client.toml)"
+          # Try to find the correct thinclient config file using absolute paths
+          THINCLIENT_CONFIG=""
+          if [ -f "../katzenpost/docker/voting_mixnet/client2/thinclient.toml" ]; then
+            THINCLIENT_CONFIG="$(realpath ../katzenpost/docker/voting_mixnet/client2/thinclient.toml)"
+          elif [ -f "../katzenpost/docker/voting_mixnet/client/thinclient.toml" ]; then
+            THINCLIENT_CONFIG="$(realpath ../katzenpost/docker/voting_mixnet/client/thinclient.toml)"
           else
-            echo "=== Searching for any client.toml file ==="
-            CLIENT_CONFIG=$(find ../katzenpost/docker/ -name "client.toml" -type f | head -1)
-            if [ -n "$CLIENT_CONFIG" ]; then
-              CLIENT_CONFIG="$(realpath $CLIENT_CONFIG)"
+            echo "=== Searching for any thinclient.toml file ==="
+            THINCLIENT_CONFIG=$(find ../katzenpost/docker/ -name "thinclient.toml" -type f | head -1)
+            if [ -n "$THINCLIENT_CONFIG" ]; then
+              THINCLIENT_CONFIG="$(realpath $THINCLIENT_CONFIG)"
             fi
           fi
 
-          if [ -n "$CLIENT_CONFIG" ] && [ -f "$CLIENT_CONFIG" ]; then
-            echo "=== Using client config: $CLIENT_CONFIG ==="
-            ln -sf "$CLIENT_CONFIG" testdata/thinclient.toml
+          if [ -n "$THINCLIENT_CONFIG" ] && [ -f "$THINCLIENT_CONFIG" ]; then
+            echo "=== Using thinclient config: $THINCLIENT_CONFIG ==="
+            ln -sf "$THINCLIENT_CONFIG" testdata/thinclient.toml
             echo "=== Verifying symlink ==="
             ls -l testdata/thinclient.toml
             echo "=== Checking symlink target exists ==="
-            ls -l "$CLIENT_CONFIG"
+            ls -l "$THINCLIENT_CONFIG"
             echo "=== Testing symlink can be read ==="
             cat testdata/thinclient.toml | head -5
           else
-            echo "=== ERROR: No client config file found ==="
+            echo "=== ERROR: No thinclient config file found ==="
             exit 1
           fi
 
