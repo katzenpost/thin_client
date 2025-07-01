@@ -1,0 +1,125 @@
+name: Integration Tests with Docker Mixnet
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-integration-docker:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout thinclient repository
+        uses: actions/checkout@v4
+        with:
+          path: thinclient
+
+      - name: Checkout katzenpost repository  
+        uses: actions/checkout@v4
+        with:
+          repository: katzenpost/katzenpost
+          path: katzenpost
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Configure podman socket
+        run: |
+          systemctl --user start podman.socket
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install thinclient dependencies
+        run: |
+          cd thinclient
+          python -m pip install --upgrade pip
+          pip install -e .[test]
+
+      - name: Build and start the mixnet
+        run: |
+          cd katzenpost/docker && make start wait
+
+      - name: Brief pause to ensure mixnet is fully ready
+        run: sleep 5
+
+      - name: Create symlink for thinclient config
+        run: |
+          cd thinclient
+          echo "=== Current directory ==="
+          pwd
+          echo "=== Checking katzenpost directory structure ==="
+          ls -la ../katzenpost/docker/
+          echo "=== Checking voting_mixnet directory ==="
+          ls -la ../katzenpost/docker/voting_mixnet/ || echo "voting_mixnet directory not found"
+          echo "=== Checking for client config files ==="
+          find ../katzenpost/docker/ -name "*.toml" -type f | grep -i client || echo "No client config files found"
+          echo "=== Specifically looking for thinclient.toml files ==="
+          find ../katzenpost/docker/ -name "thinclient.toml" -type f
+
+          mkdir -p testdata
+
+          # Try to find the correct thinclient config file using absolute paths
+          THINCLIENT_CONFIG=""
+          if [ -f "../katzenpost/docker/voting_mixnet/client2/thinclient.toml" ]; then
+            THINCLIENT_CONFIG="$(realpath ../katzenpost/docker/voting_mixnet/client2/thinclient.toml)"
+          elif [ -f "../katzenpost/docker/voting_mixnet/client/thinclient.toml" ]; then
+            THINCLIENT_CONFIG="$(realpath ../katzenpost/docker/voting_mixnet/client/thinclient.toml)"
+          else
+            echo "=== Searching for any thinclient.toml file ==="
+            THINCLIENT_CONFIG=$(find ../katzenpost/docker/ -name "thinclient.toml" -type f | head -1)
+            if [ -n "$THINCLIENT_CONFIG" ]; then
+              THINCLIENT_CONFIG="$(realpath $THINCLIENT_CONFIG)"
+            fi
+          fi
+
+          if [ -n "$THINCLIENT_CONFIG" ] && [ -f "$THINCLIENT_CONFIG" ]; then
+            echo "=== Using thinclient config: $THINCLIENT_CONFIG ==="
+            ln -sf "$THINCLIENT_CONFIG" testdata/thinclient.toml
+            echo "=== Verifying symlink ==="
+            ls -l testdata/thinclient.toml
+            echo "=== Checking symlink target exists ==="
+            ls -l "$THINCLIENT_CONFIG"
+            echo "=== Testing symlink can be read ==="
+            cat testdata/thinclient.toml | head -5
+          else
+            echo "=== ERROR: No thinclient config file found ==="
+            exit 1
+          fi
+
+      - name: Run all Python tests
+        run: |
+          cd thinclient
+          echo "=== Pre-test debugging ==="
+          pwd
+          echo "=== Checking testdata directory ==="
+          ls -la testdata/
+          echo "=== Checking config file content ==="
+          cat testdata/thinclient.toml | head -20
+          echo "=== Running tests ==="
+          python -m pytest tests/ -vvv --tb=long --log-cli-level=DEBUG --log-cli-format="%(asctime)s [%(levelname)8s] %(name)s: %(message)s" --capture=no
+
+      - name: Stop the mixnet
+        if: always()
+        run: |
+          cd katzenpost/docker && make stop
+
+      - name: Upload testnet state
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mixnet-${{ github.run_id }}-${{ github.job }}
+          path: |
+            katzenpost/docker/voting_mixnet/*/*.log
