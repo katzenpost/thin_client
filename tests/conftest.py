@@ -20,14 +20,7 @@ def get_config_path():
     """Get the path to the thinclient config file."""
     # Try multiple possible locations
     possible_paths = [
-        # Local testdata directory (for CI and unit tests)
         Path(__file__).parent.parent / "testdata" / "thinclient.toml",
-        # From tests directory
-        Path("..") / ".." / "katzenpost" / "docker" / "voting_mixnet" / "client2" / "thinclient.toml",
-        # From project root
-        Path("..") / "katzenpost" / "docker" / "voting_mixnet" / "client2" / "thinclient.toml",
-        # Absolute path fallback
-        Path("/home/human/code/katzenpost/docker/voting_mixnet/client2/thinclient.toml"),
     ]
 
     for path in possible_paths:
