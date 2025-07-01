@@ -60,11 +60,14 @@ jobs:
           cd thinclient
           mkdir -p testdata
           ln -sf ../katzenpost/docker/voting_mixnet/client2/client.toml testdata/thinclient.toml
+          # Also create the path that conftest.py expects
+          mkdir -p client/testdata
+          ln -sf ../../katzenpost/docker/voting_mixnet/client2/client.toml client/testdata/thinclient.toml
 
       - name: Run integration tests
         run: |
           cd thinclient
-          python -m pytest tests/test_channel_api.py -vvv --tb=long -m integration
+          python -m pytest tests/ -vvv --tb=long -m integration
 
       - name: Stop the mixnet
         if: always()
