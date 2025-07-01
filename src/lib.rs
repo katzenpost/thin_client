@@ -344,6 +344,7 @@ pub struct ThinClient {
     pki_doc: Arc<RwLock<Option<BTreeMap<Value, Value>>>>,
     worker_task: Mutex<Option<JoinHandle<()>>>,
     shutdown: Arc<AtomicBool>,
+    is_connected: Arc<AtomicBool>,
 }
 
 impl ThinClient {
@@ -361,6 +362,7 @@ impl ThinClient {
                     pki_doc: Arc::new(RwLock::new(None)),
                     worker_task: Mutex::new(None),
                     shutdown: Arc::new(AtomicBool::new(false)),
+                    is_connected: Arc::new(AtomicBool::new(false)),
 		})
             }
             "UNIX" => {
@@ -380,6 +382,7 @@ impl ThinClient {
                     pki_doc: Arc::new(RwLock::new(None)),
                     worker_task: Mutex::new(None),
                     shutdown: Arc::new(AtomicBool::new(false)),
+                    is_connected: Arc::new(AtomicBool::new(false)),
 		})
             }
 	    _ => {
@@ -414,6 +417,11 @@ impl ThinClient {
 	}
 
 	debug!("✅ ThinClient stopped.");
+    }
+
+    /// Returns true if the daemon is connected to the mixnet.
+    pub fn is_connected(&self) -> bool {
+        self.is_connected.load(Ordering::Relaxed)
     }
 
     /// Generates a new message ID.
@@ -496,8 +504,22 @@ impl ThinClient {
     
     fn parse_status(&self, event: &BTreeMap<Value, Value>) {
         debug!("🔍 Parsing connection status event...");
-        assert!(event.get(&Value::Text("is_connected".to_string())) == Some(&Value::Bool(true)), "❌ Connection status mismatch!");
-        debug!("✅ Connection status verified.");
+
+        let is_connected = event.get(&Value::Text("is_connected".to_string()))
+            .and_then(|v| match v {
+                Value::Bool(b) => Some(*b),
+                _ => None,
+            })
+            .unwrap_or(false);
+
+        // Update connection state
+        self.is_connected.store(is_connected, Ordering::Relaxed);
+
+        if is_connected {
+            debug!("✅ Daemon is connected to mixnet - full functionality available.");
+        } else {
+            debug!("📴 Daemon is not connected to mixnet - entering offline mode (channel operations will work).");
+        }
     }
 
     async fn parse_pki_doc(&self, event: &BTreeMap<Value, Value>) {
@@ -598,13 +620,17 @@ impl ThinClient {
     }
 
     /// Sends a message encapsulated in a Sphinx packet without any SURB.
-    /// No reply will be possible.
+    /// No reply will be possible. This method requires mixnet connectivity.
     pub async fn send_message_without_reply(
 	&self,
 	payload: &[u8],
 	dest_node: Vec<u8>,
 	dest_queue: Vec<u8>
     ) -> Result<(), ThinClientError> {
+        // Check if we're in offline mode
+        if !self.is_connected() {
+            return Err(ThinClientError::OfflineMode("cannot send message in offline mode - daemon not connected to mixnet".to_string()));
+        }
 	// Create the SendMessage structure
 	let mut send_message = BTreeMap::new();
 	send_message.insert(Value::Text("id".to_string()), Value::Null); // No ID for fire-and-forget messages
@@ -629,7 +655,7 @@ impl ThinClient {
     /// wait until the client daemon sends the message. Nor does it
     /// wait for a reply. The only blocking aspect to it's behavior is
     /// merely blocking until the client daemon receives our request
-    /// to send a message.
+    /// to send a message. This method requires mixnet connectivity.
     pub async fn send_message(
 	&self,
 	surb_id: Vec<u8>,
@@ -637,6 +663,10 @@ impl ThinClient {
 	dest_node: Vec<u8>,
 	dest_queue: Vec<u8>
     ) -> Result<(), ThinClientError> {
+        // Check if we're in offline mode
+        if !self.is_connected() {
+            return Err(ThinClientError::OfflineMode("cannot send message in offline mode - daemon not connected to mixnet".to_string()));
+        }
 	// Create the SendMessage structure
 	let mut send_message = BTreeMap::new();
 	send_message.insert(Value::Text("id".to_string()), Value::Null); // No ID for regular messages
@@ -657,7 +687,7 @@ impl ThinClient {
     /// destination queue ID and a message ID and reliably sends a message.
     /// This uses a simple ARQ to resend the message if a reply wasn't received.
     /// The given message ID will be used to identify the reply since a SURB ID
-    /// can only be used once.
+    /// can only be used once. This method requires mixnet connectivity.
     pub async fn send_reliable_message(
 	&self,
 	message_id: Vec<u8>,
@@ -665,6 +695,10 @@ impl ThinClient {
 	dest_node: Vec<u8>,
 	dest_queue: Vec<u8>
     ) -> Result<(), ThinClientError> {
+        // Check if we're in offline mode
+        if !self.is_connected() {
+            return Err(ThinClientError::OfflineMode("cannot send reliable message in offline mode - daemon not connected to mixnet".to_string()));
+        }
 	// Create the SendARQMessage structure
 	let mut send_arq_message = BTreeMap::new();
 	send_arq_message.insert(Value::Text("id".to_string()), Value::Bytes(message_id));

@@ -11,6 +11,7 @@ pub enum ThinClientError {
     ConnectError,
     MissingPkiDocument,
     ServiceNotFound,
+    OfflineMode(String),
     Other(String),
 }
 
@@ -22,6 +23,7 @@ impl fmt::Display for ThinClientError {
             ThinClientError::ConnectError => write!(f, "Connection error."),
             ThinClientError::MissingPkiDocument => write!(f, "Missing PKI document."),
             ThinClientError::ServiceNotFound => write!(f, "Service not found."),
+            ThinClientError::OfflineMode(msg) => write!(f, "Offline mode error: {}", msg),
             ThinClientError::Other(msg) => write!(f, "Error: {}", msg),
         }
     }

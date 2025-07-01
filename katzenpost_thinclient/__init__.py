@@ -337,6 +337,7 @@ class ThinClient:
         # For handling async read channel responses with message ID correlation
         self.pending_read_channels : Dict[bytes,asyncio.Event] = {}  # message_id -> asyncio.Event
         self.read_channel_responses : Dict[bytes,bytes] = {}  # message_id -> payload
+        self._is_connected : bool = False  # Track connection state
         self.logger = logging.getLogger('thinclient')
         self.logger.setLevel(logging.DEBUG)
         handler = logging.StreamHandler(sys.stderr)
@@ -423,6 +424,15 @@ class ThinClient:
             Config: The client configuration in use.
         """
         return self.config
+
+    def is_connected(self) -> bool:
+        """
+        Returns True if the daemon is connected to the mixnet.
+
+        Returns:
+            bool: True if connected, False if in offline mode.
+        """
+        return self._is_connected
         
     def stop(self) -> None:
         """
@@ -475,11 +485,18 @@ class ThinClient:
 
     def parse_status(self, event: "Dict[str,Any]") -> None:
         """
-        Parse a connection status event and assert daemon connectivity.
+        Parse a connection status event and update connection state.
         """
         self.logger.debug("parse status")
         assert event is not None
-        assert event["is_connected"] == True
+
+        self._is_connected = event.get("is_connected", False)
+
+        if self._is_connected:
+            self.logger.debug("Daemon is connected to mixnet - full functionality available")
+        else:
+            self.logger.info("Daemon is not connected to mixnet - entering offline mode (channel operations will work)")
+
         self.logger.debug("parse status success")
 
     def pki_document(self) -> "Dict[str,Any] | None":
@@ -617,12 +634,20 @@ class ThinClient:
     def send_message_without_reply(self, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
         """
         Send a fire-and-forget message with no SURB or reply handling.
+        This method requires mixnet connectivity.
 
         Args:
             payload (bytes or str): Message payload.
             dest_node (bytes): Destination node identity hash.
             dest_queue (bytes): Destination recipient queue ID.
+
+        Raises:
+            RuntimeError: If in offline mode (daemon not connected to mixnet).
         """
+        # Check if we're in offline mode
+        if not self._is_connected:
+            raise RuntimeError("cannot send message in offline mode - daemon not connected to mixnet")
+
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
 
@@ -653,13 +678,21 @@ class ThinClient:
     def send_message(self, surb_id:bytes, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
         """
         Send a message using a SURB to allow the recipient to send a reply.
+        This method requires mixnet connectivity.
 
         Args:
             surb_id (bytes): SURB identifier for reply correlation.
             payload (bytes or str): Message payload.
             dest_node (bytes): Destination node identity hash.
             dest_queue (bytes): Destination recipient queue ID.
+
+        Raises:
+            RuntimeError: If in offline mode (daemon not connected to mixnet).
         """
+        # Check if we're in offline mode
+        if not self._is_connected:
+            raise RuntimeError("cannot send message in offline mode - daemon not connected to mixnet")
+
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
 
@@ -691,13 +724,21 @@ class ThinClient:
         """
         Send a channel query (prepared by write_channel or read_channel) to the mixnet.
         This method sets the ChannelID inside the Request for proper channel handling.
+        This method requires mixnet connectivity.
 
         Args:
             channel_id (int): The 16-bit channel ID.
             payload (bytes): Channel query payload prepared by write_channel or read_channel.
             dest_node (bytes): Destination node identity hash.
             dest_queue (bytes): Destination recipient queue ID.
+
+        Raises:
+            RuntimeError: If in offline mode (daemon not connected to mixnet).
         """
+        # Check if we're in offline mode
+        if not self._is_connected:
+            raise RuntimeError("cannot send channel query in offline mode - daemon not connected to mixnet")
+
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
 
@@ -733,13 +774,21 @@ class ThinClient:
     def send_reliable_message(self, message_id:bytes, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
         """
         Send a reliable message using an ARQ mechanism and message ID.
+        This method requires mixnet connectivity.
 
         Args:
             message_id (bytes): Message ID for reply correlation.
             payload (bytes or str): Message payload.
             dest_node (bytes): Destination node identity hash.
             dest_queue (bytes): Destination recipient queue ID.
+
+        Raises:
+            RuntimeError: If in offline mode (daemon not connected to mixnet).
         """
+        # Check if we're in offline mode
+        if not self._is_connected:
+            raise RuntimeError("cannot send reliable message in offline mode - daemon not connected to mixnet")
+
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
 
