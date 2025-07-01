@@ -163,12 +163,17 @@ class ConfigFile:
     def load(cls, toml_path:str) -> "ConfigFile":
         with open(toml_path, 'r') as f:
             data = toml.load(f)
-        network = data.get('Network')
-        assert isinstance(network, str)
-        address = data.get('Address')
-        assert isinstance(address, str)
+
+        # Support both old format (Network/Address) and new format (ListenNetwork/ListenAddress)
+        network = data.get('Network') or data.get('ListenNetwork')
+        assert isinstance(network, str), f"Expected Network or ListenNetwork to be a string, got: {type(network)}"
+
+        address = data.get('Address') or data.get('ListenAddress')
+        assert isinstance(address, str), f"Expected Address or ListenAddress to be a string, got: {type(address)}"
+
         geometry_data = data.get('SphinxGeometry')
-        assert isinstance(geometry_data, dict)
+        assert isinstance(geometry_data, dict), f"Expected SphinxGeometry to be a dict, got: {type(geometry_data)}"
+
         geometry : Geometry = Geometry(**geometry_data)
         return cls(network, address, geometry)
 
