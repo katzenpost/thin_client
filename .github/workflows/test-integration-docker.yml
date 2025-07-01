@@ -22,6 +22,21 @@ jobs:
           repository: katzenpost/katzenpost
           path: katzenpost
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Configure podman socket
+        run: |
+          systemctl --user start podman.socket
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -33,26 +48,33 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[test]
 
+      - name: Build and start the mixnet
+        run: |
+          cd katzenpost/docker && make start wait
+
+      - name: Sleep for a few seconds to allow the mixnet to fully start
+        run: sleep 5
+
       - name: Create symlink for thinclient config
         run: |
           cd thinclient
           mkdir -p testdata
           ln -sf ../katzenpost/docker/voting_mixnet/client2/client.toml testdata/thinclient.toml
 
-      - name: Start Docker mixnet and wait for consensus
-        run: |
-          cd katzenpost/docker
-          make start wait
-          sleep 5
-          make run-ping
-
       - name: Run integration tests
         run: |
           cd thinclient
           python -m pytest tests/test_channel_api.py -vvv --tb=long -m integration
 
-      - name: Stop Docker mixnet
+      - name: Stop the mixnet
         if: always()
         run: |
-          cd katzenpost/docker
-          make stop
+          cd katzenpost/docker && make stop
+
+      - name: Upload testnet state
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mixnet-${{ github.run_id }}-${{ github.job }}
+          path: |
+            katzenpost/docker/voting_mixnet/*/*.log
