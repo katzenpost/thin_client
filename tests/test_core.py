@@ -24,9 +24,9 @@ async def test_thin_client_send_receive_integration_test():
     # Skip test if daemon is not available
     if not is_daemon_available():
         pytest.skip("Katzenpost client daemon not available")
+    from .conftest import get_config_path
 
-    katzenpost_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "katzenpost"))
-    config_path = os.path.join(katzenpost_root, "docker/voting_mixnet/client2/thinclient.toml")
+    config_path= get_config_path()
 
     assert os.path.exists(config_path), f"Missing config file: {config_path}"
 
