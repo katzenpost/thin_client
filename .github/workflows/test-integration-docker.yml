@@ -107,8 +107,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: workspace-${{ github.run_id }}
-          path: |
-            thinclient/
+          path: thinclient/
           retention-days: 1
 
       - name: Upload mixnet logs
@@ -138,15 +137,15 @@ jobs:
 
       - name: Install thinclient dependencies
         run: |
-          cd thinclient
           python -m pip install --upgrade pip
           pip install -e .[test]
 
       - name: Run core tests
         run: |
-          cd thinclient
           echo "=== Pre-test debugging ==="
           pwd
+          echo "=== Checking current directory contents ==="
+          ls -la
           echo "=== Checking testdata directory ==="
           ls -la testdata/
           echo "=== Checking config file content ==="
@@ -171,15 +170,15 @@ jobs:
 
       - name: Install thinclient dependencies
         run: |
-          cd thinclient
           python -m pip install --upgrade pip
           pip install -e .[test]
 
       - name: Run channel API tests
         run: |
-          cd thinclient
           echo "=== Pre-test debugging ==="
           pwd
+          echo "=== Checking current directory contents ==="
+          ls -la
           echo "=== Checking testdata directory ==="
           ls -la testdata/
           echo "=== Checking config file content ==="
