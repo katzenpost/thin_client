@@ -577,7 +577,7 @@ class ThinClient:
         """
         assert response is not None
 
-        if response.get("connection status event") is not None:
+        if response.get("connection_status_event") is not None:
             self.logger.debug("connection status event")
             self.parse_status(response["connection_status_event"])
             self.config.handle_connection_status_event(response["connection_status_event"])
