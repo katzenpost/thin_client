@@ -252,6 +252,9 @@ async def test_docker_courier_service_new_thinclient_api():
         print("Alice: Creating write channel")
         alice_channel_id, read_cap, write_cap, next_message_index = await alice_client.create_write_channel()
         print(f"Alice: Created write channel {alice_channel_id}")
+        print(f"Alice: Channel ID: {alice_channel_id}")
+        print(f"Alice: Read capability size: {len(read_cap)} bytes")
+        print(f"Alice: Write capability size: {len(write_cap)} bytes")
         assert alice_channel_id is not None
         assert read_cap is not None
         

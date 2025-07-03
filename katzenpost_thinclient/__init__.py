@@ -67,6 +67,70 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   from typing import Tuple, Any, Dict, List, Callable
 
+# Thin Client Error Codes (matching Go implementation)
+THIN_CLIENT_SUCCESS = 0
+THIN_CLIENT_ERROR_CONNECTION_LOST = 1
+THIN_CLIENT_ERROR_TIMEOUT = 2
+THIN_CLIENT_ERROR_INVALID_REQUEST = 3
+THIN_CLIENT_ERROR_INTERNAL_ERROR = 4
+THIN_CLIENT_ERROR_MAX_RETRIES = 5
+THIN_CLIENT_ERROR_INVALID_CHANNEL = 6
+THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND = 7
+THIN_CLIENT_ERROR_PERMISSION_DENIED = 8
+THIN_CLIENT_ERROR_INVALID_PAYLOAD = 9
+THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE = 10
+THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY = 11
+
+def thin_client_error_to_string(error_code: int) -> str:
+    """Convert a thin client error code to a human-readable string."""
+    error_messages = {
+        THIN_CLIENT_SUCCESS: "Success",
+        THIN_CLIENT_ERROR_CONNECTION_LOST: "Connection lost",
+        THIN_CLIENT_ERROR_TIMEOUT: "Timeout",
+        THIN_CLIENT_ERROR_INVALID_REQUEST: "Invalid request",
+        THIN_CLIENT_ERROR_INTERNAL_ERROR: "Internal error",
+        THIN_CLIENT_ERROR_MAX_RETRIES: "Maximum retries exceeded",
+        THIN_CLIENT_ERROR_INVALID_CHANNEL: "Invalid channel",
+        THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND: "Channel not found",
+        THIN_CLIENT_ERROR_PERMISSION_DENIED: "Permission denied",
+        THIN_CLIENT_ERROR_INVALID_PAYLOAD: "Invalid payload",
+        THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE: "Service unavailable",
+        THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY: "Duplicate capability",
+    }
+    return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
+
+# Thin Client Error Codes (matching Go implementation)
+THIN_CLIENT_SUCCESS = 0
+THIN_CLIENT_ERROR_CONNECTION_LOST = 1
+THIN_CLIENT_ERROR_TIMEOUT = 2
+THIN_CLIENT_ERROR_INVALID_REQUEST = 3
+THIN_CLIENT_ERROR_INTERNAL_ERROR = 4
+THIN_CLIENT_ERROR_MAX_RETRIES = 5
+THIN_CLIENT_ERROR_INVALID_CHANNEL = 6
+THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND = 7
+THIN_CLIENT_ERROR_PERMISSION_DENIED = 8
+THIN_CLIENT_ERROR_INVALID_PAYLOAD = 9
+THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE = 10
+THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY = 11
+
+def thin_client_error_to_string(error_code: int) -> str:
+    """Convert a thin client error code to a human-readable string."""
+    error_messages = {
+        THIN_CLIENT_SUCCESS: "Success",
+        THIN_CLIENT_ERROR_CONNECTION_LOST: "Connection lost",
+        THIN_CLIENT_ERROR_TIMEOUT: "Timeout",
+        THIN_CLIENT_ERROR_INVALID_REQUEST: "Invalid request",
+        THIN_CLIENT_ERROR_INTERNAL_ERROR: "Internal error",
+        THIN_CLIENT_ERROR_MAX_RETRIES: "Maximum retries exceeded",
+        THIN_CLIENT_ERROR_INVALID_CHANNEL: "Invalid channel",
+        THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND: "Channel not found",
+        THIN_CLIENT_ERROR_PERMISSION_DENIED: "Permission denied",
+        THIN_CLIENT_ERROR_INVALID_PAYLOAD: "Invalid payload",
+        THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE: "Service unavailable",
+        THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY: "Duplicate capability",
+    }
+    return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
+
 # Export public API
 __all__ = [
     'ThinClient',
@@ -906,8 +970,10 @@ class ThinClient:
 
             if self.channel_reply_data and self.channel_reply_data.get("create_write_channel_reply"):
                 reply = self.channel_reply_data["create_write_channel_reply"]
-                if reply.get("err"):
-                    raise Exception(f"CreateWriteChannel failed: {reply['err']}")
+                error_code = reply.get("error_code", 0)
+                if error_code != 0:
+                    error_msg = thin_client_error_to_string(error_code)
+                    raise Exception(f"CreateWriteChannel failed: {error_msg} (error code {error_code})")
                 return reply["channel_id"], reply["read_cap"], reply["write_cap"], reply["next_message_index"]
             else:
                 raise Exception("No create_write_channel_reply received")
@@ -960,8 +1026,10 @@ class ThinClient:
 
             if self.channel_reply_data and self.channel_reply_data.get("create_read_channel_reply"):
                 reply = self.channel_reply_data["create_read_channel_reply"]
-                if reply.get("err"):
-                    raise Exception(f"CreateReadChannel failed: {reply['err']}")
+                error_code = reply.get("error_code", 0)
+                if error_code != 0:
+                    error_msg = thin_client_error_to_string(error_code)
+                    raise Exception(f"CreateReadChannel failed: {error_msg} (error code {error_code})")
                 return reply["channel_id"], reply["next_message_index"]
             else:
                 raise Exception("No create_read_channel_reply received")
@@ -1014,8 +1082,10 @@ class ThinClient:
 
             if self.channel_reply_data and self.channel_reply_data.get("write_channel_reply"):
                 reply = self.channel_reply_data["write_channel_reply"]
-                if reply.get("err"):
-                    raise Exception(f"WriteChannel failed: {reply['err']}")
+                error_code = reply.get("error_code", 0)
+                if error_code != 0:
+                    error_msg = thin_client_error_to_string(error_code)
+                    raise Exception(f"WriteChannel failed: {error_msg} (error code {error_code})")
                 return reply["send_message_payload"], reply["next_message_index"]
             else:
                 raise Exception("No write_channel_reply received")
@@ -1075,8 +1145,10 @@ class ThinClient:
 
             if self.channel_reply_data and self.channel_reply_data.get("read_channel_reply"):
                 reply = self.channel_reply_data["read_channel_reply"]
-                if reply.get("err"):
-                    raise Exception(f"ReadChannel failed: {reply['err']}")
+                error_code = reply.get("error_code", 0)
+                if error_code != 0:
+                    error_msg = thin_client_error_to_string(error_code)
+                    raise Exception(f"ReadChannel failed: {error_msg} (error code {error_code})")
 
                 used_reply_index = reply.get("reply_index")
                 return reply["send_message_payload"], reply["next_message_index"], used_reply_index
