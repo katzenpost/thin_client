@@ -69,36 +69,31 @@ def daemon_available():
 @pytest_asyncio.fixture
 async def thin_client(config_path, daemon_available):
     """Provide a configured thin client for tests."""
-    print(f"🔍 DEBUG: Creating thin client with config: {config_path}")
-    print(f"🔍 DEBUG: Daemon available: {daemon_available}")
-
     cfg = Config(config_path)
-    print(f"🔍 DEBUG: Config created: {cfg}")
-
     client = ThinClient(cfg)
-    print(f"🔍 DEBUG: ThinClient created: {client}")
 
     try:
-        print("🔍 DEBUG: About to start client...")
         loop = asyncio.get_event_loop()
         await client.start(loop)
-        print("🔍 DEBUG: Client started successfully")
         yield client
     except Exception as e:
-        print(f"❌ DEBUG: Client start failed: {e}")
+        import logging
+        logger = logging.getLogger('conftest')
+        logger.error(f"Failed to start thin client: {e}")
         raise
     finally:
-        print("🔍 DEBUG: Cleaning up client...")
         # Safe stop - only call if client was successfully started
-        if hasattr(client, 'task') and client.task is not None:
-            print("🔍 DEBUG: Stopping client task...")
-            client.stop()
-        else:
-            print("🔍 DEBUG: Closing client socket...")
-            # Just close the socket if start() failed
-            if hasattr(client, 'socket'):
-                client.socket.close()
-        print("🔍 DEBUG: Client cleanup complete")
+        import logging
+        logger = logging.getLogger('conftest')
+        try:
+            if hasattr(client, 'task') and client.task is not None:
+                client.stop()
+            else:
+                # Just close the socket if start() failed
+                if hasattr(client, 'socket'):
+                    client.socket.close()
+        except Exception as e:
+            logger.error(f"Error during client cleanup: {e}")
 
 
 @pytest.fixture

@@ -31,26 +31,8 @@ Usage Example
 import asyncio
 from thinclient import ThinClient, Config
 
-def on_connection_status(event):
-    if event['is_connected']:
-        print("✅ Connected to mixnet")
-    else:
-        print(f"❌ Disconnected: {event.get('err', 'Unknown error')}")
-
-def on_message_reply(event):
-    print(f"📨 Reply received: {event['payload'].decode()}")
-    if event.get('err'):
-        print(f"⚠️  Reply error: {event['err']}")
-
-def on_message_sent(event):
-    msg_id = event['message_id'].hex()[:8]
-    print(f"📤 Message {msg_id} sent, ETA: {event['reply_eta']}s")
-
 async def main():
-    cfg = Config("./thinclient.toml",
-                 on_connection_status=on_connection_status,
-                 on_message_reply=on_message_reply,
-                 on_message_sent=on_message_sent)
+    cfg = Config("./thinclient.toml")
     client = ThinClient(cfg)
     loop = asyncio.get_running_loop()
     await client.start(loop)
@@ -259,18 +241,21 @@ class ConfigFile:
         )
 
 
-def pretty_print_obj(obj: "Any") -> None:
+def pretty_print_obj(obj: "Any") -> str:
     """
-    Pretty-print a Python object using indentation.
+    Pretty-print a Python object using indentation and return the formatted string.
 
-    This function uses `pprintpp` to print complex data structures
+    This function uses `pprintpp` to format complex data structures
     (e.g., dictionaries, lists) in a readable, indented format.
 
     Args:
         obj (Any): The object to pretty-print.
+
+    Returns:
+        str: The pretty-printed representation of the object.
     """
     pp = pprintpp.PrettyPrinter(indent=4)
-    pp.pprint(obj)
+    return pp.pformat(obj)
 
 def blake2_256_sum(data:bytes) -> bytes:
     return hashlib.blake2b(data, digest_size=32).digest()
@@ -355,7 +340,8 @@ class Config:
 
     Example:
         >>> def handle_reply(event):
-        ...     print(f"Received reply: {event['payload']}")
+        ...     # Process the received reply
+        ...     payload = event['payload']
         >>>
         >>> config = Config("client.toml", on_message_reply=handle_reply)
         >>> client = ThinClient(config)
@@ -976,7 +962,7 @@ class ThinClient:
         try:
             await self._send_all(length_prefixed_request)
             self.logger.info(f"Channel query sent successfully for channel {channel_id}.")
-            return
+            return message_id
         except Exception as e:
             self.logger.error(f"Error sending channel query: {e}")
             raise

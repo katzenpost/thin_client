@@ -13,6 +13,7 @@ import pytest
 import os
 import time
 import hashlib
+import logging
 
 from katzenpost_thinclient import ThinClient, Config, find_services
 
@@ -30,36 +31,30 @@ class ChannelTestState:
     
     def alice_reply_handler(self, event):
         """Handle Alice's message replies."""
-        print(f"Alice received reply: {event}")
         self.alice_replies.append(event)
         self.alice_events.append(event)
         self.alice_reply_event.set()
-    
+
     def bob_reply_handler(self, event):
         """Handle Bob's message replies."""
-        print(f"🎯 Bob received reply: {event}")
         self.bob_replies.append(event)
         self.bob_events.append(event)
         self.bob_reply_event.set()
 
     def bob_sent_handler(self, event):
         """Handle Bob's message sent events."""
-        print(f"📤 Bob message sent: {event}")
         self.bob_events.append(event)
 
     def alice_sent_handler(self, event):
         """Handle Alice's message sent events."""
-        print(f"📤 Alice message sent: {event}")
         self.alice_events.append(event)
-    
+
     def alice_connection_handler(self, event):
         """Handle Alice's connection status events."""
-        print(f"Alice connection status: {event}")
         self.alice_events.append(event)
-    
+
     def bob_connection_handler(self, event):
         """Handle Bob's connection status events."""
-        print(f"Bob connection status: {event}")
         self.bob_events.append(event)
 
 
@@ -79,19 +74,18 @@ async def send_query_and_wait(client, channel_id, message_payload, node_hash, qu
     Returns:
         The received payload bytes or None if all attempts failed
     """
+    logger = logging.getLogger('test_channel_api')
     max_retries = 5
     retry_delay = 3.0  # seconds
     reply_timeout = 15.0  # timeout per attempt
 
     for attempt in range(1, max_retries + 1):
-        print(f"Sending channel query (attempt {attempt}/{max_retries})")
-
         # Clear the reply event and reset state before sending
         client.reply_received_event.clear()
         initial_reply_count = len(state.bob_replies)
 
         # Send the channel query
-        client.send_channel_query(channel_id, message_payload, node_hash, queue_id)
+        await client.send_channel_query(channel_id, message_payload, node_hash, queue_id)
 
         # Wait for reply with timeout
         try:
@@ -103,33 +97,31 @@ async def send_query_and_wait(client, channel_id, message_payload, node_hash, qu
                 if 'payload' in latest_reply and latest_reply['payload'] is not None:
                     payload = latest_reply['payload']
                     if len(payload) > 0:
-                        print(f"SUCCESS: Received non-empty payload on attempt {attempt} ({len(payload)} bytes)")
                         return payload
                     else:
-                        print(f"Received empty payload on attempt {attempt}, retrying...")
+                        logger.warning(f"Received empty payload on attempt {attempt}, retrying...")
                 else:
-                    print(f"Reply missing payload on attempt {attempt}, retrying...")
+                    logger.warning(f"Reply missing payload on attempt {attempt}, retrying...")
             else:
-                print(f"No new replies received on attempt {attempt}, retrying...")
+                logger.warning(f"No new replies received on attempt {attempt}, retrying...")
 
         except asyncio.TimeoutError:
-            print(f"Timeout on attempt {attempt}")
-
+            logger.warning(f"Timeout on attempt {attempt}")
             # Check if we got a reply via callback even if await_message_reply timed out
             if len(state.bob_replies) > initial_reply_count:
                 latest_reply = state.bob_replies[-1]
                 if 'payload' in latest_reply and latest_reply['payload'] is not None:
                     payload = latest_reply['payload']
                     if len(payload) > 0:
-                        print(f"SUCCESS: Found reply via callback on attempt {attempt} ({len(payload)} bytes)")
                         return payload
+        except Exception as e:
+            logger.error(f"Unexpected error on attempt {attempt}: {e}")
 
         # Retry logic
         if attempt < max_retries:
-            print(f"Waiting {retry_delay}s before retry...")
             await asyncio.sleep(retry_delay)
         else:
-            print(f"All {max_retries} attempts failed")
+            logger.error(f"All {max_retries} attempts failed")
             break
 
     return None
@@ -187,50 +179,28 @@ async def test_docker_courier_service_new_thinclient_api():
     
     try:
         # Start both clients
-        print("Starting Alice's client...")
         loop = asyncio.get_event_loop()
         await alice_client.start(loop)
-        print("Alice's client started successfully")
-        
-        print("Starting Bob's client...")
         await bob_client.start(loop)
-        print("Bob's client started successfully")
-        
+
         # Validate PKI documents
         alice_pki = alice_client.pki_document()
         bob_pki = bob_client.pki_document()
-        
+
         assert alice_pki is not None, "Alice should have a PKI document"
         assert bob_pki is not None, "Bob should have a PKI document"
         assert alice_pki['Epoch'] == bob_pki['Epoch'], "Alice and Bob must use same PKI epoch"
-        
-        current_epoch = alice_pki['Epoch']
-        print(f"Using PKI document for epoch {current_epoch}")
-        
-        # Find courier service using the library's find_services function
-        # Debug the PKI document type and content
-        print(f"alice_pki type: {type(alice_pki)}")
-        print(f"alice_pki keys: {list(alice_pki.keys()) if isinstance(alice_pki, dict) else 'Not a dict'}")
 
         # Handle case where pki_document() might return a string instead of dict
         if isinstance(alice_pki, str):
             import json
             try:
                 alice_pki_dict = json.loads(alice_pki)
-                print("Successfully parsed PKI as JSON")
             except json.JSONDecodeError:
-                print("Failed to parse PKI as JSON, trying CBOR")
                 import cbor2
                 alice_pki_dict = cbor2.loads(alice_pki.encode('utf-8'))
         else:
             alice_pki_dict = alice_pki
-
-        print(f"alice_pki_dict type: {type(alice_pki_dict)}")
-        print(f"alice_pki_dict keys: {list(alice_pki_dict.keys()) if isinstance(alice_pki_dict, dict) else 'Not a dict'}")
-        print(f"ServiceNodes type: {type(alice_pki_dict['ServiceNodes'])}")
-        print(f"ServiceNodes length: {len(alice_pki_dict['ServiceNodes'])}")
-        if len(alice_pki_dict['ServiceNodes']) > 0:
-            print(f"First ServiceNode type: {type(alice_pki_dict['ServiceNodes'][0])}")
 
         courier_services = find_services("courier", alice_pki_dict)
         if len(courier_services) == 0:
@@ -245,52 +215,38 @@ async def test_docker_courier_service_new_thinclient_api():
 
         # Get the queue ID
         courier_queue_id = courier_service.recipient_queue_id
-
-        print(f"Found courier service: node_hash={courier_node_hash.hex()[:16]}..., queue_id={courier_queue_id}")
         
         # Alice creates write channel
-        print("Alice: Creating write channel")
-        alice_channel_id, read_cap, write_cap, next_message_index = await alice_client.create_write_channel()
-        print(f"Alice: Created write channel {alice_channel_id}")
-        print(f"Alice: Channel ID: {alice_channel_id}")
-        print(f"Alice: Read capability size: {len(read_cap)} bytes")
-        print(f"Alice: Write capability size: {len(write_cap)} bytes")
+        alice_channel_id, read_cap, write_cap, _ = await alice_client.create_write_channel()
         assert alice_channel_id is not None
         assert read_cap is not None
-        
+
         # Bob creates read channel using Alice's read capability
-        print("Bob: Creating read channel")
-        bob_channel_id, bob_next_message_index = await bob_client.create_read_channel(read_cap)
-        print(f"Bob: Created read channel {bob_channel_id}")
+        bob_channel_id, _ = await bob_client.create_read_channel(read_cap)
         assert bob_channel_id is not None
-        
+
         # Alice writes message
         original_message = b"Hello from Alice to Bob via new channel API!"
-        print("Alice: Writing message")
-        write_payload, alice_next_index = await alice_client.write_channel(alice_channel_id, original_message)
+        write_payload, _ = await alice_client.write_channel(alice_channel_id, original_message)
         assert write_payload is not None
         assert len(write_payload) > 0
-        print(f"Alice: Generated write payload ({len(write_payload)} bytes)")
-        
+
         # Alice sends write query via courier using send_channel_query
-        print("Alice: Sending write query to courier")
-        alice_write_message_id = alice_client.send_channel_query(alice_channel_id, write_payload, courier_node_hash, courier_queue_id)
-        print(f"Alice: Sent write query to courier with message_id {alice_write_message_id.hex()[:16]}...")
+        alice_write_message_id = await alice_client.send_channel_query(alice_channel_id, write_payload, courier_node_hash, courier_queue_id)
 
         # Wait for Alice's write operation to complete and message to propagate
-        print("Waiting for Alice's write operation to complete...")
+        logger = logging.getLogger('test_channel_api')
         try:
             await asyncio.wait_for(alice_client.await_message_reply(), timeout=30.0)
-            print("Alice: Write operation completed!")
         except asyncio.TimeoutError:
-            print("Alice: Write operation timed out, but continuing...")
+            logger.warning("Alice's write operation timed out, but continuing...")
+        except Exception as e:
+            logger.error(f"Error waiting for Alice's write operation: {e}")
 
         # Wait additional time for message propagation through the courier
-        print("Waiting for message propagation through courier...")
         await asyncio.sleep(10)
-        
+
         # Bob reads message using the new read_channel_with_retry method
-        print("Bob: Reading message with automatic reply index retry")
         received_payload = await bob_client.read_channel_with_retry(
             channel_id=bob_channel_id,
             dest_node=courier_node_hash,
@@ -300,9 +256,6 @@ async def test_docker_courier_service_new_thinclient_api():
 
         assert received_payload is not None, "Bob should receive a reply - this should work like the Go test!"
         assert len(received_payload) > 0, "Bob should receive non-empty payload"
-        
-        # Verify the received message
-        print(f"Bob received payload: {len(received_payload)} bytes")
 
         # Convert to bytes if needed
         if isinstance(received_payload, str):
@@ -311,38 +264,26 @@ async def test_docker_courier_service_new_thinclient_api():
         # The channel API should return the original message directly
         received_message = received_payload
 
-        print(f"Original message: {original_message}")
-        print(f"Received message: {received_message}")
-
         assert received_message == original_message, f"Bob should receive the original message. Expected: {original_message}, Got: {received_message}"
 
         # Test close_channel functionality
-        print("Alice: Closing write channel")
         await alice_client.close_channel(alice_channel_id)
-        print(f"Alice: Closed write channel {alice_channel_id}")
-
-        print("Bob: Closing read channel")
         await bob_client.close_channel(bob_channel_id)
-        print(f"Bob: Closed read channel {bob_channel_id}")
 
-        print("✅ Test completed successfully - message sent and received via channel API!")
-        
     finally:
         # Clean up clients
-        print("Cleaning up clients...")
+        logger = logging.getLogger('test_channel_api')
         try:
             if hasattr(alice_client, 'task') and alice_client.task is not None:
                 alice_client.stop()
         except Exception as e:
-            print(f"Error stopping Alice's client: {e}")
-        
+            logger.error(f"Error stopping Alice's client: {e}")
+
         try:
             if hasattr(bob_client, 'task') and bob_client.task is not None:
                 bob_client.stop()
         except Exception as e:
-            print(f"Error stopping Bob's client: {e}")
-        
-        print("Cleanup complete")
+            logger.error(f"Error stopping Bob's client: {e}")
 
 
 if __name__ == "__main__":
