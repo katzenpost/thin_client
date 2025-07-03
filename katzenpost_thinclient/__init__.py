@@ -402,6 +402,8 @@ class ThinClient:
         self.pending_read_channels : Dict[bytes,asyncio.Event] = {}  # message_id -> asyncio.Event
         self.read_channel_responses : Dict[bytes,bytes] = {}  # message_id -> payload
         self._is_connected : bool = False  # Track connection state
+        # Mutex to protect socket send operations from race conditions
+        self._send_lock = asyncio.Lock()
 
         # For message ID-based reply matching (like Go version)
         self._expected_message_id : bytes | None = None
@@ -515,13 +517,17 @@ class ThinClient:
 
     async def _send_all(self, data: bytes) -> None:
         """
-        Send all data using async socket operations.
+        Send all data using async socket operations with mutex protection.
+
+        This method uses a mutex to prevent race conditions when multiple
+        coroutines try to send data over the same socket simultaneously.
 
         Args:
             data (bytes): Data to send.
         """
-        loop = asyncio.get_running_loop()
-        await loop.sock_sendall(self.socket, data)
+        async with self._send_lock:
+            loop = asyncio.get_running_loop()
+            await loop.sock_sendall(self.socket, data)
 
     async def recv(self, loop:asyncio.AbstractEventLoop) -> "Dict[Any,Any]":
         """
