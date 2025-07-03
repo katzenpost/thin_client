@@ -42,7 +42,7 @@ async def main():
 
     service = client.get_service("echo")
     surb_id = client.new_surb_id()
-    client.send_message(surb_id, "hello mixnet", *service.to_destination())
+    await client.send_message(surb_id, "hello mixnet", *service.to_destination())
 
     await client.await_message_reply()
 
@@ -513,6 +513,16 @@ class ThinClient:
         self.socket.close()
         self.task.cancel()
 
+    async def _send_all(self, data: bytes) -> None:
+        """
+        Send all data using async socket operations.
+
+        Args:
+            data (bytes): Data to send.
+        """
+        loop = asyncio.get_running_loop()
+        await loop.sock_sendall(self.socket, data)
+
     async def recv(self, loop:asyncio.AbstractEventLoop) -> "Dict[Any,Any]":
         """
         Receive a CBOR-encoded message from the daemon.
@@ -735,7 +745,7 @@ class ThinClient:
 
 
 
-    def send_message_without_reply(self, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
+    async def send_message_without_reply(self, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
         """
         Send a fire-and-forget message with no SURB or reply handling.
         This method requires mixnet connectivity.
@@ -774,12 +784,12 @@ class ThinClient:
         length_prefix = struct.pack('>I', len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
         try:
-            self.socket.sendall(length_prefixed_request)
+            await self._send_all(length_prefixed_request)
             self.logger.info("Message sent successfully.")
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
 
-    def send_message(self, surb_id:bytes, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
+    async def send_message(self, surb_id:bytes, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
         """
         Send a message using a SURB to allow the recipient to send a reply.
         This method requires mixnet connectivity.
@@ -819,12 +829,12 @@ class ThinClient:
         length_prefix = struct.pack('>I', len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
         try:
-            self.socket.sendall(length_prefixed_request)
+            await self._send_all(length_prefixed_request)
             self.logger.info("Message sent successfully.")
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
 
-    def send_channel_query(self, channel_id:int, payload:bytes, dest_node:bytes, dest_queue:bytes, message_id:"bytes|None"=None) -> bytes:
+    async def send_channel_query(self, channel_id:int, payload:bytes, dest_node:bytes, dest_queue:bytes, message_id:"bytes|None"=None):
         """
         Send a channel query (prepared by write_channel or read_channel) to the mixnet.
         This method sets the ChannelID inside the Request for proper channel handling.
@@ -880,14 +890,14 @@ class ThinClient:
         length_prefix = struct.pack('>I', len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
         try:
-            self.socket.sendall(length_prefixed_request)
+            await self._send_all(length_prefixed_request)
             self.logger.info(f"Channel query sent successfully for channel {channel_id}.")
-            return message_id
+            return
         except Exception as e:
             self.logger.error(f"Error sending channel query: {e}")
             raise
 
-    def send_reliable_message(self, message_id:bytes, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
+    async def send_reliable_message(self, message_id:bytes, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
         """
         Send a reliable message using an ARQ mechanism and message ID.
         This method requires mixnet connectivity.
@@ -927,7 +937,7 @@ class ThinClient:
         length_prefix = struct.pack('>I', len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
         try:
-            self.socket.sendall(length_prefixed_request)
+            await self._send_all(length_prefixed_request)
             self.logger.info("Message sent successfully.")
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
@@ -1014,7 +1024,7 @@ class ThinClient:
             self.channel_reply_data = None
             self.channel_reply_event.clear()
 
-            self.socket.send(length_prefixed_request)
+            await self._send_all(length_prefixed_request)
             self.logger.info("CreateWriteChannel request sent successfully.")
 
             # Wait for CreateWriteChannelReply via the background worker
@@ -1070,7 +1080,7 @@ class ThinClient:
             self.channel_reply_data = None
             self.channel_reply_event.clear()
 
-            self.socket.send(length_prefixed_request)
+            await self._send_all(length_prefixed_request)
             self.logger.info("CreateReadChannel request sent successfully.")
 
             # Wait for CreateReadChannelReply via the background worker
@@ -1126,7 +1136,7 @@ class ThinClient:
             self.channel_reply_data = None
             self.channel_reply_event.clear()
 
-            self.socket.send(length_prefixed_request)
+            await self._send_all(length_prefixed_request)
             self.logger.info("WriteChannel prepare request sent successfully.")
 
             # Wait for WriteChannelReply via the background worker
@@ -1189,7 +1199,7 @@ class ThinClient:
             self.channel_reply_data = None
             self.channel_reply_event.clear()
 
-            self.socket.send(length_prefixed_request)
+            await self._send_all(length_prefixed_request)
             self.logger.info(f"ReadChannel request sent for message_id {message_id.hex()[:16]}...")
 
             # Wait for ReadChannelReply via the background worker
@@ -1317,7 +1327,7 @@ class ThinClient:
 
         try:
             # Send the channel query with the specific expected_message_id
-            actual_message_id = self.send_channel_query(channel_id, payload, dest_node, dest_queue, expected_message_id)
+            actual_message_id = await self.send_channel_query(channel_id, payload, dest_node, dest_queue, expected_message_id)
 
             # Verify that the message ID matches what we expected
             assert actual_message_id == expected_message_id, f"Message ID mismatch: expected {expected_message_id.hex()}, got {actual_message_id.hex()}"
@@ -1369,7 +1379,7 @@ class ThinClient:
 
         try:
             # CloseChannel is infallible - fire and forget, no reply expected
-            self.socket.send(length_prefixed_request)
+            await self._send_all(length_prefixed_request)
             self.logger.info(f"CloseChannel request sent for channel {channel_id}.")
         except Exception as e:
             self.logger.error(f"Error sending close channel request: {e}")
