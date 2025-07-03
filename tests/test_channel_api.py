@@ -286,18 +286,16 @@ async def test_docker_courier_service_new_thinclient_api():
         print("Waiting for message propagation through courier...")
         await asyncio.sleep(10)
         
-        # Bob reads message
-        print("Bob: Reading message")
+        # Bob reads message using the new read_channel_with_retry method
+        print("Bob: Reading message with automatic reply index retry")
         message_id = bob_client.new_message_id()
-        read_payload, bob_next_index, used_reply_index = await bob_client.read_channel(bob_channel_id, message_id)
-        assert read_payload is not None
-        assert len(read_payload) > 0
-        print(f"Bob: Generated read payload ({len(read_payload)} bytes)")
-        print(f"Bob: Used reply index: {used_reply_index}")
-        
-        # Bob sends read query and waits for reply using helper function (like Go sendQueryAndWait)
-        print("Bob: Sending read query and waiting for reply...")
-        received_payload = await send_query_and_wait(bob_client, bob_channel_id, read_payload, courier_node_hash, courier_queue_id, state)
+        received_payload = await bob_client.read_channel_with_retry(
+            channel_id=bob_channel_id,
+            dest_node=courier_node_hash,
+            dest_queue=courier_queue_id,
+            message_id=message_id,
+            max_retries=2
+        )
 
         assert received_payload is not None, "Bob should receive a reply - this should work like the Go test!"
         assert len(received_payload) > 0, "Bob should receive non-empty payload"
