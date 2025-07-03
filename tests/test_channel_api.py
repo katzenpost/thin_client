@@ -274,8 +274,8 @@ async def test_docker_courier_service_new_thinclient_api():
         
         # Alice sends write query via courier using send_channel_query
         print("Alice: Sending write query to courier")
-        alice_client.send_channel_query(alice_channel_id, write_payload, courier_node_hash, courier_queue_id)
-        print("Alice: Sent write query to courier")
+        alice_write_message_id = alice_client.send_channel_query(alice_channel_id, write_payload, courier_node_hash, courier_queue_id)
+        print(f"Alice: Sent write query to courier with message_id {alice_write_message_id.hex()[:16]}...")
 
         # Wait for Alice's write operation to complete and message to propagate
         print("Waiting for Alice's write operation to complete...")
@@ -291,12 +291,10 @@ async def test_docker_courier_service_new_thinclient_api():
         
         # Bob reads message using the new read_channel_with_retry method
         print("Bob: Reading message with automatic reply index retry")
-        message_id = bob_client.new_message_id()
         received_payload = await bob_client.read_channel_with_retry(
             channel_id=bob_channel_id,
             dest_node=courier_node_hash,
             dest_queue=courier_queue_id,
-            message_id=message_id,
             max_retries=2
         )
 

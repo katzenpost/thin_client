@@ -402,10 +402,17 @@ class ThinClient:
         self.pending_read_channels : Dict[bytes,asyncio.Event] = {}  # message_id -> asyncio.Event
         self.read_channel_responses : Dict[bytes,bytes] = {}  # message_id -> payload
         self._is_connected : bool = False  # Track connection state
+
+        # For message ID-based reply matching (like Go version)
+        self._expected_message_id : bytes | None = None
+        self._received_reply_payload : bytes | None = None
+        self._reply_received_for_message_id : asyncio.Event | None = None
         self.logger = logging.getLogger('thinclient')
         self.logger.setLevel(logging.DEBUG)
-        handler = logging.StreamHandler(sys.stderr)
-        self.logger.addHandler(handler)
+        # Only add handler if none exists to avoid duplicate log messages
+        if not self.logger.handlers:
+            handler = logging.StreamHandler(sys.stderr)
+            self.logger.addHandler(handler)
 
         if self.config.network is None:
             raise RuntimeError("config.network is None")
@@ -520,10 +527,14 @@ class ThinClient:
             ValueError: If message framing fails.
         """
         length_prefix = await loop.sock_recv(self.socket, 4)
+        if length_prefix is None:
+            raise ValueError("Socket closed - received None from sock_recv")
         if len(length_prefix) < 4:
             raise ValueError("Failed to read the length prefix")
         message_length = struct.unpack('>I', length_prefix)[0]
         raw_data = await loop.sock_recv(self.socket, message_length)
+        if raw_data is None:
+            raise ValueError("Socket closed - received None from sock_recv while reading message body")
         if len(raw_data) < message_length:
             raise ValueError("Did not receive the full message {} != {}".format(len(raw_data), message_length))
         response = cbor2.loads(raw_data)
@@ -657,8 +668,37 @@ class ThinClient:
             return
         if response.get("message_reply_event") is not None:
             self.logger.debug("message reply event")
-            self.reply_received_event.set()
             reply = response["message_reply_event"]
+
+            # Check if this reply matches our expected message ID for channel operations
+            if hasattr(self, '_expected_message_id') and self._expected_message_id is not None:
+                reply_message_id = reply.get("message_id")
+                if reply_message_id is not None and reply_message_id == self._expected_message_id:
+                    self.logger.debug(f"Received matching MessageReplyEvent for message_id {reply_message_id.hex()[:16]}...")
+                    # Handle error in reply
+                    if reply.get("err"):
+                        self.logger.debug(f"Reply contains error: {reply['err']}")
+                        self._received_reply_payload = None
+                    else:
+                        payload = reply.get("payload")
+                        if payload is None:
+                            self._received_reply_payload = b""
+                        else:
+                            self._received_reply_payload = payload
+                        self.logger.debug(f"Reply contains {len(self._received_reply_payload)} bytes of payload")
+
+                    # Signal that we received the matching reply
+                    if hasattr(self, '_reply_received_for_message_id'):
+                        self._reply_received_for_message_id.set()
+                    return
+                else:
+                    if reply_message_id is not None:
+                        self.logger.debug(f"Received MessageReplyEvent with mismatched message_id (expected {self._expected_message_id.hex()[:16]}..., got {reply_message_id.hex()[:16]}...), ignoring")
+                    else:
+                        self.logger.debug("Received MessageReplyEvent with nil message_id, ignoring")
+
+            # Fall back to original behavior for non-channel operations
+            self.reply_received_event.set()
             self.config.handle_message_reply_event(reply)
             return
 
@@ -784,7 +824,7 @@ class ThinClient:
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
 
-    def send_channel_query(self, channel_id:int, payload:bytes, dest_node:bytes, dest_queue:bytes) -> None:
+    def send_channel_query(self, channel_id:int, payload:bytes, dest_node:bytes, dest_queue:bytes, message_id:"bytes|None"=None) -> bytes:
         """
         Send a channel query (prepared by write_channel or read_channel) to the mixnet.
         This method sets the ChannelID inside the Request for proper channel handling.
@@ -795,6 +835,10 @@ class ThinClient:
             payload (bytes): Channel query payload prepared by write_channel or read_channel.
             dest_node (bytes): Destination node identity hash.
             dest_queue (bytes): Destination recipient queue ID.
+            message_id (bytes, optional): Message ID for reply correlation. If None, generates a new one.
+
+        Returns:
+            bytes: The message ID used for this query (either provided or generated).
 
         Raises:
             RuntimeError: If in offline mode (daemon not connected to mixnet).
@@ -806,13 +850,20 @@ class ThinClient:
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
 
-        # Generate a new SURB ID
+        # Generate message ID if not provided, and SURB ID
+        if message_id is None:
+            message_id = self.new_message_id()
+            self.logger.debug(f"send_channel_query: Generated message_id {message_id.hex()[:16]}...")
+        else:
+            self.logger.debug(f"send_channel_query: Using provided message_id {message_id.hex()[:16]}...")
+
         surb_id = self.new_surb_id()
 
         # Create the SendMessage structure with ChannelID
+
         send_message = {
             "channel_id": channel_id,  # This is the key difference from send_message
-            "id": None,  # No ID for channel queries
+            "id": message_id,  # Use generated message_id for reply correlation
             "with_surb": True,
             "surbid": surb_id,
             "destination_id_hash": dest_node,
@@ -831,6 +882,7 @@ class ThinClient:
         try:
             self.socket.sendall(length_prefixed_request)
             self.logger.info(f"Channel query sent successfully for channel {channel_id}.")
+            return message_id
         except Exception as e:
             self.logger.error(f"Error sending channel query: {e}")
             raise
@@ -1075,7 +1127,7 @@ class ThinClient:
             self.channel_reply_event.clear()
 
             self.socket.send(length_prefixed_request)
-            self.logger.info("WriteChannel request sent successfully.")
+            self.logger.info("WriteChannel prepare request sent successfully.")
 
             # Wait for WriteChannelReply via the background worker
             await self.channel_reply_event.wait()
@@ -1160,7 +1212,7 @@ class ThinClient:
             raise
 
     async def read_channel_with_retry(self, channel_id: int, dest_node: bytes, dest_queue: bytes,
-                                    message_id: "bytes|None" = None, max_retries: int = 2) -> bytes:
+                                    max_retries: int = 2) -> bytes:
         """
         Send a read query for a pigeonhole channel with automatic reply index retry.
         It first tries reply index 0 up to max_retries times, and if that fails,
@@ -1168,12 +1220,12 @@ class ThinClient:
         This method handles the common case where the courier has cached replies at different indices
         and accounts for timing issues where messages may not have propagated yet.
         This method requires mixnet connectivity and will fail in offline mode.
+        The method generates its own message ID and matches replies for correct correlation.
 
         Args:
             channel_id (int): The 16-bit channel ID.
             dest_node (bytes): Destination node identity hash.
             dest_queue (bytes): Destination recipient queue ID.
-            message_id (bytes, optional): The 16-byte message ID for correlation. If None, generates a new one.
             max_retries (int): Maximum number of attempts per reply index (default: 2).
 
         Returns:
@@ -1187,8 +1239,9 @@ class ThinClient:
         if not self._is_connected:
             raise RuntimeError("cannot send channel query in offline mode - daemon not connected to mixnet")
 
-        if message_id is None:
-            message_id = self.new_message_id()
+        # Generate a new message ID for this read operation
+        message_id = self.new_message_id()
+        self.logger.debug(f"read_channel_with_retry: Generated message_id {message_id.hex()[:16]}...")
 
         reply_indices = [0, 1]
 
@@ -1208,36 +1261,89 @@ class ThinClient:
                 self.logger.debug(f"read_channel_with_retry: Reply index {reply_index} attempt {attempt}/{max_retries}")
 
                 try:
-                    # Send the channel query
-                    self.send_channel_query(channel_id, payload, dest_node, dest_queue)
+                    # Send the channel query and wait for matching reply
+                    result = await self._send_channel_query_and_wait_for_message_id(
+                        channel_id, payload, dest_node, dest_queue, message_id, is_read_operation=True
+                    )
 
-                    # Wait for reply using existing mechanism (with timeout)
-                    try:
-                        await asyncio.wait_for(self.await_message_reply(), timeout=30.0)
-
-                        # The reply is handled by the config's message reply handler
-                        # For now, we need to implement a way to get the actual payload
-                        # This is a limitation of the current architecture
-                        self.logger.debug(f"read_channel_with_retry: Reply index {reply_index} attempt {attempt} completed")
-
-                        # TODO: Implement proper payload extraction
-                        # For now, we'll raise an exception to indicate this needs more work
-                        raise NotImplementedError("read_channel_with_retry needs proper payload extraction mechanism")
-
-                    except asyncio.TimeoutError:
-                        self.logger.debug(f"read_channel_with_retry: Reply index {reply_index} attempt {attempt} timed out")
+                    # For read operations, we should only consider it successful if we got actual data
+                    if len(result) > 0:
+                        self.logger.debug(f"read_channel_with_retry: Reply index {reply_index} succeeded on attempt {attempt} with {len(result)} bytes")
+                        return result
+                    else:
+                        self.logger.debug(f"read_channel_with_retry: Reply index {reply_index} attempt {attempt} got empty payload, treating as failure")
+                        raise Exception("received empty payload - message not available yet")
 
                 except Exception as e:
                     self.logger.debug(f"read_channel_with_retry: Reply index {reply_index} attempt {attempt} failed: {e}")
 
-                # Add delay between retries (except for the last attempt)
-                if attempt < max_retries:
-                    await asyncio.sleep(2.0)
+                # If this was the last attempt for this reply index, move to next reply index
+                if attempt == max_retries:
+                    break
+
+                # Add a small delay between retries to allow for message propagation
+                await asyncio.sleep(2.0)
 
         # All reply indices and attempts failed
-        raise Exception(f"All reply indices failed after {max_retries} attempts each")
+        self.logger.debug(f"read_channel_with_retry: All reply indices failed after {max_retries} attempts each")
+        raise Exception("all reply indices failed after multiple attempts")
 
+    async def _send_channel_query_and_wait_for_message_id(self, channel_id: int, payload: bytes,
+                                                         dest_node: bytes, dest_queue: bytes,
+                                                         expected_message_id: bytes, is_read_operation: bool = True) -> bytes:
+        """
+        Send a channel query and wait for a reply with the specified message ID.
+        This method matches replies by message ID to ensure correct correlation.
 
+        Args:
+            channel_id (int): The channel ID for the query
+            payload (bytes): The prepared query payload
+            dest_node (bytes): Destination node identity hash
+            dest_queue (bytes): Destination recipient queue ID
+            expected_message_id (bytes): The message ID to match replies against
+            is_read_operation (bool): Whether this is a read operation (affects empty payload handling)
+
+        Returns:
+            bytes: The received payload
+
+        Raises:
+            Exception: If the query fails or times out
+        """
+        # Store the expected message ID for reply matching
+        self._expected_message_id = expected_message_id
+        self._received_reply_payload = None
+        self._reply_received_for_message_id = asyncio.Event()
+        self._reply_received_for_message_id.clear()
+
+        try:
+            # Send the channel query with the specific expected_message_id
+            actual_message_id = self.send_channel_query(channel_id, payload, dest_node, dest_queue, expected_message_id)
+
+            # Verify that the message ID matches what we expected
+            assert actual_message_id == expected_message_id, f"Message ID mismatch: expected {expected_message_id.hex()}, got {actual_message_id.hex()}"
+
+            # Wait for the matching reply with timeout
+            await asyncio.wait_for(self._reply_received_for_message_id.wait(), timeout=120.0)
+
+            # Check if we got a valid payload
+            if self._received_reply_payload is None:
+                raise Exception("no reply received for message ID")
+
+            # Handle empty payload based on operation type
+            if len(self._received_reply_payload) == 0:
+                if is_read_operation:
+                    raise Exception("message not available yet - empty payload")
+                else:
+                    return b""  # Empty payload is success for write operations
+
+            return self._received_reply_payload
+
+        except asyncio.TimeoutError:
+            raise Exception("timeout waiting for reply")
+        finally:
+            # Clean up
+            self._expected_message_id = None
+            self._received_reply_payload = None
 
     async def close_channel(self, channel_id: int) -> None:
         """
