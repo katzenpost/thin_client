@@ -44,7 +44,7 @@ async def test_thin_client_send_receive_integration_test():
 
         print(f"TEST DESTINATION: {dest}")
 
-        client.send_message(surb_id, payload, dest[0], dest[1])
+        await client.send_message(surb_id, payload, dest[0], dest[1])
 
         await client.await_message_reply()
 
