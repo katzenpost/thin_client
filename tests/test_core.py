@@ -42,8 +42,6 @@ async def test_thin_client_send_receive_integration_test():
         payload = "hello"
         dest = service_desc.to_destination()
 
-        print(f"TEST DESTINATION: {dest}")
-
         await client.send_message(surb_id, payload, dest[0], dest[1])
 
         await client.await_message_reply()
@@ -52,8 +50,6 @@ async def test_thin_client_send_receive_integration_test():
         payload2 = reply_message['payload'][:len(payload)]
 
         assert payload2.decode() == payload
-
-        print("✅ Echo service integration test passed!")
 
     finally:
         client.stop()
@@ -81,4 +77,4 @@ async def test_config_validation():
     )
     assert cfg_with_callbacks is not None, "Config with callbacks should work"
 
-    print("✅ Configuration validation passed!")
+    # Configuration validation passed

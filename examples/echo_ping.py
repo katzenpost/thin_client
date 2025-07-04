@@ -28,7 +28,6 @@ async def main():
     payload2 = payload2[0:len(payload)]
     assert len(payload) == len(payload2)
     assert payload2.decode() == payload
-    print("stopping client")
     client.stop()
 
 if __name__ == '__main__':

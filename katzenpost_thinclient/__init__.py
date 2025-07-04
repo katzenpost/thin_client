@@ -31,11 +31,8 @@ Usage Example
 import asyncio
 from thinclient import ThinClient, Config
 
-def on_message_reply(event):
-    print("Got reply:", event)
-
 async def main():
-    cfg = Config("./thinclient.toml", on_message_reply=on_message_reply)
+    cfg = Config("./thinclient.toml")
     client = ThinClient(cfg)
     loop = asyncio.get_running_loop()
     await client.start(loop)
@@ -244,18 +241,21 @@ class ConfigFile:
         )
 
 
-def pretty_print_obj(obj: "Any") -> None:
+def pretty_print_obj(obj: "Any") -> str:
     """
-    Pretty-print a Python object using indentation.
+    Pretty-print a Python object using indentation and return the formatted string.
 
-    This function uses `pprintpp` to print complex data structures
+    This function uses `pprintpp` to format complex data structures
     (e.g., dictionaries, lists) in a readable, indented format.
 
     Args:
         obj (Any): The object to pretty-print.
+
+    Returns:
+        str: The pretty-printed representation of the object.
     """
     pp = pprintpp.PrettyPrinter(indent=4)
-    pp.pprint(obj)
+    return pp.pformat(obj)
 
 def blake2_256_sum(data:bytes) -> bytes:
     return hashlib.blake2b(data, digest_size=32).digest()
@@ -323,7 +323,29 @@ def find_services(capability:str, doc:"Dict[str,Any]") -> "List[ServiceDescripto
 
 
 class Config:
-    """Config is the configuration object for the ThinClient."""
+    """
+    Configuration object for the ThinClient containing connection details and event callbacks.
+
+    The Config class loads network configuration from a TOML file and provides optional
+    callback functions that are invoked when specific events occur during client operation.
+
+    Attributes:
+        network (str): Network type ('tcp', 'unix', etc.)
+        address (str): Network address (host:port for TCP, path for Unix sockets)
+        geometry (Geometry): Sphinx packet geometry parameters
+        on_connection_status (callable): Callback for connection status changes
+        on_new_pki_document (callable): Callback for new PKI documents
+        on_message_sent (callable): Callback for message transmission confirmations
+        on_message_reply (callable): Callback for received message replies
+
+    Example:
+        >>> def handle_reply(event):
+        ...     # Process the received reply
+        ...     payload = event['payload']
+        >>>
+        >>> config = Config("client.toml", on_message_reply=handle_reply)
+        >>> client = ThinClient(config)
+    """
 
     def __init__(self, filepath:str,
                  on_connection_status:"Callable|None"=None,
@@ -334,11 +356,53 @@ class Config:
         Initialize the Config object.
 
         Args:
-            filepath (str): Path to the TOML config file.
-            on_connection_status (callable): Callback for connection status events.
-            on_new_pki_document (callable): Callback for new PKI document events.
-            on_message_sent (callable): Callback for sent message events.
-            on_message_reply (callable): Callback for message reply events.
+            filepath (str): Path to the TOML config file containing network, address, and geometry.
+
+            on_connection_status (callable, optional): Callback invoked when the daemon's connection
+                status to the mixnet changes. The callback receives a single argument:
+
+                - event (dict): Connection status event with keys:
+                    - 'is_connected' (bool): True if daemon is connected to mixnet, False otherwise
+                    - 'err' (str, optional): Error message if connection failed, empty string if no error
+
+                Example: ``{'is_connected': True, 'err': ''}``
+
+            on_new_pki_document (callable, optional): Callback invoked when a new PKI document
+                is received from the mixnet. The callback receives a single argument:
+
+                - event (dict): PKI document event with keys:
+                    - 'payload' (bytes): CBOR-encoded PKI document data stripped of signatures
+
+                Example: ``{'payload': b'\\xa5\\x64Epoch\\x00...'}``
+
+            on_message_sent (callable, optional): Callback invoked when a message has been
+                successfully transmitted to the mixnet. The callback receives a single argument:
+
+                - event (dict): Message sent event with keys:
+                    - 'message_id' (bytes): 16-byte unique identifier for the sent message
+                    - 'surbid' (bytes, optional): SURB ID if message was sent with SURB, None otherwise
+                    - 'sent_at' (str): ISO timestamp when message was sent
+                    - 'reply_eta' (float): Expected round-trip time in seconds for reply
+                    - 'err' (str, optional): Error message if sending failed, empty string if successful
+
+                Example: ``{'message_id': b'\\x01\\x02...', 'surbid': b'\\xaa\\xbb...', 'sent_at': '2024-01-01T12:00:00Z', 'reply_eta': 30.5, 'err': ''}``
+
+            on_message_reply (callable, optional): Callback invoked when a reply is received
+                for a previously sent message. The callback receives a single argument:
+
+                - event (dict): Message reply event with keys:
+                    - 'message_id' (bytes): 16-byte identifier matching the original message
+                    - 'surbid' (bytes, optional): SURB ID if reply used SURB, None otherwise
+                    - 'payload' (bytes): Reply payload data from the service
+                    - 'reply_index' (int, optional): Index of reply used (relevant for channel reads)
+                    - 'err' (str, optional): Error message if reply failed, empty string if successful
+
+                Example: ``{'message_id': b'\\x01\\x02...', 'surbid': b'\\xaa\\xbb...', 'payload': b'echo response', 'reply_index': 0, 'err': ''}``
+
+        Note:
+            All callbacks are optional. If not provided, the corresponding events will be ignored.
+            Callbacks should be lightweight and non-blocking as they are called from the client's
+            event processing loop.
         """
 
         cfgfile = ConfigFile.load(filepath)
@@ -898,7 +962,7 @@ class ThinClient:
         try:
             await self._send_all(length_prefixed_request)
             self.logger.info(f"Channel query sent successfully for channel {channel_id}.")
-            return
+            return message_id
         except Exception as e:
             self.logger.error(f"Error sending channel query: {e}")
             raise
