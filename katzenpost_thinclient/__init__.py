@@ -53,6 +53,7 @@ import random
 import coloredlogs
 import logging
 import sys
+import io
 import os
 import asyncio
 import cbor2
@@ -466,8 +467,10 @@ class ThinClient:
         self.pending_read_channels : Dict[bytes,asyncio.Event] = {}  # message_id -> asyncio.Event
         self.read_channel_responses : Dict[bytes,bytes] = {}  # message_id -> payload
         self._is_connected : bool = False  # Track connection state
-        # Mutex to protect socket send operations from race conditions
+
+        # Mutexes to serialize socket send/recv operations:
         self._send_lock = asyncio.Lock()
+        self._recv_lock = asyncio.Lock()
 
         # For message ID-based reply matching (like Go version)
         self._expected_message_id : bytes | None = None
@@ -593,6 +596,16 @@ class ThinClient:
             loop = asyncio.get_running_loop()
             await loop.sock_sendall(self.socket, data)
 
+    async def __recv_exactly(self, total:int, loop:asyncio.AbstractEventLoop) -> bytes:
+      "receive exactly (total) bytes or die trying raising BrokenPipeError"
+      buf = bytearray(total)
+      remain = memoryview(buf)
+      while len(remain):
+        if not (nread := await loop.sock_recv_into(self.socket, remain)):
+            raise BrokenPipeError
+        remain = remain[nread:]
+      return buf
+
     async def recv(self, loop:asyncio.AbstractEventLoop) -> "Dict[Any,Any]":
         """
         Receive a CBOR-encoded message from the daemon.
@@ -604,21 +617,19 @@ class ThinClient:
             dict: Decoded CBOR response from the daemon.
 
         Raises:
+            BrokenPipeError: If connection fails
             ValueError: If message framing fails.
         """
-        length_prefix = await loop.sock_recv(self.socket, 4)
-        if length_prefix is None:
-            raise ValueError("Socket closed - received None from sock_recv")
-        if len(length_prefix) < 4:
-            raise ValueError("Failed to read the length prefix")
-        message_length = struct.unpack('>I', length_prefix)[0]
-        raw_data = await loop.sock_recv(self.socket, message_length)
-        if raw_data is None:
-            raise ValueError("Socket closed - received None from sock_recv while reading message body")
-        if len(raw_data) < message_length:
-            raise ValueError("Did not receive the full message {} != {}".format(len(raw_data), message_length))
-        response = cbor2.loads(raw_data)
-        self.logger.debug(f"Received daemon response")
+        async with self._recv_lock:
+          length_prefix = await self.__recv_exactly(4, loop)
+          message_length = struct.unpack('>I', length_prefix)[0]
+          raw_data = await self.__recv_exactly(message_length, loop)
+        try:
+          response = cbor2.loads(raw_data)
+        except cbor2.CBORDecodeValueError as e:
+          self.logger.error(f"{e}")
+          raise ValueError(f"{e}")
+        self.logger.debug(f"Received daemon response: [{len(raw_data)}] {type(response)}")
         return response
 
     async def worker_loop(self, loop:asyncio.events.AbstractEventLoop) -> None:
