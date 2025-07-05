@@ -127,8 +127,90 @@ async def send_query_and_wait(client, channel_id, message_payload, node_hash, qu
     return None
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.channel
+async def test_thinclient_already_in_use_newly_created():
+    from .conftest import is_daemon_available, get_config_path
 
+    # Skip test if daemon is not available
+    if not is_daemon_available():
+        pytest.skip("Katzenpost client daemon not available")
 
+    config_path = get_config_path()
+    if not os.path.exists(config_path):
+        pytest.skip(f"Config file not found: {config_path}")
+
+    # Initialize test state
+    state = ChannelTestState()
+
+    # Create Alice's client
+    alice_cfg = Config(
+        config_path,
+        on_message_reply=state.alice_reply_handler,
+        on_message_sent=state.alice_sent_handler,
+        on_connection_status=state.alice_connection_handler
+    )
+    alice_client = ThinClient(alice_cfg)
+    loop = asyncio.get_event_loop()
+    await alice_client.start(loop)
+    alice_pki = alice_client.pki_document()
+
+    # Alice creates write channel
+    alice_channel_id1, read_cap, write_cap, index = await alice_client.create_write_channel()
+    assert alice_channel_id1 is not None
+    assert read_cap is not None
+
+    # This should fail because alice_channel_id1 is already active:
+    with pytest.raises(Exception):
+        alice_channel_id2, _, _, _ = await alice_client.create_write_channel(write_cap, index)
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.channel
+async def test_thinclient_already_in_use():
+    from .conftest import is_daemon_available, get_config_path
+
+    # Skip test if daemon is not available
+    if not is_daemon_available():
+        pytest.skip("Katzenpost client daemon not available")
+
+    config_path = get_config_path()
+    if not os.path.exists(config_path):
+        pytest.skip(f"Config file not found: {config_path}")
+
+    # Initialize test state
+    state = ChannelTestState()
+
+    # Create Alice's client
+    alice_cfg = Config(
+        config_path,
+        on_message_reply=state.alice_reply_handler,
+        on_message_sent=state.alice_sent_handler,
+        on_connection_status=state.alice_connection_handler
+    )
+    alice_client = ThinClient(alice_cfg)
+    loop = asyncio.get_event_loop()
+    await alice_client.start(loop)
+    alice_pki = alice_client.pki_document()
+
+    # Alice creates write channel
+    alice_channel_id1, read_cap, write_cap, index = await alice_client.create_write_channel()
+    assert alice_channel_id1 is not None
+    assert read_cap is not None
+
+    # Now we close the channel, then recreate it:
+    await alice_client.close_channel(alice_channel_id1)
+    alice_channel_id2, read_cap2, write_cap2, index = await alice_client.create_write_channel(write_cap, index)
+    assert alice_channel_id2 is not None
+    assert read_cap2 is not None
+
+    # And then we do it again, testing that close_channel cleaned up
+    # the "already in use" cache:
+    await alice_client.close_channel(alice_channel_id2)
+    alice_channel_id3, read_cap3, write_cap3, index = await alice_client.create_write_channel(write_cap, index)
+    assert alice_channel_id3 is not None
+    assert read_cap3 is not None
 
 @pytest.mark.asyncio
 @pytest.mark.integration
