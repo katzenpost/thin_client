@@ -65,6 +65,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   from typing import Tuple, Any, Dict, List, Callable
 
+mutex = asyncio.Lock()
+
 # Thin Client Error Codes (matching Go implementation)
 THIN_CLIENT_SUCCESS = 0
 THIN_CLIENT_ERROR_CONNECTION_LOST = 1
@@ -1067,6 +1069,10 @@ class ThinClient:
     # Channel API methods
 
     async def create_write_channel(self, write_cap: "bytes|None "=None, message_box_index: "bytes|None"=None) -> "Tuple[bytes,bytes,bytes,bytes]":
+      async with mutex:
+       return await self._create_write_channel(write_cap, message_box_index)
+
+    async def _create_write_channel(self, write_cap: "bytes|None "=None, message_box_index: "bytes|None"=None) -> "Tuple[bytes,bytes,bytes,bytes]":
         """
         Create a new pigeonhole write channel.
 
@@ -1126,6 +1132,10 @@ class ThinClient:
             raise
 
     async def create_read_channel(self, read_cap:bytes, message_box_index: "bytes|None"=None) -> "Tuple[bytes,bytes]":
+      async with mutex:
+        return await self._create_read_channel(read_cap, message_box_index)
+
+    async def _create_read_channel(self, read_cap:bytes, message_box_index: "bytes|None"=None) -> "Tuple[bytes,bytes]":
         """
         Create a read channel from a read capability.
 
@@ -1181,7 +1191,12 @@ class ThinClient:
             self.logger.error(f"Error creating read channel: {e}")
             raise
 
+    
     async def write_channel(self, channel_id: bytes, payload: "bytes|str") -> "Tuple[bytes,bytes]":
+      async with mutex:
+        return await self._write_channel(channel_id, payload)
+
+    async def _write_channel(self, channel_id: bytes, payload: "bytes|str") -> "Tuple[bytes,bytes]":
         """
         Prepare a write message for a pigeonhole channel and return the SendMessage payload and next MessageBoxIndex.
         The thin client must then call send_message with the returned payload to actually send the message.
