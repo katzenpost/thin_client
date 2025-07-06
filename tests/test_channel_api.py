@@ -58,78 +58,6 @@ class ChannelTestState:
         self.bob_events.append(event)
 
 
-async def send_query_and_wait(client, channel_id, message_payload, node_hash, queue_id, state):
-    """
-    Send a channel query and wait for the reply with retry logic.
-    Python equivalent of the Go sendQueryAndWait function.
-
-    Args:
-        client: The thin client instance
-        channel_id: The channel ID for the query
-        message_payload: The message payload to send
-        node_hash: Destination node hash
-        queue_id: Destination queue ID
-        state: Test state object to track replies
-
-    Returns:
-        The received payload bytes or None if all attempts failed
-    """
-    logger = logging.getLogger('test_channel_api')
-    max_retries = 5
-    retry_delay = 3.0  # seconds
-    reply_timeout = 15.0  # timeout per attempt
-
-    for attempt in range(1, max_retries + 1):
-        # Clear the reply event and reset state before sending
-        client.reply_received_event.clear()
-        initial_reply_count = len(state.bob_replies)
-
-        # Send the channel query
-        await client.send_channel_query(channel_id, message_payload, node_hash, queue_id)
-
-        # Wait for reply with timeout
-        try:
-            await asyncio.wait_for(client.await_message_reply(), timeout=reply_timeout)
-
-            # Check if we got a new reply
-            if len(state.bob_replies) > initial_reply_count:
-                latest_reply = state.bob_replies[-1]
-                if 'payload' in latest_reply and latest_reply['payload'] is not None:
-                    payload = latest_reply['payload']
-                    if len(payload) > 0:
-                        return payload
-                    else:
-                        logger.warning(f"Received empty payload on attempt {attempt}, retrying...")
-                else:
-                    logger.warning(f"Reply missing payload on attempt {attempt}, retrying...")
-            else:
-                logger.warning(f"No new replies received on attempt {attempt}, retrying...")
-
-        except asyncio.TimeoutError:
-            logger.warning(f"Timeout on attempt {attempt}")
-            # Check if we got a reply via callback even if await_message_reply timed out
-            if len(state.bob_replies) > initial_reply_count:
-                latest_reply = state.bob_replies[-1]
-                if 'payload' in latest_reply and latest_reply['payload'] is not None:
-                    payload = latest_reply['payload']
-                    if len(payload) > 0:
-                        return payload
-        except Exception as e:
-            logger.error(f"Unexpected error on attempt {attempt}: {e}")
-
-        # Retry logic
-        if attempt < max_retries:
-            await asyncio.sleep(retry_delay)
-        else:
-            logger.error(f"All {max_retries} attempts failed")
-            break
-
-    return None
-
-
-
-
-
 @pytest.mark.asyncio
 @pytest.mark.integration
 @pytest.mark.channel
@@ -251,7 +179,7 @@ async def test_docker_courier_service_new_thinclient_api():
             channel_id=bob_channel_id,
             dest_node=courier_node_hash,
             dest_queue=courier_queue_id,
-            max_retries=2
+            max_retries=4  # Match Go client retry count
         )
 
         assert received_payload is not None, "Bob should receive a reply - this should work like the Go test!"

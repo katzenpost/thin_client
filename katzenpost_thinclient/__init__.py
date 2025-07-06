@@ -78,6 +78,8 @@ THIN_CLIENT_ERROR_PERMISSION_DENIED = 8
 THIN_CLIENT_ERROR_INVALID_PAYLOAD = 9
 THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE = 10
 THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY = 11
+THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION = 12
+THIN_CLIENT_PROPAGATION_ERROR = 13
 
 def thin_client_error_to_string(error_code: int) -> str:
     """Convert a thin client error code to a human-readable string."""
@@ -94,38 +96,8 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_INVALID_PAYLOAD: "Invalid payload",
         THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE: "Service unavailable",
         THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY: "Duplicate capability",
-    }
-    return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
-
-# Thin Client Error Codes (matching Go implementation)
-THIN_CLIENT_SUCCESS = 0
-THIN_CLIENT_ERROR_CONNECTION_LOST = 1
-THIN_CLIENT_ERROR_TIMEOUT = 2
-THIN_CLIENT_ERROR_INVALID_REQUEST = 3
-THIN_CLIENT_ERROR_INTERNAL_ERROR = 4
-THIN_CLIENT_ERROR_MAX_RETRIES = 5
-THIN_CLIENT_ERROR_INVALID_CHANNEL = 6
-THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND = 7
-THIN_CLIENT_ERROR_PERMISSION_DENIED = 8
-THIN_CLIENT_ERROR_INVALID_PAYLOAD = 9
-THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE = 10
-THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY = 11
-
-def thin_client_error_to_string(error_code: int) -> str:
-    """Convert a thin client error code to a human-readable string."""
-    error_messages = {
-        THIN_CLIENT_SUCCESS: "Success",
-        THIN_CLIENT_ERROR_CONNECTION_LOST: "Connection lost",
-        THIN_CLIENT_ERROR_TIMEOUT: "Timeout",
-        THIN_CLIENT_ERROR_INVALID_REQUEST: "Invalid request",
-        THIN_CLIENT_ERROR_INTERNAL_ERROR: "Internal error",
-        THIN_CLIENT_ERROR_MAX_RETRIES: "Maximum retries exceeded",
-        THIN_CLIENT_ERROR_INVALID_CHANNEL: "Invalid channel",
-        THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND: "Channel not found",
-        THIN_CLIENT_ERROR_PERMISSION_DENIED: "Permission denied",
-        THIN_CLIENT_ERROR_INVALID_PAYLOAD: "Invalid payload",
-        THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE: "Service unavailable",
-        THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY: "Duplicate capability",
+        THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION: "Courier cache corruption",
+        THIN_CLIENT_PROPAGATION_ERROR: "Propagation error",
     }
     return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
 
@@ -396,9 +368,9 @@ class Config:
                     - 'surbid' (bytes, optional): SURB ID if reply used SURB, None otherwise
                     - 'payload' (bytes): Reply payload data from the service
                     - 'reply_index' (int, optional): Index of reply used (relevant for channel reads)
-                    - 'err' (str, optional): Error message if reply failed, empty string if successful
+                    - 'error_code' (int): Error code indicating success (0) or specific failure condition
 
-                Example: ``{'message_id': b'\\x01\\x02...', 'surbid': b'\\xaa\\xbb...', 'payload': b'echo response', 'reply_index': 0, 'err': ''}``
+                Example: ``{'message_id': b'\\x01\\x02...', 'surbid': b'\\xaa\\xbb...', 'payload': b'echo response', 'reply_index': 0, 'error_code': 0}``
 
         Note:
             All callbacks are optional. If not provided, the corresponding events will be ignored.
@@ -766,9 +738,12 @@ class ThinClient:
                 reply_message_id = reply.get("message_id")
                 if reply_message_id is not None and reply_message_id == self._expected_message_id:
                     self.logger.debug(f"Received matching MessageReplyEvent for message_id {reply_message_id.hex()[:16]}...")
-                    # Handle error in reply
-                    if reply.get("err"):
-                        self.logger.debug(f"Reply contains error: {reply['err']}")
+                    # Handle error in reply using error_code field
+                    error_code = reply.get("error_code", 0)
+                    self.logger.debug(f"MessageReplyEvent: error_code={error_code}")
+                    if error_code != 0:
+                        error_msg = thin_client_error_to_string(error_code)
+                        self.logger.debug(f"Reply contains error: {error_msg} (error code {error_code})")
                         self._received_reply_payload = None
                     else:
                         payload = reply.get("payload")
@@ -1372,8 +1347,8 @@ class ThinClient:
                 if attempt == max_retries:
                     break
 
-                # Add a small delay between retries to allow for message propagation
-                await asyncio.sleep(2.0)
+                # Add a delay between retries to allow for message propagation (match Go client)
+                await asyncio.sleep(5.0)
 
         # All reply indices and attempts failed
         self.logger.debug(f"read_channel_with_retry: All reply indices failed after {max_retries} attempts each")
