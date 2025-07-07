@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """
+TODO: missing shudown_event/shutdown_event handling
+
 Katzenpost Python Thin Client
 =============================
 
@@ -60,12 +62,19 @@ import cbor2
 import pprintpp
 import toml
 import hashlib
+from collections import defaultdict
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   from typing import Tuple, Any, Dict, List, Callable
 
-mutex = asyncio.Lock()
+from katzenpost_thinclient.thinclient_data import ReadChannelReply
+
+channel_mutexes = defaultdict(asyncio.Lock)
+def mutex(channel_id):
+  global channel_mutexes
+  channel_mutexes[channel_id] = channel_mutexes[channel_id]  # ensure we get the same Lock next time
+  return channel_mutexes[channel_id]
 
 # Thin Client Error Codes (matching Go implementation)
 THIN_CLIENT_SUCCESS = 0
@@ -136,7 +145,8 @@ __all__ = [
     'ThinClient',
     'Config',
     'ServiceDescriptor',
-    'find_services'
+    'find_services',
+    'ReadChannelReply',
 ]
 
 # SURB_ID_SIZE is the size in bytes for the
@@ -450,6 +460,13 @@ class ThinClient:
     All cryptographic operations are handled by the daemon, not by this client.
     """
 
+    def channel_reply_2event(self, channel_id:int) -> asyncio.Queue:
+      if not self.channel_reply_sevent.get(channel_id, None):
+        # these are unbounded, that may not be ideal if the reader forgets to read, but
+        # we are dispatching from a non-async function for some reason ................
+        self.channel_reply_sevent[channel_id] = asyncio.Queue()
+      return self.channel_reply_sevent.get(channel_id)
+
     def __init__(self, config:Config) -> None:
         """
         Initialize the thin client with the given configuration.
@@ -460,11 +477,11 @@ class ThinClient:
         Raises:
             RuntimeError: If the network type is not recognized or config is incomplete.
         """
+        self.channel_reply_sevent: "Dict[int,asyncio.Queue]" = {}
         self.pki_doc : Dict[Any,Any] | None = None
         self.config = config
         self.reply_received_event = asyncio.Event()
         self.channel_reply_event = asyncio.Event()
-        self.channel_reply_data : Dict[Any,Any] | None = None
         # For handling async read channel responses with message ID correlation
         self.pending_read_channels : Dict[bytes,asyncio.Event] = {}  # message_id -> asyncio.Event
         self.read_channel_responses : Dict[bytes,bytes] = {}  # message_id -> payload
@@ -553,7 +570,7 @@ class ThinClient:
         assert response is not None
         assert response["new_pki_document_event"] is not None
         self.handle_response(response)
-        
+
         # Start the read loop as a background task
         self.logger.debug("starting read loop")
         self.task = loop.create_task(self.worker_loop(loop))
@@ -575,7 +592,7 @@ class ThinClient:
             bool: True if connected, False if in offline mode.
         """
         return self._is_connected
-        
+
     def stop(self) -> None:
         """
         Gracefully shut down the client and close its socket.
@@ -631,7 +648,7 @@ class ThinClient:
         except cbor2.CBORDecodeValueError as e:
           self.logger.error(f"{e}")
           raise ValueError(f"{e}")
-        self.logger.debug(f"Received daemon response: [{len(raw_data)}] {type(response)}")
+        self.logger.debug(f"Received daemon response: [{len(raw_data)}] {response}")
         return response
 
     async def worker_loop(self, loop:asyncio.events.AbstractEventLoop) -> None:
@@ -760,7 +777,7 @@ class ThinClient:
             self.config.handle_message_sent_event(response["message_sent_event"])
             return
         if response.get("message_reply_event") is not None:
-            self.logger.debug("message reply event")
+            self.logger.debug("message reply event", response['message_reply_event'])
             reply = response["message_reply_event"]
 
             # Check if this reply matches our expected message ID for channel operations
@@ -796,37 +813,21 @@ class ThinClient:
             return
 
         # Handle channel API replies
-        if response.get("create_write_channel_reply") is not None:
-            self.logger.debug("channel create_write_channel_reply event")
-            self.channel_reply_data = response
-            self.channel_reply_event.set()
+        for kind in (
+            "create_write_channel_reply",
+            "create_read_channel_reply",
+            "write_channel_reply",
+            "read_channel_reply",
+            "copy_channel_reply"
+        ):
+          if response.get(kind, None):
+            self.logger.debug(f"{kind} for channel {response[kind]['channel_id']}")
+            if kind in ("create_write_channel_reply","create_read_channel_reply"):
+              # the problem with not having the client pick the channel IDs is ... how do we identify the response to open a new channel?
+              self.channel_reply_2event(channel_id=0).put_nowait(response[kind])
+            else:
+              self.channel_reply_2event(response[kind]['channel_id']).put_nowait(response[kind]) # was: self.channel_reply_data, self.channel_reply_event
             return
-
-        if response.get("create_read_channel_reply") is not None:
-            self.logger.debug("channel create_read_channel_reply event")
-            self.channel_reply_data = response
-            self.channel_reply_event.set()
-            return
-
-        if response.get("write_channel_reply") is not None:
-            self.logger.debug("channel write_channel_reply event")
-            self.channel_reply_data = response
-            self.channel_reply_event.set()
-            return
-
-        if response.get("read_channel_reply") is not None:
-            self.logger.debug("channel read_channel_reply event")
-            self.channel_reply_data = response
-            self.channel_reply_event.set()
-            return
-
-        if response.get("copy_channel_reply") is not None:
-            self.logger.debug("channel copy_channel_reply event")
-            self.channel_reply_data = response
-            self.channel_reply_event.set()
-            return
-
-
 
     async def send_message_without_reply(self, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
         """
@@ -1049,7 +1050,7 @@ class ThinClient:
         for service_cert_blob in doc['ServiceNodes']:
             service_cert = cbor2.loads(service_cert_blob)
             service_nodes.append(service_cert)
-            
+
         for layer in doc['Topology']:
             for mix_desc_blob in layer:
                 mix_cert = cbor2.loads(mix_desc_blob)
@@ -1069,7 +1070,7 @@ class ThinClient:
     # Channel API methods
 
     async def create_write_channel(self, write_cap: "bytes|None "=None, message_box_index: "bytes|None"=None) -> "Tuple[bytes,bytes,bytes,bytes]":
-      async with mutex:
+      async with mutex(0):
        return await self._create_write_channel(write_cap, message_box_index)
 
     async def _create_write_channel(self, write_cap: "bytes|None "=None, message_box_index: "bytes|None"=None) -> "Tuple[bytes,bytes,bytes,bytes]":
@@ -1107,32 +1108,23 @@ class ThinClient:
         length_prefixed_request = length_prefix + cbor_request
 
         try:
-            # Clear previous reply data and reset event
-            self.channel_reply_data = None
-            self.channel_reply_event.clear()
-
             await self._send_all(length_prefixed_request)
             self.logger.info("CreateWriteChannel request sent successfully.")
 
             # Wait for CreateWriteChannelReply via the background worker
-            await self.channel_reply_event.wait()
-
-            if self.channel_reply_data and self.channel_reply_data.get("create_write_channel_reply"):
-                reply = self.channel_reply_data["create_write_channel_reply"]
-                error_code = reply.get("error_code", 0)
-                if error_code != 0:
-                    error_msg = thin_client_error_to_string(error_code)
-                    raise Exception(f"CreateWriteChannel failed: {error_msg} (error code {error_code})")
-                return reply["channel_id"], reply["read_cap"], reply["write_cap"], reply["next_message_index"]
-            else:
-                raise Exception("No create_write_channel_reply received")
+            reply = await self.channel_reply_2event(channel_id=0).get() # TODO could block on "create_write_channel_reply" instead of chan 0
+            error_code = reply.get("error_code", 0)
+            if error_code != 0:
+              error_msg = thin_client_error_to_string(error_code)
+              raise Exception(f"CreateWriteChannel failed: {error_msg} (error code {error_code})")
+            return reply["channel_id"], reply["read_cap"], reply["write_cap"], reply["next_message_index"]
 
         except Exception as e:
             self.logger.error(f"Error creating write channel: {e}")
             raise
 
     async def create_read_channel(self, read_cap:bytes, message_box_index: "bytes|None"=None) -> "Tuple[bytes,bytes]":
-      async with mutex:
+      async with mutex(0):
         return await self._create_read_channel(read_cap, message_box_index)
 
     async def _create_read_channel(self, read_cap:bytes, message_box_index: "bytes|None"=None) -> "Tuple[bytes,bytes]":
@@ -1167,33 +1159,25 @@ class ThinClient:
         length_prefixed_request = length_prefix + cbor_request
 
         try:
-            # Clear previous reply data and reset event
-            self.channel_reply_data = None
-            self.channel_reply_event.clear()
-
             await self._send_all(length_prefixed_request)
             self.logger.info("CreateReadChannel request sent successfully.")
 
             # Wait for CreateReadChannelReply via the background worker
-            await self.channel_reply_event.wait()
+            reply = await self.channel_reply_2event(channel_id=0).get()
 
-            if self.channel_reply_data and self.channel_reply_data.get("create_read_channel_reply"):
-                reply = self.channel_reply_data["create_read_channel_reply"]
-                error_code = reply.get("error_code", 0)
-                if error_code != 0:
-                    error_msg = thin_client_error_to_string(error_code)
-                    raise Exception(f"CreateReadChannel failed: {error_msg} (error code {error_code})")
-                return reply["channel_id"], reply["next_message_index"]
-            else:
-                raise Exception("No create_read_channel_reply received")
+            error_code = reply.get("error_code", 0)
+            if error_code != 0:
+              error_msg = thin_client_error_to_string(error_code)
+              raise Exception(f"CreateReadChannel failed: {error_msg} (error code {error_code})")
+            return reply["channel_id"], reply["next_message_index"]
 
         except Exception as e:
             self.logger.error(f"Error creating read channel: {e}")
             raise
 
-    
+
     async def write_channel(self, channel_id: bytes, payload: "bytes|str") -> "Tuple[bytes,bytes]":
-      async with mutex:
+      async with mutex(channel_id):
         return await self._write_channel(channel_id, payload)
 
     async def _write_channel(self, channel_id: bytes, payload: "bytes|str") -> "Tuple[bytes,bytes]":
@@ -1228,31 +1212,27 @@ class ThinClient:
         length_prefixed_request = length_prefix + cbor_request
 
         try:
-            # Clear previous reply data and reset event
-            self.channel_reply_data = None
-            self.channel_reply_event.clear()
-
             await self._send_all(length_prefixed_request)
             self.logger.info("WriteChannel prepare request sent successfully.")
 
             # Wait for WriteChannelReply via the background worker
-            await self.channel_reply_event.wait()
+            reply = await self.channel_reply_2event(channel_id=channel_id).get()
 
-            if self.channel_reply_data and self.channel_reply_data.get("write_channel_reply"):
-                reply = self.channel_reply_data["write_channel_reply"]
-                error_code = reply.get("error_code", 0)
-                if error_code != 0:
-                    error_msg = thin_client_error_to_string(error_code)
-                    raise Exception(f"WriteChannel failed: {error_msg} (error code {error_code})")
-                return reply["send_message_payload"], reply["next_message_index"]
-            else:
-                raise Exception("No write_channel_reply received")
+            error_code = reply.get("error_code", 0)
+            if error_code != 0:
+              error_msg = thin_client_error_to_string(error_code)
+              raise Exception(f"WriteChannel failed: {error_msg} (error code {error_code})")
+            return reply["send_message_payload"], reply["next_message_index"]
 
         except Exception as e:
             self.logger.error(f"Error preparing write to channel: {e}")
             raise
 
-    async def read_channel(self, channel_id:int, message_id:"bytes|None"=None, reply_index:"int|None"=None) -> "Tuple[bytes,bytes,int|None]":
+    async def read_channel(self, channel_id:int, message_id:"bytes|None"=None, reply_index:"int|None"=None) -> ReadChannelReply:
+      async with mutex(channel_id):
+        return await self._read_channel(channel_id,message_id,reply_index)
+
+    async def _read_channel(self, channel_id:int, message_id:"bytes|None"=None, reply_index:"int|None"=None) -> ReadChannelReply:
         """
         Prepare a read query for a pigeonhole channel and return the SendMessage payload, next MessageBoxIndex, and used ReplyIndex.
         The thin client must then call send_message with the returned payload to actually send the query.
@@ -1263,10 +1243,11 @@ class ThinClient:
             reply_index (int, optional): The index of the reply to return. If None, defaults to 0.
 
         Returns:
-            tuple: (send_message_payload, next_message_index, used_reply_index) where:
-                - send_message_payload is the prepared payload for send_message
-                - next_message_index is the position to use after successful read
-                - used_reply_index is the reply index that was used (or None if not specified)
+            ReadChannelReply: - send_message_payload is the prepared payload for send_message (a courierenvelope)
+                              - envelope_hash is the courierenvelope hash
+                              - envelope_descriptor is the private key
+                              - next_message_index is the position to use after successful read
+                              - used_reply_index is the reply index that was used (or None if not specified)
 
         Raises:
             Exception: If the read preparation fails.
@@ -1291,33 +1272,29 @@ class ThinClient:
         length_prefixed_request = length_prefix + cbor_request
 
         try:
-            # Clear previous reply data and reset event
-            self.channel_reply_data = None
-            self.channel_reply_event.clear()
-
             await self._send_all(length_prefixed_request)
             self.logger.info(f"ReadChannel request sent for message_id {message_id.hex()[:16]}...")
 
             # Wait for ReadChannelReply via the background worker
-            await self.channel_reply_event.wait()
+            reply = await self.channel_reply_event.get()
 
-            if self.channel_reply_data and self.channel_reply_data.get("read_channel_reply"):
-                reply = self.channel_reply_data["read_channel_reply"]
-                error_code = reply.get("error_code", 0)
-                if error_code != 0:
-                    error_msg = thin_client_error_to_string(error_code)
-                    raise Exception(f"ReadChannel failed: {error_msg} (error code {error_code})")
+            error_code = reply.get("error_code", 0)
+            if error_code != 0:
+              error_msg = thin_client_error_to_string(error_code)
+              raise Exception(f"ReadChannel failed: {error_msg} (error code {error_code})")
 
-                used_reply_index = reply.get("reply_index")
-                return reply["send_message_payload"], reply["next_message_index"], used_reply_index
-            else:
-                raise Exception("No read_channel_reply received")
+            used_reply_index = reply.get("reply_index")
+            return ReadChannelReply(**reply) #return reply["send_message_payload"], reply["next_message_index"], used_reply_index
 
         except Exception as e:
             self.logger.error(f"Error preparing read from channel: {e}")
             raise
 
-    async def read_channel_with_retry(self, channel_id: int, dest_node: bytes, dest_queue: bytes,
+    async def read_channel_with_retry(self, channel_id: int, dest_node: bytes, dest_queue: bytes,max_retries: int = 2) -> bytes:
+      async with mutex(channel_id):
+        return await self._read_channel_with_retry(channel_id,dest_node,dest_queue,max_retries)
+
+    async def _read_channel_with_retry(self, channel_id: int, dest_node: bytes, dest_queue: bytes,
                                     max_retries: int = 2) -> bytes:
         """
         Send a read query for a pigeonhole channel with automatic reply index retry.
@@ -1451,7 +1428,12 @@ class ThinClient:
             self._expected_message_id = None
             self._received_reply_payload = None
 
+
     async def close_channel(self, channel_id: int) -> None:
+      async with mutex(channel_id):
+        return await self._close_channel(channel_id)
+
+    async def _close_channel(self, channel_id: int) -> None:
         """
         Close a pigeonhole channel and clean up its resources.
         This helps avoid running out of channel IDs by properly releasing them.
