@@ -1176,11 +1176,11 @@ class ThinClient:
             raise
 
 
-    async def write_channel(self, channel_id: bytes, payload: "bytes|str") -> "Tuple[bytes,bytes]":
+    async def write_channel(self, channel_id: int, payload: "bytes|str") -> "Tuple[bytes,bytes]":
       async with mutex(channel_id):
         return await self._write_channel(channel_id, payload)
 
-    async def _write_channel(self, channel_id: bytes, payload: "bytes|str") -> "Tuple[bytes,bytes]":
+    async def _write_channel(self, channel_id: int, payload: "bytes|str") -> "Tuple[bytes,bytes]":
         """
         Prepare a write message for a pigeonhole channel and return the SendMessage payload and next MessageBoxIndex.
         The thin client must then call send_message with the returned payload to actually send the message.
