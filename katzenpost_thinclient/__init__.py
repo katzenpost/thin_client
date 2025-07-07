@@ -1276,10 +1276,9 @@ class ThinClient:
             self.logger.info(f"ReadChannel request sent for message_id {message_id.hex()[:16]}...")
 
             # Wait for ReadChannelReply via the background worker
-            reply = await self.channel_reply_event.get()
+            reply = await self.channel_reply_2event(channel_id=channel_id).get()
 
-            error_code = reply.get("error_code", 0)
-            if error_code != 0:
+            if error_code := reply.get("error_code", 0):
               error_msg = thin_client_error_to_string(error_code)
               raise Exception(f"ReadChannel failed: {error_msg} (error code {error_code})")
 
