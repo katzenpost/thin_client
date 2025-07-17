@@ -160,7 +160,89 @@
 
 pub mod error;
 
+// Thin client error codes provide standardized error reporting across the protocol.
+// These codes are used in response messages to indicate the success or failure
+// of operations, allowing applications to handle errors consistently.
 
+/// ThinClientSuccess indicates that the operation completed successfully
+/// with no errors. This is the default success state.
+pub const THIN_CLIENT_SUCCESS: u8 = 0;
+
+/// ThinClientErrorConnectionLost indicates that the connection to the daemon
+/// was lost during the operation. The client should attempt to reconnect.
+pub const THIN_CLIENT_ERROR_CONNECTION_LOST: u8 = 1;
+
+/// ThinClientErrorTimeout indicates that the operation timed out before
+/// completion. This may occur during network operations or when waiting
+/// for responses from the mixnet.
+pub const THIN_CLIENT_ERROR_TIMEOUT: u8 = 2;
+
+/// ThinClientErrorInvalidRequest indicates that the request format was
+/// invalid or contained malformed data that could not be processed.
+pub const THIN_CLIENT_ERROR_INVALID_REQUEST: u8 = 3;
+
+/// ThinClientErrorInternalError indicates an internal error occurred within
+/// the client daemon or thin client that prevented operation completion.
+pub const THIN_CLIENT_ERROR_INTERNAL_ERROR: u8 = 4;
+
+/// ThinClientErrorMaxRetries indicates that the maximum number of retry
+/// attempts was exceeded for a reliable operation (such as ARQ).
+pub const THIN_CLIENT_ERROR_MAX_RETRIES: u8 = 5;
+
+/// ThinClientErrorInvalidChannel indicates that the specified channel ID
+/// is invalid or malformed.
+pub const THIN_CLIENT_ERROR_INVALID_CHANNEL: u8 = 6;
+
+/// ThinClientErrorChannelNotFound indicates that the specified channel
+/// does not exist or has been garbage collected.
+pub const THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND: u8 = 7;
+
+/// ThinClientErrorPermissionDenied indicates that the operation was denied
+/// due to insufficient permissions or capability restrictions.
+pub const THIN_CLIENT_ERROR_PERMISSION_DENIED: u8 = 8;
+
+/// ThinClientErrorInvalidPayload indicates that the message payload was
+/// invalid, too large, or otherwise could not be processed.
+pub const THIN_CLIENT_ERROR_INVALID_PAYLOAD: u8 = 9;
+
+/// ThinClientErrorServiceUnavailable indicates that the requested service
+/// or functionality is currently unavailable.
+pub const THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE: u8 = 10;
+
+/// ThinClientErrorDuplicateCapability indicates that the provided capability
+/// (read or write cap) has already been used and is considered a duplicate.
+pub const THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY: u8 = 11;
+
+/// ThinClientErrorCourierCacheCorruption indicates that the courier's cache
+/// has detected corruption.
+pub const THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION: u8 = 12;
+
+/// ThinClientPropagationError indicates that the request could not be
+/// propagated to replicas.
+pub const THIN_CLIENT_PROPAGATION_ERROR: u8 = 13;
+
+/// Converts a thin client error code to a human-readable string.
+/// This function provides consistent error message formatting across the thin client
+/// protocol and is used for logging and error reporting.
+pub fn thin_client_error_to_string(error_code: u8) -> &'static str {
+    match error_code {
+        THIN_CLIENT_SUCCESS => "Success",
+        THIN_CLIENT_ERROR_CONNECTION_LOST => "Connection lost",
+        THIN_CLIENT_ERROR_TIMEOUT => "Timeout",
+        THIN_CLIENT_ERROR_INVALID_REQUEST => "Invalid request",
+        THIN_CLIENT_ERROR_INTERNAL_ERROR => "Internal error",
+        THIN_CLIENT_ERROR_MAX_RETRIES => "Maximum retries exceeded",
+        THIN_CLIENT_ERROR_INVALID_CHANNEL => "Invalid channel",
+        THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND => "Channel not found",
+        THIN_CLIENT_ERROR_PERMISSION_DENIED => "Permission denied",
+        THIN_CLIENT_ERROR_INVALID_PAYLOAD => "Invalid payload",
+        THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE => "Service unavailable",
+        THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY => "Duplicate capability",
+        THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION => "Courier cache corruption",
+        THIN_CLIENT_PROPAGATION_ERROR => "Propagation error",
+        _ => "Unknown thin client error code",
+    }
+}
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
@@ -529,6 +611,17 @@ impl ThinClient {
         let doc = self.pki_doc.read().await.clone().ok_or(ThinClientError::MissingPkiDocument)?;
         let services = find_services(service_name, &doc);
         services.into_iter().next().ok_or(ThinClientError::ServiceNotFound)
+    }
+
+    /// Returns a courier service destination for the current epoch.
+    /// This method finds and randomly selects a courier service from the current
+    /// PKI document. The returned destination information is used with SendChannelQuery
+    /// and SendChannelQueryAwaitReply to transmit prepared channel operations.
+    /// Returns (dest_node, dest_queue) on success.
+    pub async fn get_courier_destination(&self) -> Result<(Vec<u8>, Vec<u8>), ThinClientError> {
+        let courier_service = self.get_service("courier").await?;
+        let (dest_node, dest_queue) = courier_service.to_destination();
+        Ok((dest_node, dest_queue))
     }
 
     async fn recv(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
@@ -952,8 +1045,8 @@ impl ThinClient {
     }
 
     /// Prepares a message for writing to a Pigeonhole channel.
-    /// Returns (send_message_payload, next_message_index, envelope_descriptor, envelope_hash).
-    pub async fn write_channel(&self, channel_id: u16, payload: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
+    /// Returns (send_message_payload, current_message_index, next_message_index, envelope_descriptor, envelope_hash).
+    pub async fn write_channel(&self, channel_id: u16, payload: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut write_channel = BTreeMap::new();
@@ -982,6 +1075,12 @@ impl ThinClient {
                     .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing send_message_payload in response".to_string()))?;
 
+                let current_message_index = match reply.get(&Value::Text("current_message_index".to_string())) {
+                    Some(Value::Bytes(bytes)) => bytes.clone(),
+                    Some(_) => return Err(ThinClientError::Other("current_message_index is unexpected type".to_string())),
+                    None => return Err(ThinClientError::Other("Missing current_message_index in response".to_string())),
+                };
+
                 let next_message_index = match reply.get(&Value::Text("next_message_index".to_string())) {
                     Some(Value::Bytes(bytes)) => bytes.clone(),
                     Some(_) => return Err(ThinClientError::Other("next_message_index is unexpected type".to_string())),
@@ -996,7 +1095,7 @@ impl ThinClient {
                     .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing envelope_hash in response".to_string()))?;
 
-                return Ok((send_message_payload, next_message_index, envelope_descriptor, envelope_hash));
+                return Ok((send_message_payload, current_message_index, next_message_index, envelope_descriptor, envelope_hash));
             }
 
             // If we get here, it wasn't the reply we were looking for
@@ -1004,8 +1103,8 @@ impl ThinClient {
     }
 
     /// Prepares a read query for a Pigeonhole channel.
-    /// Returns (send_message_payload, next_message_index, reply_index, envelope_descriptor, envelope_hash).
-    pub async fn read_channel(&self, channel_id: u16, message_box_index: Option<&[u8]>, reply_index: Option<u8>) -> Result<(Vec<u8>, Vec<u8>, Option<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
+    /// Returns (send_message_payload, current_message_index, next_message_index, reply_index, envelope_descriptor, envelope_hash).
+    pub async fn read_channel(&self, channel_id: u16, message_box_index: Option<&[u8]>, reply_index: Option<u8>) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Option<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut read_channel = BTreeMap::new();
@@ -1041,6 +1140,12 @@ impl ThinClient {
                     .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing send_message_payload in response".to_string()))?;
 
+                let current_message_index = match reply.get(&Value::Text("current_message_index".to_string())) {
+                    Some(Value::Bytes(bytes)) => bytes.clone(),
+                    Some(_) => return Err(ThinClientError::Other("current_message_index is unexpected type".to_string())),
+                    None => return Err(ThinClientError::Other("Missing current_message_index in response".to_string())),
+                };
+
                 let next_message_index = match reply.get(&Value::Text("next_message_index".to_string())) {
                     Some(Value::Bytes(bytes)) => bytes.clone(),
                     Some(_) => return Err(ThinClientError::Other("next_message_index is unexpected type".to_string())),
@@ -1058,7 +1163,7 @@ impl ThinClient {
                     .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing envelope_hash in response".to_string()))?;
 
-                return Ok((send_message_payload, next_message_index, used_reply_index, envelope_descriptor, envelope_hash));
+                return Ok((send_message_payload, current_message_index, next_message_index, used_reply_index, envelope_descriptor, envelope_hash));
             }
 
             // If we get here, it wasn't the reply we were looking for
@@ -1066,11 +1171,12 @@ impl ThinClient {
     }
 
     /// Resumes a write channel from a previous session.
-    pub async fn resume_write_channel(&self, write_cap: Vec<u8>, message_box_index: Option<Vec<u8>>) -> Result<(), ThinClientError> {
+    /// Returns channel_id on success.
+    pub async fn resume_write_channel(&self, write_cap: Vec<u8>, message_box_index: Option<Vec<u8>>) -> Result<u16, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut resume_write_channel = BTreeMap::new();
-        resume_write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        resume_write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
         resume_write_channel.insert(Value::Text("write_cap".to_string()), Value::Bytes(write_cap));
         if let Some(index) = message_box_index {
             resume_write_channel.insert(Value::Text("message_box_index".to_string()), Value::Bytes(index));
@@ -1079,15 +1185,45 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("resume_write_channel".to_string()), Value::Map(resume_write_channel));
 
-        self.send_cbor_request(request).await
+        self.send_cbor_request(request).await?;
+
+        // Wait for ResumeWriteChannelReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("resume_write_channel_reply".to_string())) {
+                // Check for error first
+                if let Some(Value::Integer(error_code)) = reply.get(&Value::Text("error_code".to_string())) {
+                    if *error_code != 0 {
+                        return Err(ThinClientError::Other(format!("ResumeWriteChannel failed with error code: {}", error_code)));
+                    }
+                }
+
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("ResumeWriteChannel failed: {}", err)));
+                }
+
+                let channel_id = reply.get(&Value::Text("channel_id".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u16), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
+
+                return Ok(channel_id);
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
     }
 
     /// Resumes a read channel from a previous session.
-    pub async fn resume_read_channel(&self, read_cap: Vec<u8>, next_message_index: Option<Vec<u8>>, reply_index: Option<u8>) -> Result<(), ThinClientError> {
+    /// Returns channel_id on success.
+    pub async fn resume_read_channel(&self, read_cap: Vec<u8>, next_message_index: Option<Vec<u8>>, reply_index: Option<u8>) -> Result<u16, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut resume_read_channel = BTreeMap::new();
-        resume_read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        resume_read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
         resume_read_channel.insert(Value::Text("read_cap".to_string()), Value::Bytes(read_cap));
         if let Some(index) = next_message_index {
             resume_read_channel.insert(Value::Text("next_message_index".to_string()), Value::Bytes(index));
@@ -1099,7 +1235,154 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("resume_read_channel".to_string()), Value::Map(resume_read_channel));
 
-        self.send_cbor_request(request).await
+        self.send_cbor_request(request).await?;
+
+        // Wait for ResumeReadChannelReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("resume_read_channel_reply".to_string())) {
+                // Check for error first
+                if let Some(Value::Integer(error_code)) = reply.get(&Value::Text("error_code".to_string())) {
+                    if *error_code != 0 {
+                        return Err(ThinClientError::Other(format!("ResumeReadChannel failed with error code: {}", error_code)));
+                    }
+                }
+
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("ResumeReadChannel failed: {}", err)));
+                }
+
+                let channel_id = reply.get(&Value::Text("channel_id".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u16), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
+
+                return Ok(channel_id);
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
+    }
+
+    /// Resumes a write channel with a specific query state.
+    /// This method provides more granular resumption control than ResumeWriteChannel
+    /// by allowing the application to resume from a specific query state, including
+    /// the envelope descriptor and hash. This is useful when resuming from a partially
+    /// completed write operation that was interrupted during transmission.
+    /// Returns channel_id on success.
+    pub async fn resume_write_channel_query(
+        &self,
+        write_cap: Vec<u8>,
+        message_box_index: Vec<u8>,
+        envelope_descriptor: Vec<u8>,
+        envelope_hash: Vec<u8>,
+    ) -> Result<u16, ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let mut resume_write_channel_query = BTreeMap::new();
+        resume_write_channel_query.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
+        resume_write_channel_query.insert(Value::Text("write_cap".to_string()), Value::Bytes(write_cap));
+        resume_write_channel_query.insert(Value::Text("message_box_index".to_string()), Value::Bytes(message_box_index));
+        resume_write_channel_query.insert(Value::Text("envelope_descriptor".to_string()), Value::Bytes(envelope_descriptor));
+        resume_write_channel_query.insert(Value::Text("envelope_hash".to_string()), Value::Bytes(envelope_hash));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("resume_write_channel_query".to_string()), Value::Map(resume_write_channel_query));
+
+        self.send_cbor_request(request).await?;
+
+        // Wait for ResumeWriteChannelQueryReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("resume_write_channel_query_reply".to_string())) {
+                // Check for error first
+                if let Some(Value::Integer(error_code)) = reply.get(&Value::Text("error_code".to_string())) {
+                    if *error_code != 0 {
+                        return Err(ThinClientError::Other(format!("ResumeWriteChannelQuery failed with error code: {}", error_code)));
+                    }
+                }
+
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("ResumeWriteChannelQuery failed: {}", err)));
+                }
+
+                let channel_id = reply.get(&Value::Text("channel_id".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u16), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
+
+                return Ok(channel_id);
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
+    }
+
+    /// Resumes a read channel with a specific query state.
+    /// This method provides more granular resumption control than ResumeReadChannel
+    /// by allowing the application to resume from a specific query state, including
+    /// the envelope descriptor and hash. This is useful when resuming from a partially
+    /// completed read operation that was interrupted during transmission.
+    /// Returns channel_id on success.
+    pub async fn resume_read_channel_query(
+        &self,
+        read_cap: Vec<u8>,
+        next_message_index: Vec<u8>,
+        reply_index: Option<u8>,
+        envelope_descriptor: Vec<u8>,
+        envelope_hash: Vec<u8>,
+    ) -> Result<u16, ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let mut resume_read_channel_query = BTreeMap::new();
+        resume_read_channel_query.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
+        resume_read_channel_query.insert(Value::Text("read_cap".to_string()), Value::Bytes(read_cap));
+        resume_read_channel_query.insert(Value::Text("next_message_index".to_string()), Value::Bytes(next_message_index));
+        if let Some(index) = reply_index {
+            resume_read_channel_query.insert(Value::Text("reply_index".to_string()), Value::Integer(index.into()));
+        }
+        resume_read_channel_query.insert(Value::Text("envelope_descriptor".to_string()), Value::Bytes(envelope_descriptor));
+        resume_read_channel_query.insert(Value::Text("envelope_hash".to_string()), Value::Bytes(envelope_hash));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("resume_read_channel_query".to_string()), Value::Map(resume_read_channel_query));
+
+        self.send_cbor_request(request).await?;
+
+        // Wait for ResumeReadChannelQueryReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("resume_read_channel_query_reply".to_string())) {
+                // Check for error first
+                if let Some(Value::Integer(error_code)) = reply.get(&Value::Text("error_code".to_string())) {
+                    if *error_code != 0 {
+                        return Err(ThinClientError::Other(format!("ResumeReadChannelQuery failed with error code: {}", error_code)));
+                    }
+                }
+
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("ResumeReadChannelQuery failed: {}", err)));
+                }
+
+                let channel_id = reply.get(&Value::Text("channel_id".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u16), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
+
+                return Ok(channel_id);
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
     }
 
     /// Sends a prepared channel query to the mixnet without waiting for a reply.
