@@ -58,8 +58,7 @@ async fn test_channel_api_basics() -> Result<(), Box<dyn std::error::Error>> {
     let original_message = b"hello1";
     println!("Alice: Writing first message and waiting for completion");
 
-    let (write_payload1, _current_index1, _next_index1, _envelope_descriptor1, _envelope_hash1) =
-        alice_thin_client.write_channel(alice_channel_id, original_message).await?;
+    let write_reply1 = alice_thin_client.write_channel(alice_channel_id, original_message).await?;
     println!("Alice: Write operation completed successfully");
 
     // Get the courier service from PKI
@@ -70,7 +69,7 @@ async fn test_channel_api_basics() -> Result<(), Box<dyn std::error::Error>> {
 
     let _reply1 = alice_thin_client.send_channel_query_await_reply(
         alice_channel_id,
-        &write_payload1,
+        &write_reply1.send_message_payload,
         dest_node.clone(),
         dest_queue.clone(),
         alice_message_id1
@@ -80,15 +79,14 @@ async fn test_channel_api_basics() -> Result<(), Box<dyn std::error::Error>> {
     let second_message = b"hello2";
     println!("Alice: Writing second message and waiting for completion");
 
-    let (write_payload2, _current_index2, _next_index2, _envelope_descriptor2, _envelope_hash2) =
-        alice_thin_client.write_channel(alice_channel_id, second_message).await?;
+    let write_reply2 = alice_thin_client.write_channel(alice_channel_id, second_message).await?;
     println!("Alice: Second write operation completed successfully");
 
     let alice_message_id2 = ThinClient::new_message_id();
 
     let _reply2 = alice_thin_client.send_channel_query_await_reply(
         alice_channel_id,
-        &write_payload2,
+        &write_reply2.send_message_payload,
         dest_node.clone(),
         dest_queue.clone(),
         alice_message_id2
@@ -100,23 +98,22 @@ async fn test_channel_api_basics() -> Result<(), Box<dyn std::error::Error>> {
 
     // Bob reads first message
     println!("Bob: Reading first message");
-    let (read_payload1, _current_index, _next_index, _reply_index, _envelope_descriptor1, _envelope_hash1) =
-        bob_thin_client.read_channel(bob_channel_id, None, None).await?;
+    let read_reply1 = bob_thin_client.read_channel(bob_channel_id, None, None).await?;
 
     let bob_message_id1 = ThinClient::new_message_id();
 
     // In a real implementation, you'd retry the SendChannelQueryAwaitReply until you get a response
-    let mut bob_reply_payload = vec![];
+    let mut bob_reply_payload1 = vec![];
     for i in 0..10 {
         match alice_thin_client.send_channel_query_await_reply(
             bob_channel_id,
-            &read_payload1,
+            &read_reply1.send_message_payload,
             dest_node.clone(),
             dest_queue.clone(),
             bob_message_id1.clone()
         ).await {
             Ok(payload) if !payload.is_empty() => {
-                bob_reply_payload = payload;
+                bob_reply_payload1 = payload;
                 break;
             }
             Ok(_) => {
@@ -127,26 +124,26 @@ async fn test_channel_api_basics() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    assert_eq!(original_message, bob_reply_payload.as_slice(), "Bob: Reply payload mismatch");
+    assert_eq!(original_message, bob_reply_payload1.as_slice(), "Bob: Reply payload mismatch");
 
     // Bob reads second message
     println!("Bob: Reading second message");
-    let (read_payload2, _current_index2, _next_index2, _reply_index2, _envelope_descriptor2, _envelope_hash2) =
-        bob_thin_client.read_channel(bob_channel_id, None, None).await?;
+    let read_reply2 = bob_thin_client.read_channel(bob_channel_id, Some(&read_reply1.next_message_index), None).await?;
 
     let bob_message_id2 = ThinClient::new_message_id();
+    let mut bob_reply_payload2 = vec![];
 
     for i in 0..10 {
         println!("Bob: second read attempt {}", i + 1);
         match alice_thin_client.send_channel_query_await_reply(
             bob_channel_id,
-            &read_payload2,
+            &read_reply2.send_message_payload,
             dest_node.clone(),
             dest_queue.clone(),
             bob_message_id2.clone()
         ).await {
             Ok(payload) if !payload.is_empty() => {
-                bob_reply_payload = payload;
+                bob_reply_payload2 = payload;
                 break;
             }
             Ok(_) => {
@@ -156,7 +153,7 @@ async fn test_channel_api_basics() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    assert_eq!(second_message, bob_reply_payload.as_slice(), "Bob: Second reply payload mismatch");
+    assert_eq!(second_message, bob_reply_payload2.as_slice(), "Bob: Second reply payload mismatch");
 
     // Clean up channels
     alice_thin_client.close_channel(alice_channel_id).await?;
@@ -206,8 +203,7 @@ async fn test_resume_write_channel() -> Result<(), Box<dyn std::error::Error>> {
     // Alice writes first message
     let alice_payload1 = b"Hello, Bob!";
     println!("Alice: Writing first message");
-    let (write_payload1, _current_message_index1, next_message_index1, _envelope_descriptor1, _envelope_hash1) =
-        alice_thin_client.write_channel(alice_channel_id, alice_payload1).await?;
+    let write_reply1 = alice_thin_client.write_channel(alice_channel_id, alice_payload1).await?;
 
     // Get courier destination
     let (dest_node, dest_queue) = alice_thin_client.get_courier_destination().await?;
@@ -216,7 +212,7 @@ async fn test_resume_write_channel() -> Result<(), Box<dyn std::error::Error>> {
     // Send first message
     let _reply1 = alice_thin_client.send_channel_query_await_reply(
         alice_channel_id,
-        &write_payload1,
+        &write_reply1.send_message_payload,
         dest_node.clone(),
         dest_queue.clone(),
         alice_message_id1
@@ -232,20 +228,20 @@ async fn test_resume_write_channel() -> Result<(), Box<dyn std::error::Error>> {
     println!("Alice: Resuming write channel");
     let alice_channel_id = alice_thin_client.resume_write_channel(
         write_cap,
-        Some(next_message_index1)
+        Some(write_reply1.next_message_index)
     ).await?;
     println!("Alice: Resumed write channel with ID {}", alice_channel_id);
 
     // Write second message after resume
     println!("Alice: Writing second message after resume");
     let alice_payload2 = b"Second message from Alice!";
-    let (write_payload2, _current_message_index2, _next_message_index2, _envelope_descriptor2, _envelope_hash2) =
+    let write_reply2 =
         alice_thin_client.write_channel(alice_channel_id, alice_payload2).await?;
 
     let alice_message_id2 = ThinClient::new_message_id();
     let _reply2 = alice_thin_client.send_channel_query_await_reply(
         alice_channel_id,
-        &write_payload2,
+        &write_reply2.send_message_payload,
         dest_node.clone(),
         dest_queue.clone(),
         alice_message_id2
@@ -262,7 +258,7 @@ async fn test_resume_write_channel() -> Result<(), Box<dyn std::error::Error>> {
 
     // Bob reads first message
     println!("Bob: Reading first message");
-    let (read_payload1, _current_index1, _next_index1, _reply_index1, _envelope_descriptor1, _envelope_hash1) =
+    let read_reply1 =
         bob_thin_client.read_channel(bob_channel_id, None, None).await?;
 
     let bob_message_id1 = ThinClient::new_message_id();
@@ -271,7 +267,7 @@ async fn test_resume_write_channel() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..10 {
         match alice_thin_client.send_channel_query_await_reply(
             bob_channel_id,
-            &read_payload1,
+            &read_reply1.send_message_payload,
             dest_node.clone(),
             dest_queue.clone(),
             bob_message_id1.clone()
@@ -292,7 +288,7 @@ async fn test_resume_write_channel() -> Result<(), Box<dyn std::error::Error>> {
 
     // Bob reads second message
     println!("Bob: Reading second message");
-    let (read_payload2, _current_index2, _next_index2, _reply_index2, _envelope_descriptor2, _envelope_hash2) =
+    let read_reply2 =
         bob_thin_client.read_channel(bob_channel_id, None, None).await?;
 
     let bob_message_id2 = ThinClient::new_message_id();
@@ -302,7 +298,7 @@ async fn test_resume_write_channel() -> Result<(), Box<dyn std::error::Error>> {
         println!("Bob: second message read attempt {}", i + 1);
         match alice_thin_client.send_channel_query_await_reply(
             bob_channel_id,
-            &read_payload2,
+            &read_reply2.send_message_payload,
             dest_node.clone(),
             dest_queue.clone(),
             bob_message_id2.clone()
@@ -370,8 +366,7 @@ async fn test_resume_write_channel_query() -> Result<(), Box<dyn std::error::Err
 
     // Alice prepares first message but doesn't send it yet
     let alice_payload1 = b"Hello, Bob!";
-    let (alice_first_write_ciphertext, current_message_index, _next_message_index, envelope_descriptor, envelope_hash) =
-        alice_thin_client.write_channel(alice_channel_id, alice_payload1).await?;
+    let write_reply = alice_thin_client.write_channel(alice_channel_id, alice_payload1).await?;
 
     // Get courier destination
     let (courier_node, courier_queue_id) = alice_thin_client.get_courier_destination().await?;
@@ -380,13 +375,13 @@ async fn test_resume_write_channel_query() -> Result<(), Box<dyn std::error::Err
     // Close the channel immediately (like in Go test - no waiting for propagation)
     alice_thin_client.close_channel(alice_channel_id).await?;
 
-    // Resume the write channel with query state using CurrentMessageIndex like Go test
+    // Resume the write channel with query state using current_message_index like Go test
     println!("Alice: Resuming write channel");
     let alice_channel_id = alice_thin_client.resume_write_channel_query(
         write_cap,
-        current_message_index, // Use current_message_index like in Go test
-        envelope_descriptor,
-        envelope_hash
+        write_reply.current_message_index, // Use current_message_index like in Go test
+        write_reply.envelope_descriptor,
+        write_reply.envelope_hash
     ).await?;
     println!("Alice: Resumed write channel with ID {}", alice_channel_id);
 
@@ -394,7 +389,7 @@ async fn test_resume_write_channel_query() -> Result<(), Box<dyn std::error::Err
     println!("Alice: Writing first message after resume");
     let _reply1 = alice_thin_client.send_channel_query_await_reply(
         alice_channel_id,
-        &alice_first_write_ciphertext,
+        &write_reply.send_message_payload,
         courier_node.clone(),
         courier_queue_id.clone(),
         alice_message_id1
@@ -403,13 +398,13 @@ async fn test_resume_write_channel_query() -> Result<(), Box<dyn std::error::Err
     // Write second message
     println!("Alice: Writing second message");
     let alice_payload2 = b"Second message from Alice!";
-    let (write_payload2, _current_message_index2, _next_message_index2, _envelope_descriptor2, _envelope_hash2) =
+    let write_reply2 =
         alice_thin_client.write_channel(alice_channel_id, alice_payload2).await?;
 
     let alice_message_id2 = ThinClient::new_message_id();
     let _reply2 = alice_thin_client.send_channel_query_await_reply(
         alice_channel_id,
-        &write_payload2,
+        &write_reply2.send_message_payload,
         courier_node.clone(),
         courier_queue_id.clone(),
         alice_message_id2
@@ -426,7 +421,7 @@ async fn test_resume_write_channel_query() -> Result<(), Box<dyn std::error::Err
 
     // Bob reads first message
     println!("Bob: Reading first message");
-    let (read_payload1, _current_index1, _next_index1, _reply_index1, _envelope_descriptor1, _envelope_hash1) =
+    let read_reply1 =
         bob_thin_client.read_channel(bob_channel_id, None, None).await?;
 
     let bob_message_id1 = ThinClient::new_message_id();
@@ -435,7 +430,7 @@ async fn test_resume_write_channel_query() -> Result<(), Box<dyn std::error::Err
     for i in 0..10 {
         match alice_thin_client.send_channel_query_await_reply(
             bob_channel_id,
-            &read_payload1,
+            &read_reply1.send_message_payload,
             courier_node.clone(),
             courier_queue_id.clone(),
             bob_message_id1.clone()
@@ -456,7 +451,7 @@ async fn test_resume_write_channel_query() -> Result<(), Box<dyn std::error::Err
 
     // Bob reads second message
     println!("Bob: Reading second message");
-    let (read_payload2, _current_index2, _next_index2, _reply_index2, _envelope_descriptor2, _envelope_hash2) =
+    let read_reply2 =
         bob_thin_client.read_channel(bob_channel_id, None, None).await?;
 
     let bob_message_id2 = ThinClient::new_message_id();
@@ -466,7 +461,7 @@ async fn test_resume_write_channel_query() -> Result<(), Box<dyn std::error::Err
         println!("Bob: second message read attempt {}", i + 1);
         match alice_thin_client.send_channel_query_await_reply(
             bob_channel_id,
-            &read_payload2,
+            &read_reply2.send_message_payload,
             courier_node.clone(),
             courier_queue_id.clone(),
             bob_message_id2.clone()
@@ -534,7 +529,7 @@ async fn test_resume_read_channel() -> Result<(), Box<dyn std::error::Error>> {
 
     // Alice writes first message
     let alice_payload1 = b"Hello, Bob!";
-    let (write_payload1, _current_message_index1, _next_message_index1, _envelope_descriptor1, _envelope_hash1) =
+    let write_reply1 =
         alice_thin_client.write_channel(alice_channel_id, alice_payload1).await?;
 
     let (dest_node, dest_queue) = alice_thin_client.get_courier_destination().await?;
@@ -542,7 +537,7 @@ async fn test_resume_read_channel() -> Result<(), Box<dyn std::error::Error>> {
 
     let _reply1 = alice_thin_client.send_channel_query_await_reply(
         alice_channel_id,
-        &write_payload1,
+        &write_reply1.send_message_payload,
         dest_node.clone(),
         dest_queue.clone(),
         alice_message_id1
@@ -554,13 +549,13 @@ async fn test_resume_read_channel() -> Result<(), Box<dyn std::error::Error>> {
     // Alice writes second message
     println!("Alice: Writing second message");
     let alice_payload2 = b"Second message from Alice!";
-    let (write_payload2, _current_message_index2, _next_message_index2, _envelope_descriptor2, _envelope_hash2) =
+    let write_reply2 =
         alice_thin_client.write_channel(alice_channel_id, alice_payload2).await?;
 
     let alice_message_id2 = ThinClient::new_message_id();
     let _reply2 = alice_thin_client.send_channel_query_await_reply(
         alice_channel_id,
-        &write_payload2,
+        &write_reply2.send_message_payload,
         dest_node.clone(),
         dest_queue.clone(),
         alice_message_id2
@@ -577,8 +572,7 @@ async fn test_resume_read_channel() -> Result<(), Box<dyn std::error::Error>> {
 
     // Bob reads first message
     println!("Bob: Reading first message");
-    let (read_payload1, _current_message_index, next_message_index, reply_index, _envelope_descriptor1, _envelope_hash1) =
-        bob_thin_client.read_channel(bob_channel_id, None, None).await?;
+    let read_reply1 = bob_thin_client.read_channel(bob_channel_id, None, None).await?;
 
     let bob_message_id1 = ThinClient::new_message_id();
     let mut bob_reply_payload1 = vec![];
@@ -586,7 +580,7 @@ async fn test_resume_read_channel() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..10 {
         match alice_thin_client.send_channel_query_await_reply(
             bob_channel_id,
-            &read_payload1,
+            &read_reply1.send_message_payload,
             dest_node.clone(),
             dest_queue.clone(),
             bob_message_id1.clone()
@@ -612,15 +606,14 @@ async fn test_resume_read_channel() -> Result<(), Box<dyn std::error::Error>> {
     println!("Bob: Resuming read channel");
     let bob_channel_id = bob_thin_client.resume_read_channel(
         read_cap,
-        Some(next_message_index),
-        reply_index
+        Some(read_reply1.next_message_index),
+        read_reply1.reply_index
     ).await?;
     println!("Bob: Resumed read channel with ID {}", bob_channel_id);
 
     // Bob reads second message
     println!("Bob: Reading second message");
-    let (read_payload2, _current_message_index2, _next_message_index2, _reply_index2, _envelope_descriptor2, _envelope_hash2) =
-        bob_thin_client.read_channel(bob_channel_id, None, None).await?;
+    let read_reply2 = bob_thin_client.read_channel(bob_channel_id, None, None).await?;
 
     let bob_message_id2 = ThinClient::new_message_id();
     let mut bob_reply_payload2 = vec![];
@@ -629,7 +622,7 @@ async fn test_resume_read_channel() -> Result<(), Box<dyn std::error::Error>> {
         println!("Bob: second message read attempt {}", i + 1);
         match alice_thin_client.send_channel_query_await_reply(
             bob_channel_id,
-            &read_payload2,
+            &read_reply2.send_message_payload,
             dest_node.clone(),
             dest_queue.clone(),
             bob_message_id2.clone()
@@ -698,7 +691,7 @@ async fn test_resume_read_channel_query() -> Result<(), Box<dyn std::error::Erro
 
     // Alice writes first message
     let alice_payload1 = b"Hello, Bob!";
-    let (write_payload1, _current_message_index1, _next_message_index1, _envelope_descriptor1, _envelope_hash1) =
+    let write_reply1 =
         alice_thin_client.write_channel(alice_channel_id, alice_payload1).await?;
 
     let (dest_node, dest_queue) = alice_thin_client.get_courier_destination().await?;
@@ -706,7 +699,7 @@ async fn test_resume_read_channel_query() -> Result<(), Box<dyn std::error::Erro
 
     let _reply1 = alice_thin_client.send_channel_query_await_reply(
         alice_channel_id,
-        &write_payload1,
+        &write_reply1.send_message_payload,
         dest_node.clone(),
         dest_queue.clone(),
         alice_message_id1
@@ -718,13 +711,13 @@ async fn test_resume_read_channel_query() -> Result<(), Box<dyn std::error::Erro
     // Alice writes second message
     println!("Alice: Writing second message");
     let alice_payload2 = b"Second message from Alice!";
-    let (write_payload2, _current_message_index2, _next_message_index2, _envelope_descriptor2, _envelope_hash2) =
+    let write_reply2 =
         alice_thin_client.write_channel(alice_channel_id, alice_payload2).await?;
 
     let alice_message_id2 = ThinClient::new_message_id();
     let _reply2 = alice_thin_client.send_channel_query_await_reply(
         alice_channel_id,
-        &write_payload2,
+        &write_reply2.send_message_payload,
         dest_node.clone(),
         dest_queue.clone(),
         alice_message_id2
@@ -741,8 +734,7 @@ async fn test_resume_read_channel_query() -> Result<(), Box<dyn std::error::Erro
 
     // Bob prepares first read query but doesn't send it yet
     println!("Bob: Reading first message");
-    let (read_payload1, current_message_index, _next_message_index, reply_index, envelope_descriptor, envelope_hash) =
-        bob_thin_client.read_channel(bob_channel_id, None, None).await?;
+    let read_reply1 = bob_thin_client.read_channel(bob_channel_id, None, None).await?;
 
     // Close the read channel
     bob_thin_client.close_channel(bob_channel_id).await?;
@@ -751,10 +743,10 @@ async fn test_resume_read_channel_query() -> Result<(), Box<dyn std::error::Erro
     println!("Bob: Resuming read channel");
     let bob_channel_id = bob_thin_client.resume_read_channel_query(
         read_cap,
-        current_message_index,
-        reply_index,
-        envelope_descriptor,
-        envelope_hash
+        read_reply1.current_message_index,
+        read_reply1.reply_index,
+        read_reply1.envelope_descriptor,
+        read_reply1.envelope_hash
     ).await?;
     println!("Bob: Resumed read channel with ID {}", bob_channel_id);
 
@@ -766,7 +758,7 @@ async fn test_resume_read_channel_query() -> Result<(), Box<dyn std::error::Erro
         println!("Bob: first message read attempt {}", i + 1);
         match alice_thin_client.send_channel_query_await_reply(
             bob_channel_id,
-            &read_payload1,
+            &read_reply1.send_message_payload,
             dest_node.clone(),
             dest_queue.clone(),
             bob_message_id1.clone()
@@ -786,8 +778,7 @@ async fn test_resume_read_channel_query() -> Result<(), Box<dyn std::error::Erro
 
     // Bob reads second message
     println!("Bob: Reading second message");
-    let (read_payload2, _current_message_index2, _next_message_index2, _reply_index2, _envelope_descriptor2, _envelope_hash2) =
-        bob_thin_client.read_channel(bob_channel_id, None, None).await?;
+    let read_reply2 = bob_thin_client.read_channel(bob_channel_id, None, None).await?;
 
     let bob_message_id2 = ThinClient::new_message_id();
     let mut bob_reply_payload2 = vec![];
@@ -796,7 +787,7 @@ async fn test_resume_read_channel_query() -> Result<(), Box<dyn std::error::Erro
         println!("Bob: second message read attempt {}", i + 1);
         match alice_thin_client.send_channel_query_await_reply(
             bob_channel_id,
-            &read_payload2,
+            &read_reply2.send_message_payload,
             dest_node.clone(),
             dest_queue.clone(),
             bob_message_id2.clone()

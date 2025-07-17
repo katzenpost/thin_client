@@ -266,6 +266,27 @@ use log::{debug, error};
 
 use crate::error::ThinClientError;
 
+/// Reply from WriteChannel operation, matching Go WriteChannelReply
+#[derive(Debug, Clone)]
+pub struct WriteChannelReply {
+    pub send_message_payload: Vec<u8>,
+    pub current_message_index: Vec<u8>,
+    pub next_message_index: Vec<u8>,
+    pub envelope_descriptor: Vec<u8>,
+    pub envelope_hash: Vec<u8>,
+}
+
+/// Reply from ReadChannel operation, matching Go ReadChannelReply
+#[derive(Debug, Clone)]
+pub struct ReadChannelReply {
+    pub send_message_payload: Vec<u8>,
+    pub current_message_index: Vec<u8>,
+    pub next_message_index: Vec<u8>,
+    pub reply_index: Option<u8>,
+    pub envelope_descriptor: Vec<u8>,
+    pub envelope_hash: Vec<u8>,
+}
+
 /// The size in bytes of a SURB (Single-Use Reply Block) identifier.
 ///
 /// SURB IDs are used to correlate replies with the original message sender.
@@ -1045,8 +1066,8 @@ impl ThinClient {
     }
 
     /// Prepares a message for writing to a Pigeonhole channel.
-    /// Returns (send_message_payload, current_message_index, next_message_index, envelope_descriptor, envelope_hash).
-    pub async fn write_channel(&self, channel_id: u16, payload: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
+    /// Returns WriteChannelReply matching the Go API.
+    pub async fn write_channel(&self, channel_id: u16, payload: &[u8]) -> Result<WriteChannelReply, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut write_channel = BTreeMap::new();
@@ -1095,7 +1116,13 @@ impl ThinClient {
                     .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing envelope_hash in response".to_string()))?;
 
-                return Ok((send_message_payload, current_message_index, next_message_index, envelope_descriptor, envelope_hash));
+                return Ok(WriteChannelReply {
+                    send_message_payload,
+                    current_message_index,
+                    next_message_index,
+                    envelope_descriptor,
+                    envelope_hash,
+                });
             }
 
             // If we get here, it wasn't the reply we were looking for
@@ -1103,8 +1130,8 @@ impl ThinClient {
     }
 
     /// Prepares a read query for a Pigeonhole channel.
-    /// Returns (send_message_payload, current_message_index, next_message_index, reply_index, envelope_descriptor, envelope_hash).
-    pub async fn read_channel(&self, channel_id: u16, message_box_index: Option<&[u8]>, reply_index: Option<u8>) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Option<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
+    /// Returns ReadChannelReply matching the Go API.
+    pub async fn read_channel(&self, channel_id: u16, message_box_index: Option<&[u8]>, reply_index: Option<u8>) -> Result<ReadChannelReply, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut read_channel = BTreeMap::new();
@@ -1163,7 +1190,14 @@ impl ThinClient {
                     .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
                     .ok_or_else(|| ThinClientError::Other("Missing envelope_hash in response".to_string()))?;
 
-                return Ok((send_message_payload, current_message_index, next_message_index, used_reply_index, envelope_descriptor, envelope_hash));
+                return Ok(ReadChannelReply {
+                    send_message_payload,
+                    current_message_index,
+                    next_message_index,
+                    reply_index: used_reply_index,
+                    envelope_descriptor,
+                    envelope_hash,
+                });
             }
 
             // If we get here, it wasn't the reply we were looking for
