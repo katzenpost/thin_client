@@ -42,6 +42,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
       - name: Install thinclient dependencies
         run: |
           cd thinclient
@@ -67,6 +72,11 @@ jobs:
         run: |
           cd thinclient
           python -m pytest tests/ -vvv -s
+
+      - name: Run Rust integration tests
+        run: |
+          cd thinclient
+          cargo test --test '*' -- --nocapture
 
       - name: Stop the mixnet
         if: always()
