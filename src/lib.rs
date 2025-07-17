@@ -160,10 +160,9 @@
 
 pub mod error;
 
-#[cfg(test)]
-mod test_channel_api;
 
-use std::collections::BTreeMap;
+
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::fs;
 
@@ -171,7 +170,7 @@ use serde::Deserialize;
 use serde_json::json;
 use serde_cbor::{from_slice, Value};
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tokio::net::{TcpStream, UnixStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -341,6 +340,29 @@ pub enum WriteHalf {
     Unix(UnixWriteHalf),
 }
 
+/// Wrapper for event sink receiver that automatically removes the drain when dropped
+pub struct EventSinkReceiver {
+    receiver: mpsc::UnboundedReceiver<BTreeMap<Value, Value>>,
+    sender: mpsc::UnboundedSender<BTreeMap<Value, Value>>,
+    drain_remove: mpsc::UnboundedSender<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
+}
+
+impl EventSinkReceiver {
+    /// Receive the next event from the sink
+    pub async fn recv(&mut self) -> Option<BTreeMap<Value, Value>> {
+        self.receiver.recv().await
+    }
+}
+
+impl Drop for EventSinkReceiver {
+    fn drop(&mut self) {
+        // Remove the drain when the receiver is dropped
+        if let Err(_) = self.drain_remove.send(self.sender.clone()) {
+            debug!("Failed to remove drain channel - event sink worker may be stopped");
+        }
+    }
+}
+
 /// This is our ThinClient type which encapsulates our thin client
 /// connection management and message processing.
 pub struct ThinClient {
@@ -349,14 +371,24 @@ pub struct ThinClient {
     config: Config,
     pki_doc: Arc<RwLock<Option<BTreeMap<Value, Value>>>>,
     worker_task: Mutex<Option<JoinHandle<()>>>,
+    event_sink_task: Mutex<Option<JoinHandle<()>>>,
     shutdown: Arc<AtomicBool>,
     is_connected: Arc<AtomicBool>,
+    // Event system like Go implementation
+    event_sink: mpsc::UnboundedSender<BTreeMap<Value, Value>>,
+    drain_add: mpsc::UnboundedSender<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
+    drain_remove: mpsc::UnboundedSender<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
 }
 
 impl ThinClient {
 
     /// Create a new thin cilent and connect it to the client daemon.
     pub async fn new(config: Config) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+        // Create event system channels like Go implementation
+        let (event_sink_tx, event_sink_rx) = mpsc::unbounded_channel();
+        let (drain_add_tx, drain_add_rx) = mpsc::unbounded_channel();
+        let (drain_remove_tx, drain_remove_rx) = mpsc::unbounded_channel();
+
 	let client = match config.network.to_uppercase().as_str() {
             "TCP" => {
 		let socket = TcpStream::connect(&config.address).await?;
@@ -367,8 +399,12 @@ impl ThinClient {
                     config,
                     pki_doc: Arc::new(RwLock::new(None)),
                     worker_task: Mutex::new(None),
+                    event_sink_task: Mutex::new(None),
                     shutdown: Arc::new(AtomicBool::new(false)),
                     is_connected: Arc::new(AtomicBool::new(false)),
+                    event_sink: event_sink_tx.clone(),
+                    drain_add: drain_add_tx.clone(),
+                    drain_remove: drain_remove_tx.clone(),
 		})
             }
             "UNIX" => {
@@ -387,8 +423,12 @@ impl ThinClient {
                     config,
                     pki_doc: Arc::new(RwLock::new(None)),
                     worker_task: Mutex::new(None),
+                    event_sink_task: Mutex::new(None),
                     shutdown: Arc::new(AtomicBool::new(false)),
                     is_connected: Arc::new(AtomicBool::new(false)),
+                    event_sink: event_sink_tx,
+                    drain_add: drain_add_tx,
+                    drain_remove: drain_remove_tx,
 		})
             }
 	    _ => {
@@ -396,12 +436,19 @@ impl ThinClient {
             }
         };
 
+        // Start worker loop
         let client_clone = Arc::clone(&client);
         let task = tokio::spawn(async move { client_clone.worker_loop().await });
-
         *client.worker_task.lock().await = Some(task);
 
-        debug!("✅ ThinClient initialized and worker loop started.");
+        // Start event sink worker
+        let client_clone2 = Arc::clone(&client);
+        let event_sink_task = tokio::spawn(async move {
+            client_clone2.event_sink_worker(event_sink_rx, drain_add_rx, drain_remove_rx).await
+        });
+        *client.event_sink_task.lock().await = Some(event_sink_task);
+
+        debug!("✅ ThinClient initialized with worker loop and event sink started.");
         Ok(client)
         }
 
@@ -428,6 +475,20 @@ impl ThinClient {
     /// Returns true if the daemon is connected to the mixnet.
     pub fn is_connected(&self) -> bool {
         self.is_connected.load(Ordering::Relaxed)
+    }
+
+    /// Creates a new event channel that receives all events from the thin client
+    /// This mirrors the Go implementation's EventSink method
+    pub fn event_sink(&self) -> EventSinkReceiver {
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Err(_) = self.drain_add.send(tx.clone()) {
+            debug!("Failed to add drain channel - event sink worker may be stopped");
+        }
+        EventSinkReceiver {
+            receiver: rx,
+            sender: tx,
+            drain_remove: self.drain_remove.clone(),
+        }
     }
 
     /// Generates a new message ID.
@@ -603,12 +664,73 @@ impl ThinClient {
         debug!("Worker loop started");
         while !self.shutdown.load(Ordering::Relaxed) {
             match self.recv().await {
-                Ok(response) => self.handle_response(response).await,
+                Ok(response) => {
+                    // Send all responses to event sink for distribution
+                    if let Err(_) = self.event_sink.send(response.clone()) {
+                        debug!("Event sink channel closed, stopping worker loop");
+                        break;
+                    }
+                    self.handle_response(response).await;
+                },
                 Err(_) if self.shutdown.load(Ordering::Relaxed) => break,
                 Err(err) => error!("Error in recv: {}", err),
             }
         }
         debug!("Worker loop exited.");
+    }
+
+    /// Event sink worker that distributes events to multiple drain channels
+    /// This mirrors the Go implementation's eventSinkWorker
+    async fn event_sink_worker(
+        &self,
+        mut event_sink_rx: mpsc::UnboundedReceiver<BTreeMap<Value, Value>>,
+        mut drain_add_rx: mpsc::UnboundedReceiver<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
+        mut drain_remove_rx: mpsc::UnboundedReceiver<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
+    ) {
+        debug!("Event sink worker started");
+        let mut drains: HashMap<usize, mpsc::UnboundedSender<BTreeMap<Value, Value>>> = HashMap::new();
+        let mut next_id = 0usize;
+
+        loop {
+            tokio::select! {
+                // Handle shutdown
+                _ = async { while !self.shutdown.load(Ordering::Relaxed) { tokio::time::sleep(std::time::Duration::from_millis(100)).await; } } => {
+                    debug!("Event sink worker shutting down");
+                    break;
+                }
+
+                // Add new drain channel
+                Some(drain) = drain_add_rx.recv() => {
+                    drains.insert(next_id, drain);
+                    next_id += 1;
+                    debug!("Added new drain channel, total drains: {}", drains.len());
+                }
+
+                // Remove drain channel when EventSinkReceiver is dropped
+                Some(drain_to_remove) = drain_remove_rx.recv() => {
+                    drains.retain(|_, drain| !std::ptr::addr_eq(drain, &drain_to_remove));
+                    debug!("Removed drain channel, total drains: {}", drains.len());
+                }
+
+                // Distribute events to all drain channels
+                Some(event) = event_sink_rx.recv() => {
+                    let mut bad_drains = Vec::new();
+
+                    for (id, drain) in &drains {
+                        if let Err(_) = drain.send(event.clone()) {
+                            // Channel is closed, mark for removal
+                            bad_drains.push(*id);
+                        }
+                    }
+
+                    // Remove closed channels
+                    for id in bad_drains {
+                        drains.remove(&id);
+                    }
+                }
+            }
+        }
+        debug!("Event sink worker exited.");
     }
 
     async fn send_cbor_request(&self, request: BTreeMap<Value, Value>) -> Result<(), ThinClientError> {
@@ -731,59 +853,216 @@ impl ThinClient {
     /*** Channel API ***/
 
     /// Creates a new Pigeonhole write channel for sending messages.
-    pub async fn create_write_channel(&self) -> Result<(), ThinClientError> {
+    /// Returns (channel_id, read_cap, write_cap) on success.
+    pub async fn create_write_channel(&self) -> Result<(u16, Vec<u8>, Vec<u8>), ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut create_write_channel = BTreeMap::new();
-        create_write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        create_write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("create_write_channel".to_string()), Value::Map(create_write_channel));
 
-        self.send_cbor_request(request).await
+        self.send_cbor_request(request).await?;
+
+        // Wait for CreateWriteChannelReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("create_write_channel_reply".to_string())) {
+                // Check for error first
+                if let Some(Value::Integer(error_code)) = reply.get(&Value::Text("error_code".to_string())) {
+                    if *error_code != 0 {
+                        return Err(ThinClientError::Other(format!("CreateWriteChannel failed with error code: {}", error_code)));
+                    }
+                }
+
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("CreateWriteChannel failed: {}", err)));
+                }
+
+                let channel_id = reply.get(&Value::Text("channel_id".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u16), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
+
+                let read_cap = match reply.get(&Value::Text("read_cap".to_string())) {
+                    Some(Value::Bytes(bytes)) => bytes.clone(),
+                    Some(_) => return Err(ThinClientError::Other("read_cap is unexpected type".to_string())),
+                    None => return Err(ThinClientError::Other("Missing read_cap in response".to_string())),
+                };
+
+                let write_cap = match reply.get(&Value::Text("write_cap".to_string())) {
+                    Some(Value::Bytes(bytes)) => bytes.clone(),
+                    Some(_) => return Err(ThinClientError::Other("write_cap is unexpected type".to_string())),
+                    None => return Err(ThinClientError::Other("Missing write_cap in response".to_string())),
+                };
+
+                return Ok((channel_id, read_cap, write_cap));
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
     }
 
     /// Creates a read channel from a read capability.
-    pub async fn create_read_channel(&self, read_cap: Vec<u8>) -> Result<(), ThinClientError> {
+    /// Returns channel_id on success.
+    pub async fn create_read_channel(&self, read_cap: Vec<u8>) -> Result<u16, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut create_read_channel = BTreeMap::new();
-        create_read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        create_read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
         create_read_channel.insert(Value::Text("read_cap".to_string()), Value::Bytes(read_cap));
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("create_read_channel".to_string()), Value::Map(create_read_channel));
 
-        self.send_cbor_request(request).await
+        self.send_cbor_request(request).await?;
+
+        // Wait for CreateReadChannelReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("create_read_channel_reply".to_string())) {
+                // Check for error first
+                if let Some(Value::Integer(error_code)) = reply.get(&Value::Text("error_code".to_string())) {
+                    if *error_code != 0 {
+                        return Err(ThinClientError::Other(format!("CreateReadChannel failed with error code: {}", error_code)));
+                    }
+                }
+
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("CreateReadChannel failed: {}", err)));
+                }
+
+                let channel_id = reply.get(&Value::Text("channel_id".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u16), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
+
+                return Ok(channel_id);
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
     }
 
     /// Prepares a message for writing to a Pigeonhole channel.
-    pub async fn write_channel(&self, channel_id: u16, payload: &[u8]) -> Result<(), ThinClientError> {
+    /// Returns (send_message_payload, next_message_index, envelope_descriptor, envelope_hash).
+    pub async fn write_channel(&self, channel_id: u16, payload: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut write_channel = BTreeMap::new();
         write_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
-        write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
         write_channel.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("write_channel".to_string()), Value::Map(write_channel));
 
-        self.send_cbor_request(request).await
+        self.send_cbor_request(request).await?;
+
+        // Wait for WriteChannelReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("write_channel_reply".to_string())) {
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("WriteChannel failed: {}", err)));
+                }
+
+                let send_message_payload = reply.get(&Value::Text("send_message_payload".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing send_message_payload in response".to_string()))?;
+
+                let next_message_index = match reply.get(&Value::Text("next_message_index".to_string())) {
+                    Some(Value::Bytes(bytes)) => bytes.clone(),
+                    Some(_) => return Err(ThinClientError::Other("next_message_index is unexpected type".to_string())),
+                    None => return Err(ThinClientError::Other("Missing next_message_index in response".to_string())),
+                };
+
+                let envelope_descriptor = reply.get(&Value::Text("envelope_descriptor".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing envelope_descriptor in response".to_string()))?;
+
+                let envelope_hash = reply.get(&Value::Text("envelope_hash".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing envelope_hash in response".to_string()))?;
+
+                return Ok((send_message_payload, next_message_index, envelope_descriptor, envelope_hash));
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
     }
 
     /// Prepares a read query for a Pigeonhole channel.
-    pub async fn read_channel(&self, channel_id: u16) -> Result<(), ThinClientError> {
+    /// Returns (send_message_payload, next_message_index, reply_index, envelope_descriptor, envelope_hash).
+    pub async fn read_channel(&self, channel_id: u16, message_box_index: Option<&[u8]>, reply_index: Option<u8>) -> Result<(Vec<u8>, Vec<u8>, Option<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut read_channel = BTreeMap::new();
         read_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
-        read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
+
+        if let Some(index) = message_box_index {
+            read_channel.insert(Value::Text("message_box_index".to_string()), Value::Bytes(index.to_vec()));
+        }
+
+        if let Some(idx) = reply_index {
+            read_channel.insert(Value::Text("reply_index".to_string()), Value::Integer(idx.into()));
+        }
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("read_channel".to_string()), Value::Map(read_channel));
 
-        self.send_cbor_request(request).await
+        self.send_cbor_request(request).await?;
+
+        // Wait for ReadChannelReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("read_channel_reply".to_string())) {
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("ReadChannel failed: {}", err)));
+                }
+
+                let send_message_payload = reply.get(&Value::Text("send_message_payload".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing send_message_payload in response".to_string()))?;
+
+                let next_message_index = match reply.get(&Value::Text("next_message_index".to_string())) {
+                    Some(Value::Bytes(bytes)) => bytes.clone(),
+                    Some(_) => return Err(ThinClientError::Other("next_message_index is unexpected type".to_string())),
+                    None => return Err(ThinClientError::Other("Missing next_message_index in response".to_string())),
+                };
+
+                let used_reply_index = reply.get(&Value::Text("reply_index".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u8), _ => None });
+
+                let envelope_descriptor = reply.get(&Value::Text("envelope_descriptor".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing envelope_descriptor in response".to_string()))?;
+
+                let envelope_hash = reply.get(&Value::Text("envelope_hash".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing envelope_hash in response".to_string()))?;
+
+                return Ok((send_message_payload, next_message_index, used_reply_index, envelope_descriptor, envelope_hash));
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
     }
 
     /// Resumes a write channel from a previous session.
@@ -848,6 +1127,72 @@ impl ThinClient {
         request.insert(Value::Text("send_channel_query".to_string()), Value::Map(send_channel_query));
 
         self.send_cbor_request(request).await
+    }
+
+    /// Sends a channel query and waits for the reply.
+    /// This combines send_channel_query with event handling to wait for the response.
+    pub async fn send_channel_query_await_reply(
+        &self,
+        channel_id: u16,
+        payload: &[u8],
+        dest_node: Vec<u8>,
+        dest_queue: Vec<u8>,
+        message_id: Vec<u8>,
+    ) -> Result<Vec<u8>, ThinClientError> {
+        // Create an event sink to listen for the reply
+        let mut event_sink = self.event_sink();
+
+        // Send the channel query
+        self.send_channel_query(channel_id, payload, dest_node, dest_queue, message_id.clone()).await?;
+
+        // Wait for the reply
+        loop {
+            match event_sink.recv().await {
+                Some(response) => {
+                    // Check for ChannelQuerySentEvent first
+                    if let Some(Value::Map(event)) = response.get(&Value::Text("channel_query_sent_event".to_string())) {
+                        if let Some(Value::Bytes(reply_message_id)) = event.get(&Value::Text("message_id".to_string())) {
+                            if reply_message_id == &message_id {
+                                // Check for error in sent event
+                                if let Some(Value::Integer(error_code)) = event.get(&Value::Text("error_code".to_string())) {
+                                    if *error_code != 0 {
+                                        return Err(ThinClientError::Other(format!("Channel query send failed with error code: {}", error_code)));
+                                    }
+                                }
+                                // Continue waiting for the reply
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Check for ChannelQueryReplyEvent
+                    if let Some(Value::Map(event)) = response.get(&Value::Text("channel_query_reply_event".to_string())) {
+                        if let Some(Value::Bytes(reply_message_id)) = event.get(&Value::Text("message_id".to_string())) {
+                            if reply_message_id == &message_id {
+                                // Check for error code
+                                if let Some(Value::Integer(error_code)) = event.get(&Value::Text("error_code".to_string())) {
+                                    if *error_code != 0 {
+                                        return Err(ThinClientError::Other(format!("Channel query failed with error code: {}", error_code)));
+                                    }
+                                }
+
+                                // Extract the payload
+                                if let Some(Value::Bytes(reply_payload)) = event.get(&Value::Text("payload".to_string())) {
+                                    return Ok(reply_payload.clone());
+                                } else {
+                                    return Err(ThinClientError::Other("Missing payload in channel query reply".to_string()));
+                                }
+                            }
+                        }
+                    }
+
+                    // Ignore other events and continue waiting
+                }
+                None => {
+                    return Err(ThinClientError::Other("Event sink closed while waiting for reply".to_string()));
+                }
+            }
+        }
     }
 
     /// Closes a pigeonhole channel and cleans up its resources.

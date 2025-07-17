@@ -1,0 +1,170 @@
+// SPDX-FileCopyrightText: Copyright (C) 2025 David Stainton
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Channel API integration tests for the Rust thin client
+//! 
+//! These tests mirror the Go tests in courier_docker_test.go and require
+//! a running mixnet with client daemon for integration testing.
+
+use std::time::Duration;
+use katzenpost_thin_client::{ThinClient, Config};
+
+
+
+/// Test helper to setup a thin client for integration tests
+async fn setup_thin_client() -> Result<std::sync::Arc<ThinClient>, Box<dyn std::error::Error>> {
+    let config = Config::new("testdata/thinclient.toml")?;
+    let client = ThinClient::new(config).await?;
+
+    // Wait a bit for initial connection and PKI document
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    Ok(client)
+}
+
+/// Test basic channel API operations - equivalent to TestChannelAPIBasics from Go
+/// This test demonstrates the full channel workflow: Alice creates a write channel,
+/// Bob creates a read channel, Alice writes messages, Bob reads them back.
+#[tokio::test]
+async fn test_channel_api_basics() -> Result<(), Box<dyn std::error::Error>> {
+    let alice_thin_client = setup_thin_client().await?;
+    let bob_thin_client = setup_thin_client().await?;
+
+    // Wait for PKI documents to be available and connection to mixnet
+    println!("Waiting for daemon to connect to mixnet...");
+    let mut attempts = 0;
+    while !alice_thin_client.is_connected() && attempts < 30 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        attempts += 1;
+    }
+
+    if !alice_thin_client.is_connected() {
+        return Err("Daemon failed to connect to mixnet within 30 seconds".into());
+    }
+
+    println!("✅ Daemon connected to mixnet, using current PKI document");
+
+    // Alice creates write channel
+    println!("Alice: Creating write channel");
+    let (alice_channel_id, read_cap, _write_cap) = alice_thin_client.create_write_channel().await?;
+    println!("Alice: Created write channel {}", alice_channel_id);
+
+    // Bob creates read channel using the read capability from Alice's write channel
+    println!("Bob: Creating read channel");
+    let bob_channel_id = bob_thin_client.create_read_channel(read_cap).await?;
+    println!("Bob: Created read channel {}", bob_channel_id);
+
+    // Alice writes first message
+    let original_message = b"hello1";
+    println!("Alice: Writing first message and waiting for completion");
+
+    let (write_payload1, _next_index1, _envelope_descriptor1, _envelope_hash1) =
+        alice_thin_client.write_channel(alice_channel_id, original_message).await?;
+    println!("Alice: Write operation completed successfully");
+
+    // Get the courier service from PKI
+    let courier_service = alice_thin_client.get_service("courier").await?;
+    let (dest_node, dest_queue) = courier_service.to_destination();
+
+    let alice_message_id1 = ThinClient::new_message_id();
+
+    let _reply1 = alice_thin_client.send_channel_query_await_reply(
+        alice_channel_id,
+        &write_payload1,
+        dest_node.clone(),
+        dest_queue.clone(),
+        alice_message_id1
+    ).await?;
+
+    // Alice writes a second message
+    let second_message = b"hello2";
+    println!("Alice: Writing second message and waiting for completion");
+
+    let (write_payload2, _next_index2, _envelope_descriptor2, _envelope_hash2) =
+        alice_thin_client.write_channel(alice_channel_id, second_message).await?;
+    println!("Alice: Second write operation completed successfully");
+
+    let alice_message_id2 = ThinClient::new_message_id();
+
+    let _reply2 = alice_thin_client.send_channel_query_await_reply(
+        alice_channel_id,
+        &write_payload2,
+        dest_node.clone(),
+        dest_queue.clone(),
+        alice_message_id2
+    ).await?;
+
+    // Wait for message propagation to storage replicas
+    println!("Waiting for message propagation to storage replicas");
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    // Bob reads first message
+    println!("Bob: Reading first message");
+    let (read_payload1, _next_index, _reply_index, _envelope_descriptor1, _envelope_hash1) =
+        bob_thin_client.read_channel(bob_channel_id, None, None).await?;
+
+    let bob_message_id1 = ThinClient::new_message_id();
+
+    // In a real implementation, you'd retry the SendChannelQueryAwaitReply until you get a response
+    let mut bob_reply_payload = vec![];
+    for i in 0..10 {
+        match alice_thin_client.send_channel_query_await_reply(
+            bob_channel_id,
+            &read_payload1,
+            dest_node.clone(),
+            dest_queue.clone(),
+            bob_message_id1.clone()
+        ).await {
+            Ok(payload) if !payload.is_empty() => {
+                bob_reply_payload = payload;
+                break;
+            }
+            Ok(_) => {
+                println!("Bob: Read attempt {} returned empty payload, retrying...", i + 1);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    assert_eq!(original_message, bob_reply_payload.as_slice(), "Bob: Reply payload mismatch");
+
+    // Bob reads second message
+    println!("Bob: Reading second message");
+    let (read_payload2, _next_index2, _reply_index2, _envelope_descriptor2, _envelope_hash2) =
+        bob_thin_client.read_channel(bob_channel_id, None, None).await?;
+
+    let bob_message_id2 = ThinClient::new_message_id();
+
+    for i in 0..10 {
+        println!("Bob: second read attempt {}", i + 1);
+        match alice_thin_client.send_channel_query_await_reply(
+            bob_channel_id,
+            &read_payload2,
+            dest_node.clone(),
+            dest_queue.clone(),
+            bob_message_id2.clone()
+        ).await {
+            Ok(payload) if !payload.is_empty() => {
+                bob_reply_payload = payload;
+                break;
+            }
+            Ok(_) => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    assert_eq!(second_message, bob_reply_payload.as_slice(), "Bob: Second reply payload mismatch");
+
+    // Clean up channels
+    alice_thin_client.close_channel(alice_channel_id).await?;
+    bob_thin_client.close_channel(bob_channel_id).await?;
+
+    alice_thin_client.stop().await;
+    bob_thin_client.stop().await;
+
+    println!("✅ Channel API basics test completed successfully");
+    Ok(())
+}
