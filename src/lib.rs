@@ -340,6 +340,29 @@ pub enum WriteHalf {
     Unix(UnixWriteHalf),
 }
 
+/// Wrapper for event sink receiver that automatically removes the drain when dropped
+pub struct EventSinkReceiver {
+    receiver: mpsc::UnboundedReceiver<BTreeMap<Value, Value>>,
+    sender: mpsc::UnboundedSender<BTreeMap<Value, Value>>,
+    drain_remove: mpsc::UnboundedSender<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
+}
+
+impl EventSinkReceiver {
+    /// Receive the next event from the sink
+    pub async fn recv(&mut self) -> Option<BTreeMap<Value, Value>> {
+        self.receiver.recv().await
+    }
+}
+
+impl Drop for EventSinkReceiver {
+    fn drop(&mut self) {
+        // Remove the drain when the receiver is dropped
+        if let Err(_) = self.drain_remove.send(self.sender.clone()) {
+            debug!("Failed to remove drain channel - event sink worker may be stopped");
+        }
+    }
+}
+
 /// This is our ThinClient type which encapsulates our thin client
 /// connection management and message processing.
 pub struct ThinClient {
@@ -456,12 +479,16 @@ impl ThinClient {
 
     /// Creates a new event channel that receives all events from the thin client
     /// This mirrors the Go implementation's EventSink method
-    pub fn event_sink(&self) -> mpsc::UnboundedReceiver<BTreeMap<Value, Value>> {
+    pub fn event_sink(&self) -> EventSinkReceiver {
         let (tx, rx) = mpsc::unbounded_channel();
-        if let Err(_) = self.drain_add.send(tx) {
+        if let Err(_) = self.drain_add.send(tx.clone()) {
             debug!("Failed to add drain channel - event sink worker may be stopped");
         }
-        rx
+        EventSinkReceiver {
+            receiver: rx,
+            sender: tx,
+            drain_remove: self.drain_remove.clone(),
+        }
     }
 
     /// Generates a new message ID.
@@ -679,9 +706,9 @@ impl ThinClient {
                     debug!("Added new drain channel, total drains: {}", drains.len());
                 }
 
-                // Remove drain channel (not used in current implementation but kept for completeness)
+                // Remove drain channel when EventSinkReceiver is dropped
                 Some(drain_to_remove) = drain_remove_rx.recv() => {
-                    drains.retain(|_, drain| !std::ptr::eq(drain, &drain_to_remove));
+                    drains.retain(|_, drain| !std::ptr::addr_eq(drain, &drain_to_remove));
                     debug!("Removed drain channel, total drains: {}", drains.len());
                 }
 
