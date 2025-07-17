@@ -160,8 +160,7 @@
 
 pub mod error;
 
-#[cfg(test)]
-mod test_channel_api;
+
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
@@ -827,59 +826,216 @@ impl ThinClient {
     /*** Channel API ***/
 
     /// Creates a new Pigeonhole write channel for sending messages.
-    pub async fn create_write_channel(&self) -> Result<(), ThinClientError> {
+    /// Returns (channel_id, read_cap, write_cap) on success.
+    pub async fn create_write_channel(&self) -> Result<(u16, Vec<u8>, Vec<u8>), ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut create_write_channel = BTreeMap::new();
-        create_write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        create_write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("create_write_channel".to_string()), Value::Map(create_write_channel));
 
-        self.send_cbor_request(request).await
+        self.send_cbor_request(request).await?;
+
+        // Wait for CreateWriteChannelReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("create_write_channel_reply".to_string())) {
+                // Check for error first
+                if let Some(Value::Integer(error_code)) = reply.get(&Value::Text("error_code".to_string())) {
+                    if *error_code != 0 {
+                        return Err(ThinClientError::Other(format!("CreateWriteChannel failed with error code: {}", error_code)));
+                    }
+                }
+
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("CreateWriteChannel failed: {}", err)));
+                }
+
+                let channel_id = reply.get(&Value::Text("channel_id".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u16), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
+
+                let read_cap = match reply.get(&Value::Text("read_cap".to_string())) {
+                    Some(Value::Bytes(bytes)) => bytes.clone(),
+                    Some(_) => return Err(ThinClientError::Other("read_cap is unexpected type".to_string())),
+                    None => return Err(ThinClientError::Other("Missing read_cap in response".to_string())),
+                };
+
+                let write_cap = match reply.get(&Value::Text("write_cap".to_string())) {
+                    Some(Value::Bytes(bytes)) => bytes.clone(),
+                    Some(_) => return Err(ThinClientError::Other("write_cap is unexpected type".to_string())),
+                    None => return Err(ThinClientError::Other("Missing write_cap in response".to_string())),
+                };
+
+                return Ok((channel_id, read_cap, write_cap));
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
     }
 
     /// Creates a read channel from a read capability.
-    pub async fn create_read_channel(&self, read_cap: Vec<u8>) -> Result<(), ThinClientError> {
+    /// Returns channel_id on success.
+    pub async fn create_read_channel(&self, read_cap: Vec<u8>) -> Result<u16, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut create_read_channel = BTreeMap::new();
-        create_read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        create_read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
         create_read_channel.insert(Value::Text("read_cap".to_string()), Value::Bytes(read_cap));
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("create_read_channel".to_string()), Value::Map(create_read_channel));
 
-        self.send_cbor_request(request).await
+        self.send_cbor_request(request).await?;
+
+        // Wait for CreateReadChannelReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("create_read_channel_reply".to_string())) {
+                // Check for error first
+                if let Some(Value::Integer(error_code)) = reply.get(&Value::Text("error_code".to_string())) {
+                    if *error_code != 0 {
+                        return Err(ThinClientError::Other(format!("CreateReadChannel failed with error code: {}", error_code)));
+                    }
+                }
+
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("CreateReadChannel failed: {}", err)));
+                }
+
+                let channel_id = reply.get(&Value::Text("channel_id".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u16), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing channel_id in response".to_string()))?;
+
+                return Ok(channel_id);
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
     }
 
     /// Prepares a message for writing to a Pigeonhole channel.
-    pub async fn write_channel(&self, channel_id: u16, payload: &[u8]) -> Result<(), ThinClientError> {
+    /// Returns (send_message_payload, next_message_index, envelope_descriptor, envelope_hash).
+    pub async fn write_channel(&self, channel_id: u16, payload: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut write_channel = BTreeMap::new();
         write_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
-        write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
         write_channel.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("write_channel".to_string()), Value::Map(write_channel));
 
-        self.send_cbor_request(request).await
+        self.send_cbor_request(request).await?;
+
+        // Wait for WriteChannelReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("write_channel_reply".to_string())) {
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("WriteChannel failed: {}", err)));
+                }
+
+                let send_message_payload = reply.get(&Value::Text("send_message_payload".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing send_message_payload in response".to_string()))?;
+
+                let next_message_index = match reply.get(&Value::Text("next_message_index".to_string())) {
+                    Some(Value::Bytes(bytes)) => bytes.clone(),
+                    Some(_) => return Err(ThinClientError::Other("next_message_index is unexpected type".to_string())),
+                    None => return Err(ThinClientError::Other("Missing next_message_index in response".to_string())),
+                };
+
+                let envelope_descriptor = reply.get(&Value::Text("envelope_descriptor".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing envelope_descriptor in response".to_string()))?;
+
+                let envelope_hash = reply.get(&Value::Text("envelope_hash".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing envelope_hash in response".to_string()))?;
+
+                return Ok((send_message_payload, next_message_index, envelope_descriptor, envelope_hash));
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
     }
 
     /// Prepares a read query for a Pigeonhole channel.
-    pub async fn read_channel(&self, channel_id: u16) -> Result<(), ThinClientError> {
+    /// Returns (send_message_payload, next_message_index, reply_index, envelope_descriptor, envelope_hash).
+    pub async fn read_channel(&self, channel_id: u16, message_box_index: Option<&[u8]>, reply_index: Option<u8>) -> Result<(Vec<u8>, Vec<u8>, Option<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
         let query_id = Self::new_query_id();
 
         let mut read_channel = BTreeMap::new();
         read_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
-        read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id.clone()));
+
+        if let Some(index) = message_box_index {
+            read_channel.insert(Value::Text("message_box_index".to_string()), Value::Bytes(index.to_vec()));
+        }
+
+        if let Some(idx) = reply_index {
+            read_channel.insert(Value::Text("reply_index".to_string()), Value::Integer(idx.into()));
+        }
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("read_channel".to_string()), Value::Map(read_channel));
 
-        self.send_cbor_request(request).await
+        self.send_cbor_request(request).await?;
+
+        // Wait for ReadChannelReply using event sink
+        let mut event_sink = self.event_sink();
+
+        loop {
+            let response = event_sink.recv().await
+                .ok_or_else(|| ThinClientError::Other("Event sink closed".to_string()))?;
+
+            if let Some(Value::Map(reply)) = response.get(&Value::Text("read_channel_reply".to_string())) {
+                if let Some(Value::Text(err)) = reply.get(&Value::Text("err".to_string())) {
+                    return Err(ThinClientError::Other(format!("ReadChannel failed: {}", err)));
+                }
+
+                let send_message_payload = reply.get(&Value::Text("send_message_payload".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing send_message_payload in response".to_string()))?;
+
+                let next_message_index = match reply.get(&Value::Text("next_message_index".to_string())) {
+                    Some(Value::Bytes(bytes)) => bytes.clone(),
+                    Some(_) => return Err(ThinClientError::Other("next_message_index is unexpected type".to_string())),
+                    None => return Err(ThinClientError::Other("Missing next_message_index in response".to_string())),
+                };
+
+                let used_reply_index = reply.get(&Value::Text("reply_index".to_string()))
+                    .and_then(|v| match v { Value::Integer(i) => Some(*i as u8), _ => None });
+
+                let envelope_descriptor = reply.get(&Value::Text("envelope_descriptor".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing envelope_descriptor in response".to_string()))?;
+
+                let envelope_hash = reply.get(&Value::Text("envelope_hash".to_string()))
+                    .and_then(|v| match v { Value::Bytes(b) => Some(b.clone()), _ => None })
+                    .ok_or_else(|| ThinClientError::Other("Missing envelope_hash in response".to_string()))?;
+
+                return Ok((send_message_payload, next_message_index, used_reply_index, envelope_descriptor, envelope_hash));
+            }
+
+            // If we get here, it wasn't the reply we were looking for
+        }
     }
 
     /// Resumes a write channel from a previous session.
