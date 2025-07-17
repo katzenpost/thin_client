@@ -40,7 +40,7 @@ Add katzenpost_thin_client to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-katzenpost_thin_client = "0.0.4"
+katzenpost_thin_client = "0.0.10"
 ```
 
 
@@ -86,7 +86,7 @@ cargo run --example echo_ping -- ./katzenpost/docker/voting_mixnet/client2/thinc
 
 ## Compatibility
 
-Works with Katzenpost v0.0.49 or later.
+Works with Katzenpost v0.0.56 or later.
 
 
 
