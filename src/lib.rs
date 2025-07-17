@@ -647,9 +647,6 @@ impl ThinClient {
 
     async fn recv(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
         let mut length_prefix = [0; 4];
-
-        debug!("📥 Waiting to read message length...");
-
         {
                 let mut read_half = self.read_half.lock().await;
                 match &mut *read_half {
@@ -657,14 +654,8 @@ impl ThinClient {
             ReadHalf::Unix(rh) => rh.read_exact(&mut length_prefix).await.map_err(ThinClientError::IoError)?,
                 };
         }
-
         let message_length = u32::from_be_bytes(length_prefix) as usize;
-        debug!("📥 Message length received: {}", message_length);
-
         let mut buffer = vec![0; message_length];
-
-        debug!("📥 Waiting to read message payload...");
-
         {
                 let mut read_half = self.read_half.lock().await;
                 match &mut *read_half {
@@ -672,12 +663,8 @@ impl ThinClient {
             ReadHalf::Unix(rh) => rh.read_exact(&mut buffer).await.map_err(ThinClientError::IoError)?,
                 };
         }
-
-        debug!("📥 Raw CBOR data received ({} bytes): {:?}", buffer.len(), buffer);
-
         let response: BTreeMap<Value, Value> = match from_slice(&buffer) {
                 Ok(parsed) => {
-            debug!("✅ Successfully parsed response.");
             parsed
                 }
                 Err(err) => {
@@ -685,14 +672,10 @@ impl ThinClient {
             return Err(ThinClientError::CborError(err));
                 }
         };
-
-        debug!("📥 Parsed response content: {:?}", response);
         Ok(response)
     }
     
     fn parse_status(&self, event: &BTreeMap<Value, Value>) {
-        debug!("🔍 Parsing connection status event...");
-
         let is_connected = event.get(&Value::Text("is_connected".to_string()))
             .and_then(|v| match v {
                 Value::Bool(b) => Some(*b),
@@ -711,8 +694,6 @@ impl ThinClient {
     }
 
     async fn parse_pki_doc(&self, event: &BTreeMap<Value, Value>) {
-        debug!("📜 Parsing PKI document event...");
-
         if let Some(Value::Bytes(payload)) = event.get(&Value::Text("payload".to_string())) {
             match serde_cbor::from_slice::<BTreeMap<Value, Value>>(payload) {
                 Ok(raw_pki_doc) => {
@@ -726,11 +707,6 @@ impl ThinClient {
         } else {
             error!("❌ Missing 'payload' field in PKI document event.");
         }
-    }
-
-    fn mark_reply_received(&self) {
-        debug!("📥 Marking reply as received.");
-        // Placeholder for setting an event flag if needed
     }
 
     async fn handle_response(&self, response: BTreeMap<Value, Value>) {
@@ -764,7 +740,6 @@ impl ThinClient {
 
         if let Some(Value::Map(event)) = response.get(&Value::Text("message_reply_event".to_string())) {
             debug!("📩 Message reply event received.");
-            self.mark_reply_received();
             if let Some(cb) = self.config.on_message_reply.as_ref() {
                 cb(event);
             }
