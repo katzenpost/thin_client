@@ -1,6 +1,6 @@
 [package]
 name = "katzenpost_thin_client"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2024"
 authors = ["David Stainton"]
 homepage = "https://katzenpost.network"
