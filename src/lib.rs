@@ -197,6 +197,12 @@ const SURB_ID_SIZE: usize = 16;
 /// Like SURB IDs, these are expected to be randomly generated and unique.
 const MESSAGE_ID_SIZE: usize = 16;
 
+/// The size in bytes of a query identifier.
+///
+/// Query IDs are used to correlate channel operation requests with their responses.
+/// Each query should have a unique ID.
+const QUERY_ID_SIZE: usize = 16;
+
 /// ServiceDescriptor is used when we are searching the PKI
 /// document for a specific service.
 #[derive(Debug, Clone)]
@@ -434,6 +440,13 @@ impl ThinClient {
     /// Generates a new SURB ID.
     pub fn new_surb_id() -> Vec<u8> {
         let mut id = vec![0; SURB_ID_SIZE];
+        rand::thread_rng().fill_bytes(&mut id);
+        id
+    }
+
+    /// Generates a new query ID.
+    pub fn new_query_id() -> Vec<u8> {
+        let mut id = vec![0; QUERY_ID_SIZE];
         rand::thread_rng().fill_bytes(&mut id);
         id
     }
@@ -711,6 +724,140 @@ impl ThinClient {
         // Wrap in the new Request structure
         let mut request = BTreeMap::new();
         request.insert(Value::Text("send_arq_message".to_string()), Value::Map(send_arq_message));
+
+        self.send_cbor_request(request).await
+    }
+
+    /*** Channel API ***/
+
+    /// Creates a new Pigeonhole write channel for sending messages.
+    pub async fn create_write_channel(&self) -> Result<(), ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let mut create_write_channel = BTreeMap::new();
+        create_write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("create_write_channel".to_string()), Value::Map(create_write_channel));
+
+        self.send_cbor_request(request).await
+    }
+
+    /// Creates a read channel from a read capability.
+    pub async fn create_read_channel(&self, read_cap: Vec<u8>) -> Result<(), ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let mut create_read_channel = BTreeMap::new();
+        create_read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        create_read_channel.insert(Value::Text("read_cap".to_string()), Value::Bytes(read_cap));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("create_read_channel".to_string()), Value::Map(create_read_channel));
+
+        self.send_cbor_request(request).await
+    }
+
+    /// Prepares a message for writing to a Pigeonhole channel.
+    pub async fn write_channel(&self, channel_id: u16, payload: &[u8]) -> Result<(), ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let mut write_channel = BTreeMap::new();
+        write_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
+        write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        write_channel.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("write_channel".to_string()), Value::Map(write_channel));
+
+        self.send_cbor_request(request).await
+    }
+
+    /// Prepares a read query for a Pigeonhole channel.
+    pub async fn read_channel(&self, channel_id: u16) -> Result<(), ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let mut read_channel = BTreeMap::new();
+        read_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
+        read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("read_channel".to_string()), Value::Map(read_channel));
+
+        self.send_cbor_request(request).await
+    }
+
+    /// Resumes a write channel from a previous session.
+    pub async fn resume_write_channel(&self, write_cap: Vec<u8>, message_box_index: Option<Vec<u8>>) -> Result<(), ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let mut resume_write_channel = BTreeMap::new();
+        resume_write_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        resume_write_channel.insert(Value::Text("write_cap".to_string()), Value::Bytes(write_cap));
+        if let Some(index) = message_box_index {
+            resume_write_channel.insert(Value::Text("message_box_index".to_string()), Value::Bytes(index));
+        }
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("resume_write_channel".to_string()), Value::Map(resume_write_channel));
+
+        self.send_cbor_request(request).await
+    }
+
+    /// Resumes a read channel from a previous session.
+    pub async fn resume_read_channel(&self, read_cap: Vec<u8>, next_message_index: Option<Vec<u8>>, reply_index: Option<u8>) -> Result<(), ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let mut resume_read_channel = BTreeMap::new();
+        resume_read_channel.insert(Value::Text("query_id".to_string()), Value::Bytes(query_id));
+        resume_read_channel.insert(Value::Text("read_cap".to_string()), Value::Bytes(read_cap));
+        if let Some(index) = next_message_index {
+            resume_read_channel.insert(Value::Text("next_message_index".to_string()), Value::Bytes(index));
+        }
+        if let Some(index) = reply_index {
+            resume_read_channel.insert(Value::Text("reply_index".to_string()), Value::Integer(index.into()));
+        }
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("resume_read_channel".to_string()), Value::Map(resume_read_channel));
+
+        self.send_cbor_request(request).await
+    }
+
+    /// Sends a prepared channel query to the mixnet without waiting for a reply.
+    pub async fn send_channel_query(
+        &self,
+        channel_id: u16,
+        payload: &[u8],
+        dest_node: Vec<u8>,
+        dest_queue: Vec<u8>,
+        message_id: Vec<u8>,
+    ) -> Result<(), ThinClientError> {
+        // Check if we're in offline mode
+        if !self.is_connected() {
+            return Err(ThinClientError::OfflineMode("cannot send channel query in offline mode - daemon not connected to mixnet".to_string()));
+        }
+
+        let mut send_channel_query = BTreeMap::new();
+        send_channel_query.insert(Value::Text("message_id".to_string()), Value::Bytes(message_id));
+        send_channel_query.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
+        send_channel_query.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
+        send_channel_query.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
+        send_channel_query.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("send_channel_query".to_string()), Value::Map(send_channel_query));
+
+        self.send_cbor_request(request).await
+    }
+
+    /// Closes a pigeonhole channel and cleans up its resources.
+    /// This helps avoid running out of channel IDs by properly releasing them.
+    pub async fn close_channel(&self, channel_id: u16) -> Result<(), ThinClientError> {
+        let mut close_channel = BTreeMap::new();
+        close_channel.insert(Value::Text("channel_id".to_string()), Value::Integer(channel_id.into()));
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("close_channel".to_string()), Value::Map(close_channel));
 
         self.send_cbor_request(request).await
     }
