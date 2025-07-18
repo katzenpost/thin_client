@@ -128,7 +128,7 @@ async fn test_channel_api_basics() -> Result<(), Box<dyn std::error::Error>> {
 
     // Bob reads second message
     println!("Bob: Reading second message");
-    let read_reply2 = bob_thin_client.read_channel(bob_channel_id, Some(&read_reply1.next_message_index), None).await?;
+    let read_reply2 = bob_thin_client.read_channel(bob_channel_id, None, None).await?;
 
     let bob_message_id2 = ThinClient::new_message_id();
     let mut bob_reply_payload2 = vec![];
