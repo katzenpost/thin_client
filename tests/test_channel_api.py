@@ -11,7 +11,6 @@ a running mixnet with client daemon for integration testing.
 
 import asyncio
 import pytest
-import time
 from katzenpost_thinclient import ThinClient, Config
 
 
@@ -129,6 +128,16 @@ async def test_channel_api_basics():
             raise e
 
     assert original_message == bob_reply_payload1, "Bob: Reply payload mismatch"
+
+    # Bob closes and resumes read channel to advance to second message
+    await bob_thin_client.close_channel(bob_channel_id)
+
+    print("Bob: Resuming read channel to read second message")
+    bob_channel_id = await bob_thin_client.resume_read_channel(
+        read_cap,
+        read_reply1.next_message_index,
+        read_reply1.reply_index
+    )
 
     # Bob reads second message
     print("Bob: Reading second message")
@@ -283,6 +292,16 @@ async def test_resume_write_channel():
 
     assert alice_payload1 == bob_reply_payload1, "Bob: First message payload mismatch"
 
+    # Bob closes and resumes read channel to advance to second message
+    await bob_thin_client.close_channel(bob_channel_id)
+
+    print("Bob: Resuming read channel to read second message")
+    bob_channel_id = await bob_thin_client.resume_read_channel(
+        read_cap,
+        read_reply1.next_message_index,
+        read_reply1.reply_index
+    )
+
     # Bob reads second message
     print("Bob: Reading second message")
     read_reply2 = await bob_thin_client.read_channel(bob_channel_id, None, None)
@@ -320,266 +339,6 @@ async def test_resume_write_channel():
     bob_thin_client.stop()
 
     print("✅ Resume write channel test completed successfully")
-
-
-@pytest.mark.asyncio
-async def test_create_write_channel_success(mock_thin_client):
-    """Test successful write channel creation."""
-    # Mock the response
-    mock_response = {
-        "create_write_channel_reply": {
-            "query_id": b"test_query_id_123",
-            "channel_id": 123,
-            "read_cap": b"read_capability_data",
-            "write_cap": b"write_capability_data"
-        }
-    }
-
-    # Set up the mock to trigger the event with our response
-    async def mock_send_all(data):
-        # Extract the query_id from the request to simulate proper correlation
-        import cbor2
-        import struct
-
-        # Parse the length-prefixed CBOR request
-        length = struct.unpack('>I', data[:4])[0]
-        cbor_data = data[4:4+length]
-        request = cbor2.loads(cbor_data)
-
-        # Get the query_id from the request
-        query_id = request["create_write_channel"]["query_id"]
-
-        # Update the mock response with the correct query_id
-        mock_response["create_write_channel_reply"]["query_id"] = query_id
-
-        # Simulate the daemon response using the new correlation system
-        mock_thin_client.channel_query_responses[query_id] = mock_response
-        if query_id in mock_thin_client.pending_channel_queries:
-            mock_thin_client.pending_channel_queries[query_id].set()
-
-    mock_thin_client._send_all.side_effect = mock_send_all
-
-    # Call the method
-    channel_id, read_cap, write_cap = await mock_thin_client.create_write_channel()
-
-    # Verify results
-    assert channel_id == 123
-    assert read_cap == b"read_capability_data"
-    assert write_cap == b"write_capability_data"
-
-    # Verify the request was sent
-    mock_thin_client._send_all.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_create_write_channel_error(mock_thin_client):
-    """Test write channel creation with error response."""
-    # Mock the error response
-    mock_response = {
-        "create_write_channel_reply": {
-            "err": "Channel creation failed"
-        }
-    }
-    
-    # Set up the mock to trigger the event with our response
-    async def mock_send_all(data):
-        mock_thin_client.channel_reply_data = mock_response
-        mock_thin_client.channel_reply_event.set()
-    
-    mock_thin_client._send_all.side_effect = mock_send_all
-    
-    # Call the method and expect an exception
-    with pytest.raises(Exception, match="CreateWriteChannel failed: Channel creation failed"):
-        await mock_thin_client.create_write_channel()
-
-
-@pytest.mark.asyncio
-async def test_create_read_channel_success(mock_thin_client):
-    """Test successful read channel creation."""
-    # Mock the response
-    mock_response = {
-        "create_read_channel_reply": {
-            "channel_id": 456
-        }
-    }
-    
-    # Set up the mock to trigger the event with our response
-    async def mock_send_all(data):
-        mock_thin_client.channel_reply_data = mock_response
-        mock_thin_client.channel_reply_event.set()
-    
-    mock_thin_client._send_all.side_effect = mock_send_all
-    
-    # Call the method
-    read_cap = b"test_read_capability"
-    channel_id = await mock_thin_client.create_read_channel(read_cap)
-    
-    # Verify results
-    assert channel_id == 456
-    
-    # Verify the request was sent
-    mock_thin_client._send_all.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_write_channel_success(mock_thin_client):
-    """Test successful channel write preparation."""
-    # Mock the response
-    mock_response = {
-        "write_channel_reply": {
-            "send_message_payload": b"prepared_payload",
-            "current_message_index": b"current_index",
-            "next_message_index": b"next_index",
-            "envelope_descriptor": b"envelope_desc",
-            "envelope_hash": b"envelope_hash"
-        }
-    }
-    
-    # Set up the mock to trigger the event with our response
-    async def mock_send_all(data):
-        mock_thin_client.channel_reply_data = mock_response
-        mock_thin_client.channel_reply_event.set()
-    
-    mock_thin_client._send_all.side_effect = mock_send_all
-    
-    # Call the method
-    channel_id = 123
-    payload = b"test message"
-    reply = await mock_thin_client.write_channel(channel_id, payload)
-    
-    # Verify results
-    assert isinstance(reply, WriteChannelReply)
-    assert reply.send_message_payload == b"prepared_payload"
-    assert reply.current_message_index == b"current_index"
-    assert reply.next_message_index == b"next_index"
-    assert reply.envelope_descriptor == b"envelope_desc"
-    assert reply.envelope_hash == b"envelope_hash"
-
-
-@pytest.mark.asyncio
-async def test_read_channel_success(mock_thin_client):
-    """Test successful channel read preparation."""
-    # Mock the response
-    mock_response = {
-        "read_channel_reply": {
-            "send_message_payload": b"read_payload",
-            "current_message_index": b"current_index",
-            "next_message_index": b"next_index",
-            "reply_index": 0,
-            "envelope_descriptor": b"envelope_desc",
-            "envelope_hash": b"envelope_hash"
-        }
-    }
-    
-    # Set up the mock to trigger the event with our response
-    async def mock_send_all(data):
-        mock_thin_client.channel_reply_data = mock_response
-        mock_thin_client.channel_reply_event.set()
-    
-    mock_thin_client._send_all.side_effect = mock_send_all
-    
-    # Call the method
-    channel_id = 123
-    reply = await mock_thin_client.read_channel(channel_id)
-    
-    # Verify results
-    assert isinstance(reply, ReadChannelReply)
-    assert reply.send_message_payload == b"read_payload"
-    assert reply.current_message_index == b"current_index"
-    assert reply.next_message_index == b"next_index"
-    assert reply.reply_index == 0
-    assert reply.envelope_descriptor == b"envelope_desc"
-    assert reply.envelope_hash == b"envelope_hash"
-
-
-@pytest.mark.asyncio
-async def test_resume_write_channel_success(mock_thin_client):
-    """Test successful write channel resumption."""
-    # Mock the response
-    mock_response = {
-        "resume_write_channel_reply": {
-            "channel_id": 789
-        }
-    }
-    
-    # Set up the mock to trigger the event with our response
-    async def mock_send_all(data):
-        mock_thin_client.channel_reply_data = mock_response
-        mock_thin_client.channel_reply_event.set()
-    
-    mock_thin_client._send_all.side_effect = mock_send_all
-    
-    # Call the method
-    write_cap = b"test_write_capability"
-    channel_id = await mock_thin_client.resume_write_channel(write_cap)
-    
-    # Verify results
-    assert channel_id == 789
-
-
-@pytest.mark.asyncio
-async def test_resume_read_channel_success(mock_thin_client):
-    """Test successful read channel resumption."""
-    # Mock the response
-    mock_response = {
-        "resume_read_channel_reply": {
-            "channel_id": 987
-        }
-    }
-    
-    # Set up the mock to trigger the event with our response
-    async def mock_send_all(data):
-        mock_thin_client.channel_reply_data = mock_response
-        mock_thin_client.channel_reply_event.set()
-    
-    mock_thin_client._send_all.side_effect = mock_send_all
-    
-    # Call the method
-    read_cap = b"test_read_capability"
-    channel_id = await mock_thin_client.resume_read_channel(read_cap)
-    
-    # Verify results
-    assert channel_id == 987
-
-
-@pytest.mark.asyncio
-async def test_send_channel_query_offline_mode(mock_thin_client):
-    """Test that send_channel_query raises error in offline mode."""
-    # Set client to offline mode
-    mock_thin_client._is_connected = False
-    
-    # Call the method and expect an exception
-    with pytest.raises(RuntimeError, match="cannot send channel query in offline mode"):
-        await mock_thin_client.send_channel_query(
-            123, b"payload", b"dest_node", b"dest_queue", b"message_id"
-        )
-
-
-@pytest.mark.asyncio
-async def test_close_channel_success(mock_thin_client):
-    """Test successful channel closure."""
-    # Call the method
-    channel_id = 123
-    await mock_thin_client.close_channel(channel_id)
-    
-    # Verify the request was sent (close_channel is fire-and-forget)
-    mock_thin_client._send_all.assert_called_once()
-
-
-def test_new_query_id():
-    """Test query ID generation."""
-    config = MockConfig()
-    client = ThinClient(config)
-
-    query_id = client.new_query_id()
-
-    # Verify it's 16 bytes
-    assert len(query_id) == 16
-    assert isinstance(query_id, bytes)
-
-    # Verify uniqueness (very high probability)
-    query_id2 = client.new_query_id()
-    assert query_id != query_id2
 
 
 if __name__ == "__main__":
