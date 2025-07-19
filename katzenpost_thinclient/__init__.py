@@ -61,9 +61,7 @@ import pprintpp
 import toml
 import hashlib
 
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-  from typing import Tuple, Any, Dict, List, Callable
+from typing import Tuple, Any, Dict, List, Callable
 
 # Thin Client Error Codes (matching Go implementation)
 THIN_CLIENT_SUCCESS = 0
@@ -73,6 +71,8 @@ THIN_CLIENT_ERROR_INVALID_REQUEST = 3
 THIN_CLIENT_ERROR_INTERNAL_ERROR = 4
 THIN_CLIENT_ERROR_MAX_RETRIES = 5
 
+THIN_CLIENT_ERROR_INVALID_CHANNEL = 6
+THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND = 7
 THIN_CLIENT_ERROR_PERMISSION_DENIED = 8
 THIN_CLIENT_ERROR_INVALID_PAYLOAD = 9
 THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE = 10
@@ -90,6 +90,8 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_INTERNAL_ERROR: "Internal error",
         THIN_CLIENT_ERROR_MAX_RETRIES: "Maximum retries exceeded",
 
+        THIN_CLIENT_ERROR_INVALID_CHANNEL: "Invalid channel",
+        THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND: "Channel not found",
         THIN_CLIENT_ERROR_PERMISSION_DENIED: "Permission denied",
         THIN_CLIENT_ERROR_INVALID_PAYLOAD: "Invalid payload",
         THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE: "Service unavailable",
@@ -104,6 +106,8 @@ __all__ = [
     'ThinClient',
     'Config',
     'ServiceDescriptor',
+    'WriteChannelReply',
+    'ReadChannelReply',
     'find_services'
 ]
 
@@ -114,6 +118,32 @@ SURB_ID_SIZE = 16
 # MESSAGE_ID_SIZE is the size in bytes for an ID
 # which is unique to the sent message.
 MESSAGE_ID_SIZE = 16
+
+
+class WriteChannelReply:
+    """Reply from WriteChannel operation, matching Rust WriteChannelReply."""
+
+    def __init__(self, send_message_payload: bytes, current_message_index: bytes,
+                 next_message_index: bytes, envelope_descriptor: bytes, envelope_hash: bytes):
+        self.send_message_payload = send_message_payload
+        self.current_message_index = current_message_index
+        self.next_message_index = next_message_index
+        self.envelope_descriptor = envelope_descriptor
+        self.envelope_hash = envelope_hash
+
+
+class ReadChannelReply:
+    """Reply from ReadChannel operation, matching Rust ReadChannelReply."""
+
+    def __init__(self, send_message_payload: bytes, current_message_index: bytes,
+                 next_message_index: bytes, reply_index: "int|None",
+                 envelope_descriptor: bytes, envelope_hash: bytes):
+        self.send_message_payload = send_message_payload
+        self.current_message_index = current_message_index
+        self.next_message_index = next_message_index
+        self.reply_index = reply_index
+        self.envelope_descriptor = envelope_descriptor
+        self.envelope_hash = envelope_hash
 
 
 class Geometry:
@@ -438,6 +468,13 @@ class ThinClient:
         self._send_lock = asyncio.Lock()
         self._recv_lock = asyncio.Lock()
 
+        # Channel API support - individual response queues (simulating Rust's event sinks)
+        self.channel_response_queues : Dict[str, asyncio.Queue] = {}  # reply_type -> Queue
+
+        # Channel query message ID correlation (for send_channel_query_await_reply)
+        self.pending_channel_message_queries : Dict[bytes, asyncio.Event] = {}  # message_id -> Event
+        self.channel_message_query_responses : Dict[bytes, bytes] = {}  # message_id -> payload
+
 
         self.logger = logging.getLogger('thinclient')
         self.logger.setLevel(logging.DEBUG)
@@ -682,7 +719,8 @@ class ThinClient:
         service_descriptors = self.get_services(service_name)
         return random.choice(service_descriptors)
 
-    def new_message_id(self) -> bytes:
+    @staticmethod
+    def new_message_id() -> bytes:
         """
         Generate a new 16-byte message ID for use with ARQ sends.
 
@@ -699,6 +737,52 @@ class ThinClient:
             bytes: Random 16-byte identifier.
         """
         return os.urandom(SURB_ID_SIZE)
+
+    def new_query_id(self) -> bytes:
+        """
+        Generate a new 16-byte query ID for channel API operations.
+
+        Returns:
+            bytes: Random 16-byte identifier.
+        """
+        return os.urandom(16)
+
+    async def _wait_for_channel_reply(self, expected_reply_type: str) -> Dict[Any, Any]:
+        """
+        Wait for a channel API reply using response queues (simulating Rust's event sinks).
+
+        Args:
+            expected_reply_type: The expected reply type (e.g., "create_write_channel_reply").
+
+        Returns:
+            Dict: The reply data.
+
+        Raises:
+            Exception: If the reply contains an error or times out.
+        """
+        # Create a queue for this reply type
+        queue = asyncio.Queue(maxsize=1)
+        self.channel_response_queues[expected_reply_type] = queue
+
+        try:
+            # Wait for the reply with timeout
+            reply = await asyncio.wait_for(queue.get(), timeout=30.0)
+
+            # Check for errors (matching Rust implementation)
+            error_code = reply.get("error_code", 0)
+            if error_code != 0:
+                raise Exception(f"{expected_reply_type} failed with error code: {error_code}")
+
+            if reply.get("err"):
+                raise Exception(f"{expected_reply_type} failed: {reply['err']}")
+
+            return reply
+
+        except asyncio.TimeoutError:
+            raise Exception(f"Timeout waiting for {expected_reply_type}")
+        finally:
+            # Clean up
+            self.channel_response_queues.pop(expected_reply_type, None)
 
     def handle_response(self, response: "Dict[str,Any]") -> None:
         """
@@ -727,6 +811,65 @@ class ThinClient:
 
             self.reply_received_event.set()
             self.config.handle_message_reply_event(reply)
+            return
+
+        # Handle channel API replies using response queues (simulating Rust's event sinks)
+        channel_reply_types = [
+            "create_write_channel_reply",
+            "create_read_channel_reply",
+            "write_channel_reply",
+            "read_channel_reply",
+            "resume_write_channel_reply",
+            "resume_read_channel_reply",
+            "resume_write_channel_query_reply",
+            "resume_read_channel_query_reply"
+        ]
+
+        for reply_type in channel_reply_types:
+            if response.get(reply_type) is not None:
+                self.logger.debug(f"channel {reply_type} event")
+                # Put the response in the appropriate queue
+                if reply_type in self.channel_response_queues:
+                    try:
+                        self.channel_response_queues[reply_type].put_nowait(response[reply_type])
+                    except asyncio.QueueFull:
+                        self.logger.warning(f"Response queue full for {reply_type}")
+                return
+
+        # Handle channel query events (for send_channel_query_await_reply)
+        if response.get("channel_query_sent_event") is not None:
+            self.logger.debug("channel_query_sent_event")
+            event = response["channel_query_sent_event"]
+            message_id = event.get("message_id")
+            if message_id is not None:
+                # Check for error in sent event
+                error_code = event.get("error_code", 0)
+                if error_code != 0:
+                    # Store error for the waiting coroutine
+                    if message_id in self.pending_channel_message_queries:
+                        self.channel_message_query_responses[message_id] = f"Channel query send failed with error code: {error_code}".encode()
+                        self.pending_channel_message_queries[message_id].set()
+                # Continue waiting for the reply (don't return here)
+            return
+
+        if response.get("channel_query_reply_event") is not None:
+            self.logger.debug("channel_query_reply_event")
+            event = response["channel_query_reply_event"]
+            message_id = event.get("message_id")
+            if message_id is not None:
+                # Check for error code
+                error_code = event.get("error_code", 0)
+                if error_code != 0:
+                    error_msg = f"Channel query failed with error code: {error_code}".encode()
+                    self.channel_message_query_responses[message_id] = error_msg
+                else:
+                    # Extract the payload
+                    payload = event.get("payload", b"")
+                    self.channel_message_query_responses[message_id] = payload
+
+                # Signal the waiting coroutine
+                if message_id in self.pending_channel_message_queries:
+                    self.pending_channel_message_queries[message_id].set()
             return
 
 
@@ -909,6 +1052,554 @@ class ThinClient:
         Asynchronously block until a reply is received from the daemon.
         """
         await self.reply_received_event.wait()
+
+    # Channel API methods
+
+    async def create_write_channel(self) -> "Tuple[int, bytes, bytes]":
+        """
+        Creates a new Pigeonhole write channel for sending messages.
+
+        Returns:
+            tuple: (channel_id, read_cap, write_cap) where:
+                - channel_id is the 16-bit channel ID
+                - read_cap is the read capability for sharing
+                - write_cap is the write capability for persistence
+
+        Raises:
+            Exception: If the channel creation fails.
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "create_write_channel": {
+                "query_id": query_id
+            }
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            await self._send_all(length_prefixed_request)
+            self.logger.info("CreateWriteChannel request sent successfully.")
+
+            # Wait for CreateWriteChannelReply using response queue
+            reply = await self._wait_for_channel_reply("create_write_channel_reply")
+
+            channel_id = reply["channel_id"]
+            read_cap = reply["read_cap"]
+            write_cap = reply["write_cap"]
+
+            return channel_id, read_cap, write_cap
+
+        except Exception as e:
+            self.logger.error(f"Error creating write channel: {e}")
+            raise
+
+    async def create_read_channel(self, read_cap: bytes) -> int:
+        """
+        Creates a read channel from a read capability.
+
+        Args:
+            read_cap: The read capability bytes.
+
+        Returns:
+            int: The channel ID.
+
+        Raises:
+            Exception: If the read channel creation fails.
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "create_read_channel": {
+                "query_id": query_id,
+                "read_cap": read_cap
+            }
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            await self._send_all(length_prefixed_request)
+            self.logger.info("CreateReadChannel request sent successfully.")
+
+            # Wait for CreateReadChannelReply using response queue
+            reply = await self._wait_for_channel_reply("create_read_channel_reply")
+
+            channel_id = reply["channel_id"]
+            return channel_id
+
+        except Exception as e:
+            self.logger.error(f"Error creating read channel: {e}")
+            raise
+
+    async def write_channel(self, channel_id: int, payload: "bytes|str") -> WriteChannelReply:
+        """
+        Prepares a message for writing to a Pigeonhole channel.
+
+        Args:
+            channel_id: The 16-bit channel ID.
+            payload: The data to write to the channel.
+
+        Returns:
+            WriteChannelReply: Reply containing send_message_payload and other metadata.
+
+        Raises:
+            Exception: If the write preparation fails.
+        """
+        if not isinstance(payload, bytes):
+            payload = payload.encode('utf-8')
+
+        query_id = self.new_query_id()
+
+        request = {
+            "write_channel": {
+                "channel_id": channel_id,
+                "query_id": query_id,
+                "payload": payload
+            }
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            await self._send_all(length_prefixed_request)
+            self.logger.info("WriteChannel request sent successfully.")
+
+            # Wait for WriteChannelReply using response queue
+            reply = await self._wait_for_channel_reply("write_channel_reply")
+
+            return WriteChannelReply(
+                send_message_payload=reply["send_message_payload"],
+                current_message_index=reply["current_message_index"],
+                next_message_index=reply["next_message_index"],
+                envelope_descriptor=reply["envelope_descriptor"],
+                envelope_hash=reply["envelope_hash"]
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error preparing write to channel: {e}")
+            raise
+
+    async def read_channel(self, channel_id: int, message_box_index: "bytes|None" = None,
+                          reply_index: "int|None" = None) -> ReadChannelReply:
+        """
+        Prepares a read query for a Pigeonhole channel.
+
+        Args:
+            channel_id: The 16-bit channel ID.
+            message_box_index: Optional message box index for resuming from a specific position.
+            reply_index: Optional index of the reply to return.
+
+        Returns:
+            ReadChannelReply: Reply containing send_message_payload and other metadata.
+
+        Raises:
+            Exception: If the read preparation fails.
+        """
+        query_id = self.new_query_id()
+
+        request_data = {
+            "channel_id": channel_id,
+            "query_id": query_id
+        }
+
+        if message_box_index is not None:
+            request_data["message_box_index"] = message_box_index
+
+        if reply_index is not None:
+            request_data["reply_index"] = reply_index
+
+        request = {
+            "read_channel": request_data
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            await self._send_all(length_prefixed_request)
+            self.logger.info("ReadChannel request sent successfully.")
+
+            # Wait for ReadChannelReply using response queue
+            reply = await self._wait_for_channel_reply("read_channel_reply")
+
+            return ReadChannelReply(
+                send_message_payload=reply["send_message_payload"],
+                current_message_index=reply["current_message_index"],
+                next_message_index=reply["next_message_index"],
+                reply_index=reply.get("reply_index"),
+                envelope_descriptor=reply["envelope_descriptor"],
+                envelope_hash=reply["envelope_hash"]
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error preparing read from channel: {e}")
+            raise
+
+    async def resume_write_channel(self, write_cap: bytes, message_box_index: "bytes|None" = None) -> int:
+        """
+        Resumes a write channel from a previous session.
+
+        Args:
+            write_cap: The write capability bytes.
+            message_box_index: Optional message box index for resuming from a specific position.
+
+        Returns:
+            int: The channel ID.
+
+        Raises:
+            Exception: If the channel resumption fails.
+        """
+        query_id = self.new_query_id()
+
+        request_data = {
+            "query_id": query_id,
+            "write_cap": write_cap
+        }
+
+        if message_box_index is not None:
+            request_data["message_box_index"] = message_box_index
+
+        request = {
+            "resume_write_channel": request_data
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            await self._send_all(length_prefixed_request)
+            self.logger.info("ResumeWriteChannel request sent successfully.")
+
+            # Wait for ResumeWriteChannelReply using response queue
+            reply = await self._wait_for_channel_reply("resume_write_channel_reply")
+
+            channel_id = reply["channel_id"]
+            return channel_id
+
+        except Exception as e:
+            self.logger.error(f"Error resuming write channel: {e}")
+            raise
+
+    async def resume_read_channel(self, read_cap: bytes, next_message_index: "bytes|None" = None,
+                                 reply_index: "int|None" = None) -> int:
+        """
+        Resumes a read channel from a previous session.
+
+        Args:
+            read_cap: The read capability bytes.
+            next_message_index: Optional next message index for resuming from a specific position.
+            reply_index: Optional reply index.
+
+        Returns:
+            int: The channel ID.
+
+        Raises:
+            Exception: If the channel resumption fails.
+        """
+        query_id = self.new_query_id()
+
+        request_data = {
+            "query_id": query_id,
+            "read_cap": read_cap
+        }
+
+        if next_message_index is not None:
+            request_data["next_message_index"] = next_message_index
+
+        if reply_index is not None:
+            request_data["reply_index"] = reply_index
+
+        request = {
+            "resume_read_channel": request_data
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            await self._send_all(length_prefixed_request)
+            self.logger.info("ResumeReadChannel request sent successfully.")
+
+            # Wait for ResumeReadChannelReply using response queue
+            reply = await self._wait_for_channel_reply("resume_read_channel_reply")
+
+            channel_id = reply["channel_id"]
+            return channel_id
+
+        except Exception as e:
+            self.logger.error(f"Error resuming read channel: {e}")
+            raise
+
+    async def resume_write_channel_query(self, write_cap: bytes, message_box_index: bytes,
+                                       envelope_descriptor: bytes, envelope_hash: bytes) -> int:
+        """
+        Resumes a write channel with a specific query state.
+        This method provides more granular resumption control than resume_write_channel
+        by allowing the application to resume from a specific query state, including
+        the envelope descriptor and hash. This is useful when resuming from a partially
+        completed write operation that was interrupted during transmission.
+
+        Args:
+            write_cap: The write capability bytes.
+            message_box_index: Message box index for resuming from a specific position.
+            envelope_descriptor: Envelope descriptor from previous query.
+            envelope_hash: Envelope hash from previous query.
+
+        Returns:
+            int: The channel ID.
+
+        Raises:
+            Exception: If the channel resumption fails.
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "resume_write_channel_query": {
+                "query_id": query_id,
+                "write_cap": write_cap,
+                "message_box_index": message_box_index,
+                "envelope_descriptor": envelope_descriptor,
+                "envelope_hash": envelope_hash
+            }
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            await self._send_all(length_prefixed_request)
+            self.logger.info("ResumeWriteChannelQuery request sent successfully.")
+
+            # Wait for ResumeWriteChannelQueryReply using response queue
+            reply = await self._wait_for_channel_reply("resume_write_channel_query_reply")
+
+            channel_id = reply["channel_id"]
+            return channel_id
+
+        except Exception as e:
+            self.logger.error(f"Error resuming write channel query: {e}")
+            raise
+
+    async def resume_read_channel_query(self, read_cap: bytes, next_message_index: bytes,
+                                      reply_index: "int|None", envelope_descriptor: bytes,
+                                      envelope_hash: bytes) -> int:
+        """
+        Resumes a read channel with a specific query state.
+        This method provides more granular resumption control than resume_read_channel
+        by allowing the application to resume from a specific query state, including
+        the envelope descriptor and hash. This is useful when resuming from a partially
+        completed read operation that was interrupted during transmission.
+
+        Args:
+            read_cap: The read capability bytes.
+            next_message_index: Next message index for resuming from a specific position.
+            reply_index: Optional reply index.
+            envelope_descriptor: Envelope descriptor from previous query.
+            envelope_hash: Envelope hash from previous query.
+
+        Returns:
+            int: The channel ID.
+
+        Raises:
+            Exception: If the channel resumption fails.
+        """
+        query_id = self.new_query_id()
+
+        request_data = {
+            "query_id": query_id,
+            "read_cap": read_cap,
+            "next_message_index": next_message_index,
+            "envelope_descriptor": envelope_descriptor,
+            "envelope_hash": envelope_hash
+        }
+
+        if reply_index is not None:
+            request_data["reply_index"] = reply_index
+
+        request = {
+            "resume_read_channel_query": request_data
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            await self._send_all(length_prefixed_request)
+            self.logger.info("ResumeReadChannelQuery request sent successfully.")
+
+            # Wait for ResumeReadChannelQueryReply using response queue
+            reply = await self._wait_for_channel_reply("resume_read_channel_query_reply")
+
+            channel_id = reply["channel_id"]
+            return channel_id
+
+        except Exception as e:
+            self.logger.error(f"Error resuming read channel query: {e}")
+            raise
+
+    async def get_courier_destination(self) -> "Tuple[bytes, bytes]":
+        """
+        Gets the courier service destination for channel queries.
+        This is a convenience method that combines get_service("courier")
+        and to_destination() to get the destination node and queue for
+        use with send_channel_query and send_channel_query_await_reply.
+
+        Returns:
+            tuple: (dest_node, dest_queue) where:
+                - dest_node is the destination node identity hash
+                - dest_queue is the destination recipient queue ID
+
+        Raises:
+            Exception: If the courier service is not found.
+        """
+        courier_service = self.get_service("courier")
+        dest_node, dest_queue = courier_service.to_destination()
+        return dest_node, dest_queue
+
+    async def send_channel_query_await_reply(self, channel_id: int, payload: bytes,
+                                           dest_node: bytes, dest_queue: bytes,
+                                           message_id: bytes) -> bytes:
+        """
+        Sends a channel query and waits for the reply.
+        This combines send_channel_query with event handling to wait for the response.
+
+        Args:
+            channel_id: The 16-bit channel ID.
+            payload: The prepared query payload.
+            dest_node: Destination node identity hash.
+            dest_queue: Destination recipient queue ID.
+            message_id: Message ID for reply correlation.
+
+        Returns:
+            bytes: The received payload from the channel.
+
+        Raises:
+            RuntimeError: If in offline mode (daemon not connected to mixnet).
+            Exception: If the query fails or times out.
+        """
+        # Check if we're in offline mode
+        if not self._is_connected:
+            raise RuntimeError("cannot send channel query in offline mode - daemon not connected to mixnet")
+
+        # Create an event for this message_id
+        event = asyncio.Event()
+        self.pending_channel_message_queries[message_id] = event
+
+        try:
+            # Send the channel query
+            await self.send_channel_query(channel_id, payload, dest_node, dest_queue, message_id)
+
+            # Wait for the reply with timeout
+            await asyncio.wait_for(event.wait(), timeout=30.0)
+
+            # Get the response payload
+            if message_id not in self.channel_message_query_responses:
+                raise Exception("No channel query reply received")
+
+            response_payload = self.channel_message_query_responses[message_id]
+
+            # Check if it's an error message
+            if isinstance(response_payload, bytes) and response_payload.startswith(b"Channel query"):
+                raise Exception(response_payload.decode())
+
+            return response_payload
+
+        except asyncio.TimeoutError:
+            raise Exception("Timeout waiting for channel query reply")
+        finally:
+            # Clean up
+            self.pending_channel_message_queries.pop(message_id, None)
+            self.channel_message_query_responses.pop(message_id, None)
+
+    async def send_channel_query(self, channel_id: int, payload: bytes, dest_node: bytes,
+                               dest_queue: bytes, message_id: bytes) -> None:
+        """
+        Sends a prepared channel query to the mixnet without waiting for a reply.
+
+        Args:
+            channel_id: The 16-bit channel ID.
+            payload: Channel query payload prepared by write_channel or read_channel.
+            dest_node: Destination node identity hash.
+            dest_queue: Destination recipient queue ID.
+            message_id: Message ID for reply correlation.
+
+        Raises:
+            RuntimeError: If in offline mode (daemon not connected to mixnet).
+        """
+        # Check if we're in offline mode
+        if not self._is_connected:
+            raise RuntimeError("cannot send channel query in offline mode - daemon not connected to mixnet")
+
+        if not isinstance(payload, bytes):
+            payload = payload.encode('utf-8')
+
+        # Create the SendChannelQuery structure (matches Rust implementation)
+        send_channel_query = {
+            "message_id": message_id,
+            "channel_id": channel_id,
+            "destination_id_hash": dest_node,
+            "recipient_queue_id": dest_queue,
+            "payload": payload,
+        }
+
+        # Wrap in the Request structure
+        request = {
+            "send_channel_query": send_channel_query
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            await self._send_all(length_prefixed_request)
+            self.logger.info(f"Channel query sent successfully for channel {channel_id}.")
+        except Exception as e:
+            self.logger.error(f"Error sending channel query: {e}")
+            raise
+
+    async def close_channel(self, channel_id: int) -> None:
+        """
+        Closes a pigeonhole channel and cleans up its resources.
+        This helps avoid running out of channel IDs by properly releasing them.
+        This operation is infallible - it sends the close request and returns immediately.
+
+        Args:
+            channel_id: The 16-bit channel ID to close.
+
+        Raises:
+            Exception: If the socket send operation fails.
+        """
+        request = {
+            "close_channel": {
+                "channel_id": channel_id
+            }
+        }
+
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
+        try:
+            # CloseChannel is infallible - fire and forget, no reply expected
+            await self._send_all(length_prefixed_request)
+            self.logger.info(f"CloseChannel request sent for channel {channel_id}.")
+        except Exception as e:
+            self.logger.error(f"Error sending close channel request: {e}")
+            raise
 
 
 
