@@ -1,219 +1,345 @@
+#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (C) 2025 David Stainton
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """
-Test suite for the Katzenpost Python thin client channel API.
+Channel API integration tests for the Python thin client.
 
-This test is equivalent to the Go TestDockerCourierServiceNewThinclientAPI
-and verifies real end-to-end channel functionality using the courier service.
+These tests mirror the Rust tests in channel_api_test.rs and require
+a running mixnet with client daemon for integration testing.
 """
 
 import asyncio
 import pytest
-import os
-import time
-import hashlib
-import logging
-
-from katzenpost_thinclient import ThinClient, Config, find_services
+from katzenpost_thinclient import ThinClient, Config
 
 
-class ChannelTestState:
-    """State management for channel tests."""
-    
-    def __init__(self):
-        self.alice_replies = []
-        self.bob_replies = []
-        self.alice_events = []
-        self.bob_events = []
-        self.alice_reply_event = asyncio.Event()
-        self.bob_reply_event = asyncio.Event()
-    
-    def alice_reply_handler(self, event):
-        """Handle Alice's message replies."""
-        self.alice_replies.append(event)
-        self.alice_events.append(event)
-        self.alice_reply_event.set()
+async def setup_thin_client():
+    """Test helper to setup a thin client for integration tests."""
+    config = Config("testdata/thinclient.toml")
+    client = ThinClient(config)
 
-    def bob_reply_handler(self, event):
-        """Handle Bob's message replies."""
-        self.bob_replies.append(event)
-        self.bob_events.append(event)
-        self.bob_reply_event.set()
+    # Start the client and wait a bit for initial connection and PKI document
+    loop = asyncio.get_running_loop()
+    await client.start(loop)
+    await asyncio.sleep(2)
 
-    def bob_sent_handler(self, event):
-        """Handle Bob's message sent events."""
-        self.bob_events.append(event)
-
-    def alice_sent_handler(self, event):
-        """Handle Alice's message sent events."""
-        self.alice_events.append(event)
-
-    def alice_connection_handler(self, event):
-        """Handle Alice's connection status events."""
-        self.alice_events.append(event)
-
-    def bob_connection_handler(self, event):
-        """Handle Bob's connection status events."""
-        self.bob_events.append(event)
+    return client
 
 
 @pytest.mark.asyncio
-@pytest.mark.integration
-@pytest.mark.channel
-async def test_docker_courier_service_new_thinclient_api():
+async def test_channel_api_basics():
     """
-    Test the new channel API with courier service - Python equivalent of Go TestDockerCourierServiceNewThinclientAPI.
-    
-    This test:
-    1. Creates two thin clients (Alice and Bob)
-    2. Alice creates a write channel
-    3. Bob creates a read channel using Alice's read capability
-    4. Alice writes a message to the channel using write_channel()
-    5. Alice sends the write query using send_channel_query()
-    6. Bob reads the message using read_channel() and send_channel_query()
-    7. Verifies the message was received correctly
+    Test basic channel API operations - equivalent to TestChannelAPIBasics from Rust.
+    This test demonstrates the full channel workflow: Alice creates a write channel,
+    Bob creates a read channel, Alice writes messages, Bob reads them back.
     """
-    from .conftest import is_daemon_available, get_config_path
-    
-    # Skip test if daemon is not available
-    if not is_daemon_available():
-        pytest.skip("Katzenpost client daemon not available")
-    
-    config_path = get_config_path()
-    if not os.path.exists(config_path):
-        pytest.skip(f"Config file not found: {config_path}")
-    
-    # Initialize test state
-    state = ChannelTestState()
-    
-    # Create Alice's client
-    alice_cfg = Config(
-        config_path,
-        on_message_reply=state.alice_reply_handler,
-        on_message_sent=state.alice_sent_handler,
-        on_connection_status=state.alice_connection_handler
+    alice_thin_client = await setup_thin_client()
+    bob_thin_client = await setup_thin_client()
+
+    # Wait for PKI documents to be available and connection to mixnet
+    print("Waiting for daemon to connect to mixnet...")
+    attempts = 0
+    while not alice_thin_client.is_connected() and attempts < 30:
+        await asyncio.sleep(1)
+        attempts += 1
+
+    if not alice_thin_client.is_connected():
+        raise Exception("Daemon failed to connect to mixnet within 30 seconds")
+
+    print("✅ Daemon connected to mixnet, using current PKI document")
+
+    # Alice creates write channel
+    print("Alice: Creating write channel")
+    alice_channel_id, read_cap, _write_cap = await alice_thin_client.create_write_channel()
+    print(f"Alice: Created write channel {alice_channel_id}")
+
+    # Bob creates read channel using the read capability from Alice's write channel
+    print("Bob: Creating read channel")
+    bob_channel_id = await bob_thin_client.create_read_channel(read_cap)
+    print(f"Bob: Created read channel {bob_channel_id}")
+
+    # Alice writes first message
+    original_message = b"hello1"
+    print("Alice: Writing first message and waiting for completion")
+
+    write_reply1 = await alice_thin_client.write_channel(alice_channel_id, original_message)
+    print("Alice: Write operation completed successfully")
+
+    # Get the courier service from PKI
+    courier_service = alice_thin_client.get_service("courier")
+    dest_node, dest_queue = courier_service.to_destination()
+
+    alice_message_id1 = ThinClient.new_message_id()
+
+    _reply1 = await alice_thin_client.send_channel_query_await_reply(
+        alice_channel_id,
+        write_reply1.send_message_payload,
+        dest_node,
+        dest_queue,
+        alice_message_id1
     )
-    alice_client = ThinClient(alice_cfg)
 
-    # Create Bob's client
-    bob_cfg = Config(
-        config_path,
-        on_message_reply=state.bob_reply_handler,
-        on_message_sent=state.bob_sent_handler,
-        on_connection_status=state.bob_connection_handler
+    # Alice writes a second message
+    second_message = b"hello2"
+    print("Alice: Writing second message and waiting for completion")
+
+    write_reply2 = await alice_thin_client.write_channel(alice_channel_id, second_message)
+    print("Alice: Second write operation completed successfully")
+
+    alice_message_id2 = ThinClient.new_message_id()
+
+    _reply2 = await alice_thin_client.send_channel_query_await_reply(
+        alice_channel_id,
+        write_reply2.send_message_payload,
+        dest_node,
+        dest_queue,
+        alice_message_id2
     )
-    bob_client = ThinClient(bob_cfg)
-    
-    try:
-        # Start both clients
-        loop = asyncio.get_event_loop()
-        await alice_client.start(loop)
-        await bob_client.start(loop)
 
-        # Validate PKI documents
-        alice_pki = alice_client.pki_document()
-        bob_pki = bob_client.pki_document()
+    # Wait for message propagation to storage replicas
+    print("Waiting for message propagation to storage replicas")
+    await asyncio.sleep(10)
 
-        assert alice_pki is not None, "Alice should have a PKI document"
-        assert bob_pki is not None, "Bob should have a PKI document"
-        assert alice_pki['Epoch'] == bob_pki['Epoch'], "Alice and Bob must use same PKI epoch"
+    # Bob reads first message
+    print("Bob: Reading first message")
+    read_reply1 = await bob_thin_client.read_channel(bob_channel_id, None, None)
 
-        # Handle case where pki_document() might return a string instead of dict
-        if isinstance(alice_pki, str):
-            import json
-            try:
-                alice_pki_dict = json.loads(alice_pki)
-            except json.JSONDecodeError:
-                import cbor2
-                alice_pki_dict = cbor2.loads(alice_pki.encode('utf-8'))
-        else:
-            alice_pki_dict = alice_pki
+    bob_message_id1 = ThinClient.new_message_id()
 
-        courier_services = find_services("courier", alice_pki_dict)
-        if len(courier_services) == 0:
-            raise ValueError("No courier services found")
-
-        # Use the first courier service
-        courier_service = courier_services[0]
-
-        # Calculate the node ID hash using Blake2b like Katzenpost does
-        identity_key = bytes(courier_service.mix_descriptor['IdentityKey'])
-        courier_node_hash = hashlib.blake2b(identity_key, digest_size=32).digest()
-
-        # Get the queue ID
-        courier_queue_id = courier_service.recipient_queue_id
-        
-        # Alice creates write channel
-        alice_channel_id, read_cap, write_cap, _ = await alice_client.create_write_channel()
-        assert alice_channel_id is not None
-        assert read_cap is not None
-
-        # Bob creates read channel using Alice's read capability
-        bob_channel_id, _ = await bob_client.create_read_channel(read_cap)
-        assert bob_channel_id is not None
-
-        # Alice writes message
-        original_message = b"Hello from Alice to Bob via new channel API!"
-        write_payload, _ = await alice_client.write_channel(alice_channel_id, original_message)
-        assert write_payload is not None
-        assert len(write_payload) > 0
-
-        # Alice sends write query via courier using send_channel_query
-        alice_write_message_id = await alice_client.send_channel_query(alice_channel_id, write_payload, courier_node_hash, courier_queue_id)
-
-        # Wait for Alice's write operation to complete and message to propagate
-        logger = logging.getLogger('test_channel_api')
+    # In a real implementation, you'd retry the send_channel_query_await_reply until you get a response
+    bob_reply_payload1 = b""
+    for i in range(10):
         try:
-            await asyncio.wait_for(alice_client.await_message_reply(), timeout=30.0)
-        except asyncio.TimeoutError:
-            logger.warning("Alice's write operation timed out, but continuing...")
+            payload = await alice_thin_client.send_channel_query_await_reply(
+                bob_channel_id,
+                read_reply1.send_message_payload,
+                dest_node,
+                dest_queue,
+                bob_message_id1
+            )
+            if payload:
+                bob_reply_payload1 = payload
+                break
+            else:
+                print(f"Bob: Read attempt {i + 1} returned empty payload, retrying...")
+                await asyncio.sleep(0.5)
         except Exception as e:
-            logger.error(f"Error waiting for Alice's write operation: {e}")
+            raise e
 
-        # Wait additional time for message propagation through the courier
-        await asyncio.sleep(10)
+    assert original_message == bob_reply_payload1, "Bob: Reply payload mismatch"
 
-        # Bob reads message using the new read_channel_with_retry method
-        received_payload = await bob_client.read_channel_with_retry(
-            channel_id=bob_channel_id,
-            dest_node=courier_node_hash,
-            dest_queue=courier_queue_id,
-            max_retries=4  # Match Go client retry count
-        )
+    # Bob closes and resumes read channel to advance to second message
+    await bob_thin_client.close_channel(bob_channel_id)
 
-        assert received_payload is not None, "Bob should receive a reply - this should work like the Go test!"
-        assert len(received_payload) > 0, "Bob should receive non-empty payload"
+    print("Bob: Resuming read channel to read second message")
+    bob_channel_id = await bob_thin_client.resume_read_channel(
+        read_cap,
+        read_reply1.next_message_index,
+        read_reply1.reply_index
+    )
 
-        # Convert to bytes if needed
-        if isinstance(received_payload, str):
-            received_payload = received_payload.encode('utf-8')
+    # Bob reads second message
+    print("Bob: Reading second message")
+    read_reply2 = await bob_thin_client.read_channel(bob_channel_id, None, None)
 
-        # The channel API should return the original message directly
-        received_message = received_payload
+    bob_message_id2 = ThinClient.new_message_id()
+    bob_reply_payload2 = b""
 
-        assert received_message == original_message, f"Bob should receive the original message. Expected: {original_message}, Got: {received_message}"
-
-        # Test close_channel functionality
-        await alice_client.close_channel(alice_channel_id)
-        await bob_client.close_channel(bob_channel_id)
-
-    finally:
-        # Clean up clients
-        logger = logging.getLogger('test_channel_api')
+    for i in range(10):
+        print(f"Bob: second read attempt {i + 1}")
         try:
-            if hasattr(alice_client, 'task') and alice_client.task is not None:
-                alice_client.stop()
+            payload = await alice_thin_client.send_channel_query_await_reply(
+                bob_channel_id,
+                read_reply2.send_message_payload,
+                dest_node,
+                dest_queue,
+                bob_message_id2
+            )
+            if payload:
+                bob_reply_payload2 = payload
+                break
+            else:
+                await asyncio.sleep(0.5)
         except Exception as e:
-            logger.error(f"Error stopping Alice's client: {e}")
+            raise e
 
+    assert second_message == bob_reply_payload2, "Bob: Second reply payload mismatch"
+
+    # Clean up channels
+    await alice_thin_client.close_channel(alice_channel_id)
+    await bob_thin_client.close_channel(bob_channel_id)
+
+    alice_thin_client.stop()
+    bob_thin_client.stop()
+
+    print("✅ Channel API basics test completed successfully")
+
+
+@pytest.mark.asyncio
+async def test_resume_write_channel():
+    """
+    Test resuming a write channel - equivalent to TestResumeWriteChannel from Rust.
+    This test demonstrates the write channel resumption workflow:
+    1. Create a write channel
+    2. Write the first message onto the channel
+    3. Close the channel
+    4. Resume the channel
+    5. Write the second message onto the channel
+    6. Create a read channel
+    7. Read first and second message from the channel
+    8. Verify payloads match
+    """
+    alice_thin_client = await setup_thin_client()
+    bob_thin_client = await setup_thin_client()
+
+    # Wait for PKI documents to be available and connection to mixnet
+    print("Waiting for daemon to connect to mixnet...")
+    attempts = 0
+    while not alice_thin_client.is_connected() and attempts < 30:
+        await asyncio.sleep(1)
+        attempts += 1
+
+    if not alice_thin_client.is_connected():
+        raise Exception("Daemon failed to connect to mixnet within 30 seconds")
+
+    print("✅ Daemon connected to mixnet, using current PKI document")
+
+    # Alice creates write channel
+    print("Alice: Creating write channel")
+    alice_channel_id, read_cap, write_cap = await alice_thin_client.create_write_channel()
+    print(f"Alice: Created write channel {alice_channel_id}")
+
+    # Alice writes first message
+    alice_payload1 = b"Hello, Bob!"
+    print("Alice: Writing first message")
+    write_reply1 = await alice_thin_client.write_channel(alice_channel_id, alice_payload1)
+
+    # Get courier destination
+    dest_node, dest_queue = await alice_thin_client.get_courier_destination()
+    alice_message_id1 = ThinClient.new_message_id()
+
+    # Send first message
+    _reply1 = await alice_thin_client.send_channel_query_await_reply(
+        alice_channel_id,
+        write_reply1.send_message_payload,
+        dest_node,
+        dest_queue,
+        alice_message_id1
+    )
+
+    print("Waiting for first message propagation to storage replicas")
+    await asyncio.sleep(3)
+
+    # Close the channel
+    await alice_thin_client.close_channel(alice_channel_id)
+
+    # Resume the write channel
+    print("Alice: Resuming write channel")
+    alice_channel_id = await alice_thin_client.resume_write_channel(
+        write_cap,
+        write_reply1.next_message_index
+    )
+    print(f"Alice: Resumed write channel with ID {alice_channel_id}")
+
+    # Write second message after resume
+    print("Alice: Writing second message after resume")
+    alice_payload2 = b"Second message from Alice!"
+    write_reply2 = await alice_thin_client.write_channel(alice_channel_id, alice_payload2)
+
+    alice_message_id2 = ThinClient.new_message_id()
+    _reply2 = await alice_thin_client.send_channel_query_await_reply(
+        alice_channel_id,
+        write_reply2.send_message_payload,
+        dest_node,
+        dest_queue,
+        alice_message_id2
+    )
+    print("Alice: Second write operation completed successfully")
+
+    print("Waiting for second message propagation to storage replicas")
+    await asyncio.sleep(3)
+
+    # Bob creates read channel
+    print("Bob: Creating read channel")
+    bob_channel_id = await bob_thin_client.create_read_channel(read_cap)
+    print(f"Bob: Created read channel {bob_channel_id}")
+
+    # Bob reads first message
+    print("Bob: Reading first message")
+    read_reply1 = await bob_thin_client.read_channel(bob_channel_id, None, None)
+
+    bob_message_id1 = ThinClient.new_message_id()
+    bob_reply_payload1 = b""
+
+    for i in range(10):
         try:
-            if hasattr(bob_client, 'task') and bob_client.task is not None:
-                bob_client.stop()
+            payload = await alice_thin_client.send_channel_query_await_reply(
+                bob_channel_id,
+                read_reply1.send_message_payload,
+                dest_node,
+                dest_queue,
+                bob_message_id1
+            )
+            if payload:
+                bob_reply_payload1 = payload
+                break
+            else:
+                print(f"Bob: First read attempt {i + 1} returned empty payload, retrying...")
+                await asyncio.sleep(0.5)
         except Exception as e:
-            logger.error(f"Error stopping Bob's client: {e}")
+            raise e
+
+    assert alice_payload1 == bob_reply_payload1, "Bob: First message payload mismatch"
+
+    # Bob closes and resumes read channel to advance to second message
+    await bob_thin_client.close_channel(bob_channel_id)
+
+    print("Bob: Resuming read channel to read second message")
+    bob_channel_id = await bob_thin_client.resume_read_channel(
+        read_cap,
+        read_reply1.next_message_index,
+        read_reply1.reply_index
+    )
+
+    # Bob reads second message
+    print("Bob: Reading second message")
+    read_reply2 = await bob_thin_client.read_channel(bob_channel_id, None, None)
+
+    bob_message_id2 = ThinClient.new_message_id()
+    bob_reply_payload2 = b""
+
+    for i in range(10):
+        print(f"Bob: second message read attempt {i + 1}")
+        try:
+            payload = await alice_thin_client.send_channel_query_await_reply(
+                bob_channel_id,
+                read_reply2.send_message_payload,
+                dest_node,
+                dest_queue,
+                bob_message_id2
+            )
+            if payload:
+                bob_reply_payload2 = payload
+                break
+            else:
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            raise e
+
+    # Verify the second message content matches
+    assert alice_payload2 == bob_reply_payload2, "Bob: Second message payload mismatch"
+    print("Bob: Successfully received and verified second message")
+
+    # Clean up channels
+    await alice_thin_client.close_channel(alice_channel_id)
+    await bob_thin_client.close_channel(bob_channel_id)
+
+    alice_thin_client.stop()
+    bob_thin_client.stop()
+
+    print("✅ Resume write channel test completed successfully")
 
 
 if __name__ == "__main__":
-    # Allow running the test directly
-    asyncio.run(test_docker_courier_service_new_thinclient_api())
+    pytest.main([__file__])
