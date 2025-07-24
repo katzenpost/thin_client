@@ -60,11 +60,10 @@ jobs:
       - name: Brief pause to ensure mixnet is fully ready
         run: sleep 5
 
-      # Temporarily disabled Python tests
-      # - name: Run all Python tests
-      #   run: |
-      #     cd thinclient
-      #     python -m pytest tests/ -vvv -s
+      - name: Run all Python tests (including channel API integration tests)
+        run: |
+          cd thinclient
+          python -m pytest tests/ -vvv -s --tb=short
 
       - name: Run Rust integration tests
         run: |
