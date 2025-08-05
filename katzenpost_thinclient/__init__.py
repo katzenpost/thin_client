@@ -101,9 +101,13 @@ def thin_client_error_to_string(error_code: int) -> str:
     }
     return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
 
+class ThinClientOfflineError(Exception):
+    pass
+
 # Export public API
 __all__ = [
     'ThinClient',
+    'ThinClientOfflineError',
     'Config',
     'ServiceDescriptor',
     'WriteChannelReply',
@@ -468,8 +472,8 @@ class ThinClient:
         self._send_lock = asyncio.Lock()
         self._recv_lock = asyncio.Lock()
 
-        # Channel API support - individual response queues (simulating Rust's event sinks)
-        self.channel_response_queues : Dict[str, asyncio.Queue] = {}  # reply_type -> Queue
+        # Letterbox for each response associated (by query_id) with a request.
+        self.response_queues : Dict[bytes, asyncio.Queue] = {}  # query_id -> Queue
 
         # Channel query message ID correlation (for send_channel_query_await_reply)
         self.pending_channel_message_queries : Dict[bytes, asyncio.Event] = {}  # message_id -> Event
@@ -641,13 +645,15 @@ class ThinClient:
             self.logger.debug("read loop")
             try:
                 response = await self.recv(loop)
-                self.handle_response(response)
             except asyncio.CancelledError:
                 # Handle cancellation of the read loop
                 break
             except Exception as e:
                 self.logger.error(f"Error reading from socket: {e}")
-                break
+                raise
+            else:
+                self.handle_response(response)
+
 
     def parse_status(self, event: "Dict[str,Any]") -> None:
         """
@@ -747,6 +753,26 @@ class ThinClient:
         """
         return os.urandom(16)
 
+    async def _send_and_wait(self, *, query_id:bytes, request: Dict[str, Any]) -> Dict[str, Any]:
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+        assert query_id not in self.response_queues
+        self.response_queues[query_id] = asyncio.Queue(maxsize=1)
+        request_type = list(request.keys())[0]
+        try:
+            await self._send_all(length_prefixed_request)
+            self.logger.info("{request_type} request sent.")
+            reply = await self.response_queues[query_id].get()
+            self.logger.info("{request_type} response received.")
+            # TODO error handling, see _wait_for_channel_reply
+            return reply
+        except asyncio.CancelledError:
+            self.logger.info("{request_type} task cancelled.")
+            raise
+        finally:
+            del self.response_queues[query_id]
+
     async def _wait_for_channel_reply(self, expected_reply_type: str) -> Dict[Any, Any]:
         """
         Wait for a channel API reply using response queues (simulating Rust's event sinks).
@@ -807,34 +833,18 @@ class ThinClient:
         if response.get("message_reply_event") is not None:
             self.logger.debug("message reply event")
             reply = response["message_reply_event"]
-
-
             self.reply_received_event.set()
             self.config.handle_message_reply_event(reply)
             return
 
-        # Handle channel API replies using response queues (simulating Rust's event sinks)
-        channel_reply_types = [
-            "create_write_channel_reply",
-            "create_read_channel_reply",
-            "write_channel_reply",
-            "read_channel_reply",
-            "resume_write_channel_reply",
-            "resume_read_channel_reply",
-            "resume_write_channel_query_reply",
-            "resume_read_channel_query_reply"
-        ]
-
-        for reply_type in channel_reply_types:
-            if response.get(reply_type) is not None:
-                self.logger.debug(f"channel {reply_type} event")
-                # Put the response in the appropriate queue
-                if reply_type in self.channel_response_queues:
-                    try:
-                        self.channel_response_queues[reply_type].put_nowait(response[reply_type])
-                    except asyncio.QueueFull:
-                        self.logger.warning(f"Response queue full for {reply_type}")
-                return
+        for reply_type, reply in response:
+            self.logger.debug(f"channel {reply_type} event")
+            if not reply_type.endswith("_reply") or not (query_id := reply.get("query_id", None)):
+                continue
+            if not (queue := self.response_queues.get(query_id, None)):
+                continue
+            # avoid blocking recv loop:
+            asyncio.create_task(queue.put(reply))
 
         # Handle channel query events (for send_channel_query_await_reply)
         if response.get("channel_query_sent_event") is not None:
@@ -887,11 +897,11 @@ class ThinClient:
             dest_queue (bytes): Destination recipient queue ID.
 
         Raises:
-            RuntimeError: If in offline mode (daemon not connected to mixnet).
+            ThinClientOfflineError: If in offline mode (daemon not connected to mixnet).
         """
         # Check if we're in offline mode
         if not self._is_connected:
-            raise RuntimeError("cannot send message in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError("cannot send message in offline mode - daemon not connected to mixnet")
 
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
@@ -932,11 +942,11 @@ class ThinClient:
             dest_queue (bytes): Destination recipient queue ID.
 
         Raises:
-            RuntimeError: If in offline mode (daemon not connected to mixnet).
+            ThinClientOfflineError: If in offline mode (daemon not connected to mixnet).
         """
         # Check if we're in offline mode
         if not self._is_connected:
-            raise RuntimeError("cannot send message in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError("cannot send message in offline mode - daemon not connected to mixnet")
 
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
@@ -979,11 +989,11 @@ class ThinClient:
             dest_queue (bytes): Destination recipient queue ID.
 
         Raises:
-            RuntimeError: If in offline mode (daemon not connected to mixnet).
+            ThinClientOfflineError: If in offline mode (daemon not connected to mixnet).
         """
         # Check if we're in offline mode
         if not self._is_connected:
-            raise RuntimeError("cannot send reliable message in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError("cannot send reliable message in offline mode - daemon not connected to mixnet")
 
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
@@ -1076,26 +1086,17 @@ class ThinClient:
             }
         }
 
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-
         try:
-            await self._send_all(length_prefixed_request)
-            self.logger.info("CreateWriteChannel request sent successfully.")
-
-            # Wait for CreateWriteChannelReply using response queue
-            reply = await self._wait_for_channel_reply("create_write_channel_reply")
-
-            channel_id = reply["channel_id"]
-            read_cap = reply["read_cap"]
-            write_cap = reply["write_cap"]
-
-            return channel_id, read_cap, write_cap
-
+            reply = await self._send_and_wait(query_id=query_id, request=request)
         except Exception as e:
             self.logger.error(f"Error creating write channel: {e}")
-            raise
+            raise e
+
+        channel_id = reply["channel_id"]
+        read_cap = reply["read_cap"]
+        write_cap = reply["write_cap"]
+
+        return channel_id, read_cap, write_cap
 
     async def create_read_channel(self, read_cap: bytes) -> int:
         """
@@ -1119,23 +1120,14 @@ class ThinClient:
             }
         }
 
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-
         try:
-            await self._send_all(length_prefixed_request)
-            self.logger.info("CreateReadChannel request sent successfully.")
-
-            # Wait for CreateReadChannelReply using response queue
-            reply = await self._wait_for_channel_reply("create_read_channel_reply")
-
-            channel_id = reply["channel_id"]
-            return channel_id
-
+            reply = await self._send_and_wait(query_id=query_id, request=request)
         except Exception as e:
             self.logger.error(f"Error creating read channel: {e}")
             raise
+
+        channel_id = reply["channel_id"]
+        return channel_id
 
     async def write_channel(self, channel_id: int, payload: "bytes|str") -> WriteChannelReply:
         """
@@ -1164,28 +1156,20 @@ class ThinClient:
             }
         }
 
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-
         try:
-            await self._send_all(length_prefixed_request)
-            self.logger.info("WriteChannel request sent successfully.")
-
-            # Wait for WriteChannelReply using response queue
-            reply = await self._wait_for_channel_reply("write_channel_reply")
-
-            return WriteChannelReply(
-                send_message_payload=reply["send_message_payload"],
-                current_message_index=reply["current_message_index"],
-                next_message_index=reply["next_message_index"],
-                envelope_descriptor=reply["envelope_descriptor"],
-                envelope_hash=reply["envelope_hash"]
-            )
-
+            reply = await self._send_and_wait(query_id=query_id, request=request)
         except Exception as e:
             self.logger.error(f"Error preparing write to channel: {e}")
             raise
+
+        return WriteChannelReply(
+            send_message_payload=reply["send_message_payload"],
+            current_message_index=reply["current_message_index"],
+            next_message_index=reply["next_message_index"],
+            envelope_descriptor=reply["envelope_descriptor"],
+            envelope_hash=reply["envelope_hash"]
+        )
+
 
     async def read_channel(self, channel_id: int, message_box_index: "bytes|None" = None,
                           reply_index: "int|None" = None) -> ReadChannelReply:
@@ -1220,29 +1204,21 @@ class ThinClient:
             "read_channel": request_data
         }
 
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-
         try:
-            await self._send_all(length_prefixed_request)
-            self.logger.info("ReadChannel request sent successfully.")
-
-            # Wait for ReadChannelReply using response queue
-            reply = await self._wait_for_channel_reply("read_channel_reply")
-
-            return ReadChannelReply(
-                send_message_payload=reply["send_message_payload"],
-                current_message_index=reply["current_message_index"],
-                next_message_index=reply["next_message_index"],
-                reply_index=reply.get("reply_index"),
-                envelope_descriptor=reply["envelope_descriptor"],
-                envelope_hash=reply["envelope_hash"]
-            )
-
+            reply = await self._send_and_wait(query_id=query_id, request=request)
         except Exception as e:
             self.logger.error(f"Error preparing read from channel: {e}")
             raise
+
+        return ReadChannelReply(
+            send_message_payload=reply["send_message_payload"],
+            current_message_index=reply["current_message_index"],
+            next_message_index=reply["next_message_index"],
+            reply_index=reply.get("reply_index"),
+            envelope_descriptor=reply["envelope_descriptor"],
+            envelope_hash=reply["envelope_hash"]
+        )
+
 
     async def resume_write_channel(self, write_cap: bytes, message_box_index: "bytes|None" = None) -> int:
         """
@@ -1272,23 +1248,13 @@ class ThinClient:
             "resume_write_channel": request_data
         }
 
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-
         try:
-            await self._send_all(length_prefixed_request)
-            self.logger.info("ResumeWriteChannel request sent successfully.")
-
-            # Wait for ResumeWriteChannelReply using response queue
-            reply = await self._wait_for_channel_reply("resume_write_channel_reply")
-
-            channel_id = reply["channel_id"]
-            return channel_id
-
+            reply = await self._send_and_wait(query_id=query_id, request=request)
         except Exception as e:
             self.logger.error(f"Error resuming write channel: {e}")
             raise
+        return reply["channel_id"]
+
 
     async def resume_read_channel(self, read_cap: bytes, next_message_index: "bytes|None" = None,
                                  reply_index: "int|None" = None) -> int:
@@ -1323,23 +1289,13 @@ class ThinClient:
             "resume_read_channel": request_data
         }
 
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-
         try:
-            await self._send_all(length_prefixed_request)
-            self.logger.info("ResumeReadChannel request sent successfully.")
-
-            # Wait for ResumeReadChannelReply using response queue
-            reply = await self._wait_for_channel_reply("resume_read_channel_reply")
-
-            channel_id = reply["channel_id"]
-            return channel_id
-
+            reply = await self._send_and_wait(query_id=query_id, request=request)
         except Exception as e:
             self.logger.error(f"Error resuming read channel: {e}")
             raise
+        return reply["channel_id"]
+
 
     async def resume_write_channel_query(self, write_cap: bytes, message_box_index: bytes,
                                        envelope_descriptor: bytes, envelope_hash: bytes) -> int:
@@ -1374,23 +1330,13 @@ class ThinClient:
             }
         }
 
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-
         try:
-            await self._send_all(length_prefixed_request)
-            self.logger.info("ResumeWriteChannelQuery request sent successfully.")
-
-            # Wait for ResumeWriteChannelQueryReply using response queue
-            reply = await self._wait_for_channel_reply("resume_write_channel_query_reply")
-
-            channel_id = reply["channel_id"]
-            return channel_id
-
+            reply = await self._send_and_wait(query_id=query_id, request=request)
         except Exception as e:
             self.logger.error(f"Error resuming write channel query: {e}")
             raise
+        return reply["channel_id"]
+
 
     async def resume_read_channel_query(self, read_cap: bytes, next_message_index: bytes,
                                       reply_index: "int|None", envelope_descriptor: bytes,
@@ -1432,23 +1378,13 @@ class ThinClient:
             "resume_read_channel_query": request_data
         }
 
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-
         try:
-            await self._send_all(length_prefixed_request)
-            self.logger.info("ResumeReadChannelQuery request sent successfully.")
-
-            # Wait for ResumeReadChannelQueryReply using response queue
-            reply = await self._wait_for_channel_reply("resume_read_channel_query_reply")
-
-            channel_id = reply["channel_id"]
-            return channel_id
-
+            reply = await self._send_and_wait(query_id=query_id, request=request)
         except Exception as e:
             self.logger.error(f"Error resuming read channel query: {e}")
             raise
+        return reply["channel_id"]
+
 
     async def get_courier_destination(self) -> "Tuple[bytes, bytes]":
         """
@@ -1487,12 +1423,12 @@ class ThinClient:
             bytes: The received payload from the channel.
 
         Raises:
-            RuntimeError: If in offline mode (daemon not connected to mixnet).
+            ThinClientOfflineError: If in offline mode (daemon not connected to mixnet).
             Exception: If the query fails or times out.
         """
         # Check if we're in offline mode
         if not self._is_connected:
-            raise RuntimeError("cannot send channel query in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError("cannot send channel query in offline mode - daemon not connected to mixnet")
 
         # Create an event for this message_id
         event = asyncio.Event()
@@ -1537,11 +1473,11 @@ class ThinClient:
             message_id: Message ID for reply correlation.
 
         Raises:
-            RuntimeError: If in offline mode (daemon not connected to mixnet).
+            ThinClientOfflineError: If in offline mode (daemon not connected to mixnet).
         """
         # Check if we're in offline mode
         if not self._is_connected:
-            raise RuntimeError("cannot send channel query in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError("cannot send channel query in offline mode - daemon not connected to mixnet")
 
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')
@@ -1583,33 +1519,17 @@ class ThinClient:
         Raises:
             Exception: If the socket send operation fails.
         """
+
         request = {
             "close_channel": {
                 "channel_id": channel_id
             }
         }
 
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-
         try:
             # CloseChannel is infallible - fire and forget, no reply expected
             await self._send_all(length_prefixed_request)
-            self.logger.info(f"CloseChannel request sent for channel {channel_id}.")
         except Exception as e:
             self.logger.error(f"Error sending close channel request: {e}")
             raise
-
-
-
-
-
-
-
-
-
-
-
-
-
+        self.logger.info(f"CloseChannel request sent for channel {channel_id}.")
