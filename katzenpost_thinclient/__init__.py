@@ -274,7 +274,7 @@ class ServiceDescriptor:
     is used as the destination address along with the service's queue ID.
 
     Attributes:
-        recipient_queue_id (bytes): The identifier of the recipient's queue on the mixnet.
+        recipient_queue_id (bytes): The identifier of the recipient's queue on the mixnet. ("Kaetzchen.endpoint" in the PKI)
         mix_descriptor (dict): A CBOR-decoded dictionary describing the mix node,
             typically includes the 'IdentityKey' and other metadata.
 
@@ -288,6 +288,7 @@ class ServiceDescriptor:
         self.mix_descriptor = mix_descriptor
 
     def to_destination(self) -> "Tuple[bytes,bytes]":
+        "provider identity key hash and queue id"
         provider_id_hash = blake2_256_sum(self.mix_descriptor['IdentityKey'])
         return (provider_id_hash, self.recipient_queue_id)
 
@@ -320,7 +321,7 @@ def find_services(capability:str, doc:"Dict[str,Any]") -> "List[ServiceDescripto
             for cap, details in mynode['Kaetzchen'].items():
                 if cap == capability:
                     service_desc = ServiceDescriptor(
-                        recipient_queue_id=bytes(details['endpoint'], 'utf-8'),
+                        recipient_queue_id=bytes(details['endpoint'], 'utf-8'), # why is this bytes when it's string in PKI?
                         mix_descriptor=mynode
                     )
                     services.append(service_desc)
@@ -421,21 +422,21 @@ class Config:
         self.on_message_sent = on_message_sent
         self.on_message_reply = on_message_reply
 
-    def handle_connection_status_event(self, event: asyncio.Event) -> None:
+    async def handle_connection_status_event(self, event: asyncio.Event) -> None:
         if self.on_connection_status:
-            self.on_connection_status(event)
+            await self.on_connection_status(event)
 
-    def handle_new_pki_document_event(self, event: asyncio.Event) -> None:
+    async def handle_new_pki_document_event(self, event: asyncio.Event) -> None:
         if self.on_new_pki_document:
-            self.on_new_pki_document(event)
+            await self.on_new_pki_document(event)
 
-    def handle_message_sent_event(self, event: asyncio.Event) -> None:
+    async def handle_message_sent_event(self, event: asyncio.Event) -> None:
         if self.on_message_sent:
-            self.on_message_sent(event)
+            await self.on_message_sent(event)
 
-    def handle_message_reply_event(self, event: asyncio.Event) -> None:
+    async def handle_message_reply_event(self, event: asyncio.Event) -> None:
         if self.on_message_reply:
-            self.on_message_reply(event)
+            await self.on_message_reply(event)
 
 
 class ThinClient:
@@ -548,13 +549,13 @@ class ThinClient:
         response = await self.recv(loop)
         assert response is not None
         assert response["connection_status_event"] is not None
-        self.handle_response(response)
+        await self.handle_response(response)
 
         # 2nd message is always a new pki doc event
         response = await self.recv(loop)
         assert response is not None
         assert response["new_pki_document_event"] is not None
-        self.handle_response(response)
+        await self.handle_response(response)
         
         # Start the read loop as a background task
         self.logger.debug("starting read loop")
@@ -652,7 +653,7 @@ class ThinClient:
                 self.logger.error(f"Error reading from socket: {e}")
                 raise
             else:
-                self.handle_response(response)
+                await self.handle_response(response)
 
 
     def parse_status(self, event: "Dict[str,Any]") -> None:
@@ -810,7 +811,7 @@ class ThinClient:
             # Clean up
             self.channel_response_queues.pop(expected_reply_type, None)
 
-    def handle_response(self, response: "Dict[str,Any]") -> None:
+    async def handle_response(self, response: "Dict[str,Any]") -> None:
         """
         Dispatch a parsed CBOR response to the appropriate handler or callback.
         """
@@ -819,22 +820,22 @@ class ThinClient:
         if response.get("connection_status_event") is not None:
             self.logger.debug("connection status event")
             self.parse_status(response["connection_status_event"])
-            self.config.handle_connection_status_event(response["connection_status_event"])
+            await self.config.handle_connection_status_event(response["connection_status_event"])
             return
         if response.get("new_pki_document_event") is not None:
             self.logger.debug("new pki doc event")
             self.parse_pki_doc(response["new_pki_document_event"])
-            self.config.handle_new_pki_document_event(response["new_pki_document_event"])
+            await self.config.handle_new_pki_document_event(response["new_pki_document_event"])
             return
         if response.get("message_sent_event") is not None:
             self.logger.debug("message sent event")
-            self.config.handle_message_sent_event(response["message_sent_event"])
+            await self.config.handle_message_sent_event(response["message_sent_event"])
             return
         if response.get("message_reply_event") is not None:
             self.logger.debug("message reply event")
             reply = response["message_reply_event"]
             self.reply_received_event.set()
-            self.config.handle_message_reply_event(reply)
+            await self.config.handle_message_reply_event(reply)
             return
 
         for reply_type, reply in response:

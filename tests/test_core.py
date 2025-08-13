@@ -10,7 +10,7 @@ from katzenpost_thinclient import ThinClient, Config
 # Global variable to store reply message
 reply_message = None
 
-def save_reply(event):
+async def save_reply(event):
     """Callback function to save reply messages."""
     global reply_message
     reply_message = event
@@ -67,7 +67,7 @@ async def test_config_validation():
     assert cfg is not None, "Config should be created successfully"
 
     # Test config with callbacks
-    def dummy_callback(event):
+    async def dummy_callback(event):
         pass
 
     cfg_with_callbacks = Config(

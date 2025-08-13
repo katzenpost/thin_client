@@ -6,7 +6,7 @@ from katzenpost_thinclient import ThinClient, Config
 class ClientState:
     def __init__(self):
         self.reply_message = None
-    def save_reply(self, reply):
+    async def save_reply(self, reply):
         self.reply_message = reply
 
 async def main():

@@ -97,7 +97,7 @@ async def thin_client(config_path, daemon_available):
 
 
 @pytest.fixture
-def reply_handler():
+async def reply_handler():
     """Provide a reply handler for message tests."""
     replies = []
 
