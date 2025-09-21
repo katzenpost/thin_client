@@ -838,6 +838,8 @@ class ThinClient:
             await self.config.handle_message_reply_event(reply)
             return
         for reply_type, reply in response.items():
+            if not reply:
+                continue
             self.logger.debug(f"channel {reply_type} event")
             if not reply_type.endswith("_reply") or not (query_id := reply.get("query_id", None)):
                 self.logger.debug(f"{reply_type} is not a reply, or can't get query_id")
@@ -903,7 +905,7 @@ class ThinClient:
         """
         # Check if we're in offline mode
         if not self._is_connected:
-            raise ThinClientOfflineError("cannot send message in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError("cannot send_message_without_reply in offline mode - daemon not connected to mixnet")
 
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')  # Encoding the string to bytes
@@ -1143,6 +1145,10 @@ class ThinClient:
 
         Returns:
             WriteChannelReply: Reply containing send_message_payload and other metadata.
+            // ThinClientErrorInternalError indicates an internal error occurred within
+            // the client daemon or thin client that prevented operation completion.
+            ThinClientErrorInternalError uint8 = 4
+
 
         Raises:
             Exception: If the write preparation fails.
@@ -1165,6 +1171,9 @@ class ThinClient:
         except Exception as e:
             self.logger.error(f"Error preparing write to channel: {e}")
             raise
+
+        if reply['error_code'] != 0:
+            raise Exception(f"write_channel got error from clientd: {reply['error_code']}")
 
         return WriteChannelReply(
             send_message_payload=reply["send_message_payload"],
@@ -1410,8 +1419,8 @@ class ThinClient:
         return dest_node, dest_queue
 
     async def send_channel_query_await_reply(self, channel_id: int, payload: bytes,
-                                           dest_node: bytes, dest_queue: bytes,
-                                           message_id: bytes) -> bytes:
+                                             dest_node: bytes, dest_queue: bytes,
+                                             message_id: bytes, timeout_seconds=30.0) -> bytes:
         """
         Sends a channel query and waits for the reply.
         This combines send_channel_query with event handling to wait for the response.
@@ -1432,7 +1441,7 @@ class ThinClient:
         """
         # Check if we're in offline mode
         if not self._is_connected:
-            raise ThinClientOfflineError("cannot send channel query in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError("cannot send_channel_query_await_reply in offline mode - daemon not connected to mixnet")
 
         # Create an event for this message_id
         if message_id not in self.pending_channel_message_queries:
@@ -1444,11 +1453,11 @@ class ThinClient:
             await self.send_channel_query(channel_id, payload, dest_node, dest_queue, message_id)
 
             # Wait for the reply with timeout
-            await asyncio.wait_for(event.wait(), timeout=30.0)
+            await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
 
             # Get the response payload
             if message_id not in self.channel_message_query_responses:
-                raise Exception("No channel query reply received")
+                raise Exception("No channel query reply received within timeout_seconds")
 
             response_payload = self.channel_message_query_responses[message_id]
 
@@ -1482,7 +1491,7 @@ class ThinClient:
         """
         # Check if we're in offline mode
         if not self._is_connected:
-            raise ThinClientOfflineError("cannot send channel query in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError("cannot send_channel_query while not is_connected() - daemon not connected to mixnet")
 
         if not isinstance(payload, bytes):
             payload = payload.encode('utf-8')
