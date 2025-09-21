@@ -1531,6 +1531,10 @@ class ThinClient:
             }
         }
 
+        cbor_request = cbor2.dumps(request)
+        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefixed_request = length_prefix + cbor_request
+
         try:
             # CloseChannel is infallible - fire and forget, no reply expected
             await self._send_all(length_prefixed_request)
