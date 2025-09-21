@@ -132,8 +132,8 @@ class WriteChannelReply:
         self.send_message_payload = send_message_payload
         self.current_message_index = current_message_index
         self.next_message_index = next_message_index
-        self.envelope_descriptor = envelope_descriptor
         self.envelope_hash = envelope_hash
+        self.envelope_descriptor = envelope_descriptor
 
 
 class ReadChannelReply:
@@ -474,7 +474,7 @@ class ThinClient:
         self._recv_lock = asyncio.Lock()
 
         # Letterbox for each response associated (by query_id) with a request.
-        self.response_queues : Dict[bytes, asyncio.Queue] = {}  # query_id -> Queue
+        self.response_queues : Dict[bytes, asyncio.Queue] = {}  # (query_id|message_id) -> Queue
 
         # Channel query message ID correlation (for send_channel_query_await_reply)
         self.pending_channel_message_queries : Dict[bytes, asyncio.Event] = {}  # message_id -> Event
@@ -634,7 +634,9 @@ class ThinClient:
         except cbor2.CBORDecodeValueError as e:
           self.logger.error(f"{e}")
           raise ValueError(f"{e}")
-        self.logger.debug(f"Received daemon response: [{len(raw_data)}] {type(response)} {response}")
+        response = {k:v for k,v in response.items() if v}  # filter empty KV pairs
+        if not (set(response.keys()) & {'new_pki_document_event'}):
+            self.logger.debug(f"Received daemon response: [{len(raw_data)}] {type(response)} {response}")
         return response
 
     async def worker_loop(self, loop:asyncio.events.AbstractEventLoop) -> None:
@@ -837,19 +839,6 @@ class ThinClient:
             self.reply_received_event.set()
             await self.config.handle_message_reply_event(reply)
             return
-        for reply_type, reply in response.items():
-            if not reply:
-                continue
-            self.logger.debug(f"channel {reply_type} event")
-            if not reply_type.endswith("_reply") or not (query_id := reply.get("query_id", None)):
-                self.logger.debug(f"{reply_type} is not a reply, or can't get query_id")
-                continue
-            if not (queue := self.response_queues.get(query_id, None)):
-                self.logger.debug(f"query_id for {reply_type} has no listener")
-                continue
-            # avoid blocking recv loop:
-            asyncio.create_task(queue.put(reply))
-
         # Handle channel query events (for send_channel_query_await_reply)
         if response.get("channel_query_sent_event") is not None:
             self.logger.debug("channel_query_sent_event")
@@ -867,26 +856,45 @@ class ThinClient:
             return
 
         if response.get("channel_query_reply_event") is not None:
+            # channel_query_sent_event': {'message_id': b'\xb7\xd5\xaeG\x8a\xc4\x96\x99|M\x89c\x90\xc3\xd4\x1f', 'sent_at': 1758485828, 'reply_eta': 1179000000, 'error_code': 0},
             self.logger.debug("channel_query_reply_event")
             event = response["channel_query_reply_event"]
             message_id = event.get("message_id")
-            if message_id is not None:
-                # Check for error code
-                error_code = event.get("error_code", 0)
-                if error_code != 0:
-                    error_msg = f"Channel query failed with error code: {error_code}".encode()
-                    self.channel_message_query_responses[message_id] = error_msg
-                else:
-                    # Extract the payload
-                    payload = event.get("payload", b"")
-                    self.channel_message_query_responses[message_id] = payload
+            if message_id is None:
+                return
 
-                # Signal the waiting coroutine
-                if message_id in self.pending_channel_message_queries:
-                    self.pending_channel_message_queries[message_id].set()
+            # TODO wait why are we storing these indefinitely if we don't really care about them??
+            if error_code := event.get("error_code", 0):
+                error_msg = f"Channel query failed with error code: {error_code}".encode()
+                self.channel_message_query_responses[message_id] = error_msg
+            else:
+                # Extract the payload
+                payload = event.get("payload", b"")
+                self.channel_message_query_responses[message_id] = payload
+
+            # Signal the waiting coroutine
+            if message_id in self.pending_channel_message_queries:
+                self.pending_channel_message_queries[message_id].set()
             return
 
-
+        for reply_type, reply in response.items():
+            if not reply:
+                continue
+            self.logger.debug(f"channel {reply_type} event")
+            if not reply_type.endswith("_reply") or not (query_id := reply.get("query_id", None)):
+                self.logger.debug(f"{reply_type} is not a reply, or can't get query_id")
+                #  'create_read_channel_reply': {'query_id': None, 'channel_id': 0, 'error_code': 21},
+                # DEBUG [thinclient] channel_query_reply_event is not a reply, or can't get query_id
+                # REPLY {'message_id': b'\xfd\xc0\x9d\xcfh\xa3\x88X[\xab\xa8\xd3\x1b\x8b\x15\xd1', 'payload': b'', 'reply_index': None, 'error_code': 0}
+                # SELF.RESPONSE_QUEUES {}
+                print("REPLY", reply)
+                print('SELF.RESPONSE_QUEUES', self.response_queues)
+                continue
+            if not (queue := self.response_queues.get(query_id, None)):
+                self.logger.debug(f"query_id for {reply_type} has no listener")
+                continue
+            # avoid blocking recv loop:
+            asyncio.create_task(queue.put(reply))
 
 
 
@@ -1307,6 +1315,8 @@ class ThinClient:
         except Exception as e:
             self.logger.error(f"Error resuming read channel: {e}")
             raise
+        if not reply["channel_id"]:
+            raise Exception("TODO resume_read_channel error", reply)
         return reply["channel_id"]
 
 
@@ -1431,6 +1441,7 @@ class ThinClient:
             dest_node: Destination node identity hash.
             dest_queue: Destination recipient queue ID.
             message_id: Message ID for reply correlation.
+            timeout_seconds: float (seconds to wait), None for indefinite wait
 
         Returns:
             bytes: The received payload from the channel.
