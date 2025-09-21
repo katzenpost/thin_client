@@ -634,7 +634,7 @@ class ThinClient:
         except cbor2.CBORDecodeValueError as e:
           self.logger.error(f"{e}")
           raise ValueError(f"{e}")
-        self.logger.debug(f"Received daemon response: [{len(raw_data)}] {type(response)}")
+        self.logger.debug(f"Received daemon response: [{len(raw_data)}] {type(response)} {response}")
         return response
 
     async def worker_loop(self, loop:asyncio.events.AbstractEventLoop) -> None:
@@ -763,9 +763,9 @@ class ThinClient:
         request_type = list(request.keys())[0]
         try:
             await self._send_all(length_prefixed_request)
-            self.logger.info("{request_type} request sent.")
+            self.logger.info(f"{request_type} request sent.")
             reply = await self.response_queues[query_id].get()
-            self.logger.info("{request_type} response received.")
+            self.logger.info(f"{request_type} response received.")
             # TODO error handling, see _wait_for_channel_reply
             return reply
         except asyncio.CancelledError:
@@ -837,12 +837,13 @@ class ThinClient:
             self.reply_received_event.set()
             await self.config.handle_message_reply_event(reply)
             return
-
-        for reply_type, reply in response:
+        for reply_type, reply in response.items():
             self.logger.debug(f"channel {reply_type} event")
             if not reply_type.endswith("_reply") or not (query_id := reply.get("query_id", None)):
+                self.logger.debug(f"{reply_type} is not a reply, or can't get query_id")
                 continue
             if not (queue := self.response_queues.get(query_id, None)):
+                self.logger.debug(f"query_id for {reply_type} has no listener")
                 continue
             # avoid blocking recv loop:
             asyncio.create_task(queue.put(reply))
@@ -1127,6 +1128,8 @@ class ThinClient:
             self.logger.error(f"Error creating read channel: {e}")
             raise
 
+        # client2/thin/thin_messages.go:  ThinClientCapabilityAlreadyInUse uint8 = 21
+
         channel_id = reply["channel_id"]
         return channel_id
 
@@ -1309,9 +1312,9 @@ class ThinClient:
 
         Args:
             write_cap: The write capability bytes.
-            message_box_index: Message box index for resuming from a specific position.
-            envelope_descriptor: Envelope descriptor from previous query.
-            envelope_hash: Envelope hash from previous query.
+            message_box_index: Message box index for resuming from a specific position (WriteChannelReply.current_message_index).
+            envelope_descriptor: Envelope descriptor from previous query (WriteChannelReply.envelope_descriptor).
+            envelope_hash: Envelope hash from previous query (WriteChannelReply.envelope_hash).
 
         Returns:
             int: The channel ID.
@@ -1432,8 +1435,9 @@ class ThinClient:
             raise ThinClientOfflineError("cannot send channel query in offline mode - daemon not connected to mixnet")
 
         # Create an event for this message_id
-        event = asyncio.Event()
-        self.pending_channel_message_queries[message_id] = event
+        if message_id not in self.pending_channel_message_queries:
+            event = asyncio.Event()
+            self.pending_channel_message_queries[message_id] = event
 
         try:
             # Send the channel query
