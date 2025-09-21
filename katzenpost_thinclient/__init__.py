@@ -424,7 +424,7 @@ class Config:
 
     async def handle_connection_status_event(self, event: asyncio.Event) -> None:
         if self.on_connection_status:
-            await self.on_connection_status(event)
+            return await self.on_connection_status(event)
 
     async def handle_new_pki_document_event(self, event: asyncio.Event) -> None:
         if self.on_new_pki_document:
