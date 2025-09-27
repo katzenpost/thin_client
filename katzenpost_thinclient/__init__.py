@@ -474,7 +474,8 @@ class ThinClient:
         self._recv_lock = asyncio.Lock()
 
         # Letterbox for each response associated (by query_id) with a request.
-        self.response_queues : Dict[bytes, asyncio.Queue] = {}  # (query_id|message_id) -> Queue
+        self.response_queues : Dict[bytes, asyncio.Queue[Dict[str,Any]]] = {}  # (query_id|message_id) -> Queue
+        self.ack_queues : Dict[bytes, asyncio.Queue[Dict[str,Any]]] = {}  # (query_id|message_id) -> Queue
 
         # Channel query message ID correlation (for send_channel_query_await_reply)
         self.pending_channel_message_queries : Dict[bytes, asyncio.Event] = {}  # message_id -> Event
@@ -484,9 +485,10 @@ class ThinClient:
         self.logger = logging.getLogger('thinclient')
         self.logger.setLevel(logging.DEBUG)
         # Only add handler if none exists to avoid duplicate log messages
-        if not self.logger.handlers:
-            handler = logging.StreamHandler(sys.stderr)
-            self.logger.addHandler(handler)
+        # XXX: commented out because it did in fact log twice:
+        #if not self.logger.handlers:
+        #    handler = logging.StreamHandler(sys.stderr)
+        #    self.logger.addHandler(handler)
 
         if self.config.network is None:
             raise RuntimeError("config.network is None")
@@ -528,6 +530,9 @@ class ThinClient:
 
         Args:
             loop (asyncio.AbstractEventLoop): The running asyncio event loop.
+
+        Exceptions:
+            BrokenPipeError
         """
         self.logger.debug("connecting to daemon")
         server_addr : str | Tuple[str,int] = ''
@@ -839,8 +844,9 @@ class ThinClient:
             self.reply_received_event.set()
             await self.config.handle_message_reply_event(reply)
             return
-        # Handle channel query events (for send_channel_query_await_reply)
+        # Handle channel query events (for send_channel_query_await_reply), this is the ACK from the local clientd (not courier)
         if response.get("channel_query_sent_event") is not None:
+            # channel_query_sent_event': {'message_id': b'\xb7\xd5\xaeG\x8a\xc4\x96\x99|M\x89c\x90\xc3\xd4\x1f', 'sent_at': 1758485828, 'reply_eta': 1179000000, 'error_code': 0},
             self.logger.debug("channel_query_sent_event")
             event = response["channel_query_sent_event"]
             message_id = event.get("message_id")
@@ -855,12 +861,14 @@ class ThinClient:
                 # Continue waiting for the reply (don't return here)
             return
 
-        if response.get("channel_query_reply_event") is not None:
-            # channel_query_sent_event': {'message_id': b'\xb7\xd5\xaeG\x8a\xc4\x96\x99|M\x89c\x90\xc3\xd4\x1f', 'sent_at': 1758485828, 'reply_eta': 1179000000, 'error_code': 0},
+        if query_ack := response.get("channel_query_reply_event", None):
+            # this is the ACK from the courier
             self.logger.debug("channel_query_reply_event")
             event = response["channel_query_reply_event"]
             message_id = event.get("message_id")
+
             if message_id is None:
+                self.logger.error("channel_query_reply_event without message_id")
                 return
 
             # TODO wait why are we storing these indefinitely if we don't really care about them??
@@ -871,6 +879,13 @@ class ThinClient:
                 # Extract the payload
                 payload = event.get("payload", b"")
                 self.channel_message_query_responses[message_id] = payload
+
+            if (queue := self.ack_queues.get(message_id, None)):
+                self.logger.debug(f"ack_queues: populated with message_id {message_id.hex()}")
+                asyncio.create_task(queue.put(query_ack))
+            else:
+                self.logger.error(f"channel_query_reply_event for message_id {message_id.hex()}, but there is no listener")
+
 
             # Signal the waiting coroutine
             if message_id in self.pending_channel_message_queries:
@@ -1461,7 +1476,7 @@ class ThinClient:
 
         try:
             # Send the channel query
-            await self.send_channel_query(channel_id, payload, dest_node, dest_queue, message_id)
+            await self.send_channel_query(channel_id, payload=payload, dest_node=dest_node, dest_queue=dest_queue, message_id=message_id)
 
             # Wait for the reply with timeout
             await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
@@ -1485,7 +1500,7 @@ class ThinClient:
             self.pending_channel_message_queries.pop(message_id, None)
             self.channel_message_query_responses.pop(message_id, None)
 
-    async def send_channel_query(self, channel_id: int, payload: bytes, dest_node: bytes,
+    async def send_channel_query(self, channel_id: int, *, payload: bytes, dest_node: bytes,
                                dest_queue: bytes, message_id: bytes) -> None:
         """
         Sends a prepared channel query to the mixnet without waiting for a reply.
@@ -1505,6 +1520,7 @@ class ThinClient:
             raise ThinClientOfflineError("cannot send_channel_query while not is_connected() - daemon not connected to mixnet")
 
         if not isinstance(payload, bytes):
+            self.logger.error("send_channel_query: type error: payload= must be bytes()")
             payload = payload.encode('utf-8')
 
         # Create the SendChannelQuery structure (matches Rust implementation)
