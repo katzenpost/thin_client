@@ -565,6 +565,14 @@ class ThinClient:
         # Start the read loop as a background task
         self.logger.debug("starting read loop")
         self.task = loop.create_task(self.worker_loop(loop))
+        def handle_loop_err(task):
+            try:
+                result = task.result()
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                raise
+        self.task.add_done_callback(handle_loop_err)
 
     def get_config(self) -> Config:
         """
@@ -650,18 +658,25 @@ class ThinClient:
         """
         self.logger.debug("read loop start")
         while True:
-            self.logger.debug("read loop")
             try:
                 response = await self.recv(loop)
             except asyncio.CancelledError:
                 # Handle cancellation of the read loop
+                self.logger.error(f"worker_loop cancelled")
                 break
             except Exception as e:
                 self.logger.error(f"Error reading from socket: {e}")
                 raise
             else:
-                await self.handle_response(response)
-
+                def handle_response_err(task):
+                    try:
+                        result = task.result()
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                        raise
+                resp = asyncio.create_task(self.handle_response(response))
+                resp.add_done_callback(handle_response_err)
 
     def parse_status(self, event: "Dict[str,Any]") -> None:
         """
@@ -1196,6 +1211,10 @@ class ThinClient:
             raise
 
         if reply['error_code'] != 0:
+            # Examples:
+            # 12:24:32.206 ERRO katzenpost/client2: writeChannel failure: failed to create write request: pki: replica not found
+            # - This one will probably never succeed? Why is the client using a bad replica?
+            #
             raise Exception(f"write_channel got error from clientd: {reply['error_code']}")
 
         return WriteChannelReply(
@@ -1331,6 +1350,7 @@ class ThinClient:
             self.logger.error(f"Error resuming read channel: {e}")
             raise
         if not reply["channel_id"]:
+            self.logger.error(f"Error resuming read channel: no channel_id")
             raise Exception("TODO resume_read_channel error", reply)
         return reply["channel_id"]
 
