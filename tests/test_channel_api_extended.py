@@ -75,7 +75,7 @@ async def test_resume_write_channel_query():
     print("Alice: Resuming write channel")
     alice_channel_id = await alice_thin_client.resume_write_channel_query(
         write_cap,
-        write_reply.current_message_index,  # Use current_message_index like in Rust test
+        write_reply.next_message_index,  # Use current_message_index like in Rust test
         write_reply.envelope_descriptor,
         write_reply.envelope_hash
     )
@@ -142,6 +142,12 @@ async def test_resume_write_channel_query():
     assert alice_payload1 == bob_reply_payload1, "Bob: First message payload mismatch"
 
     # Bob reads second message
+    print("Bob: Resuming read channel to read second message")
+    bob_channel_id = await bob_thin_client.resume_read_channel(
+        read_cap,
+        read_reply1.next_message_index,
+        read_reply1.reply_index
+    )
     print("Bob: Reading second message")
     read_reply2 = await bob_thin_client.read_channel(bob_channel_id, None, None)
 
