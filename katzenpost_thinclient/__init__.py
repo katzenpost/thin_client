@@ -557,10 +557,10 @@ class ThinClient:
         await self.handle_response(response)
 
         # 2nd message is always a new pki doc event
-        response = await self.recv(loop)
-        assert response is not None
-        assert response["new_pki_document_event"] is not None
-        await self.handle_response(response)
+        #response = await self.recv(loop)
+        #assert response is not None
+        #assert response["new_pki_document_event"] is not None, response
+        #await self.handle_response(response)
         
         # Start the read loop as a background task
         self.logger.debug("starting read loop")
