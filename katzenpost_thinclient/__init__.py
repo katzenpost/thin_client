@@ -706,11 +706,18 @@ class ThinClient:
     def parse_pki_doc(self, event: "Dict[str,Any]") -> None:
         """
         Parse and store a new PKI document received from the daemon.
+
+        Handles the case where the daemon may not have a PKI document yet
+        (e.g., during initial connection before the network is fully available).
         """
         self.logger.debug("parse pki doc")
         assert event is not None
-        assert event["payload"] is not None
-        raw_pki_doc = cbor2.loads(event["payload"])
+        payload = event.get("payload")
+        # Handle empty payload - daemon may not have a PKI document yet
+        if payload is None or len(payload) == 0:
+            self.logger.info("No PKI document available yet - will receive when available")
+            return
+        raw_pki_doc = cbor2.loads(payload)
         self.pki_doc = raw_pki_doc
         self.logger.debug("parse pki doc success")
 
