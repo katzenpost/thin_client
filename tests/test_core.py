@@ -21,9 +21,8 @@ async def test_thin_client_send_receive_integration_test():
     """Test basic send/receive functionality with the echo service."""
     from .conftest import is_daemon_available
 
-    # Skip test if daemon is not available
-    if not is_daemon_available():
-        pytest.skip("Katzenpost client daemon not available")
+    # Fail test if daemon is not available
+    assert is_daemon_available(), "Katzenpost client daemon not available"
     from .conftest import get_config_path
 
     config_path= get_config_path()
