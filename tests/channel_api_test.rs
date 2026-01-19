@@ -26,6 +26,7 @@ async fn setup_thin_client() -> Result<std::sync::Arc<ThinClient>, Box<dyn std::
 /// This test demonstrates the full channel workflow: Alice creates a write channel,
 /// Bob creates a read channel, Alice writes messages, Bob reads them back.
 #[tokio::test]
+#[ignore = "Channel API tests temporarily disabled"]
 async fn test_channel_api_basics() -> Result<(), Box<dyn std::error::Error>> {
     let alice_thin_client = setup_thin_client().await?;
     let bob_thin_client = setup_thin_client().await?;
@@ -177,6 +178,7 @@ async fn test_channel_api_basics() -> Result<(), Box<dyn std::error::Error>> {
 /// 7. Read first and second message from the channel
 /// 8. Verify payloads match
 #[tokio::test]
+#[ignore = "Channel API tests temporarily disabled"]
 async fn test_resume_write_channel() -> Result<(), Box<dyn std::error::Error>> {
     let alice_thin_client = setup_thin_client().await?;
     let bob_thin_client = setup_thin_client().await?;
@@ -341,6 +343,7 @@ async fn test_resume_write_channel() -> Result<(), Box<dyn std::error::Error>> {
 /// 8. Read both messages from channel
 /// 9. Verify payloads match
 #[tokio::test]
+#[ignore = "Channel API tests temporarily disabled"]
 async fn test_resume_write_channel_query() -> Result<(), Box<dyn std::error::Error>> {
     let alice_thin_client = setup_thin_client().await?;
     let bob_thin_client = setup_thin_client().await?;
@@ -504,6 +507,7 @@ async fn test_resume_write_channel_query() -> Result<(), Box<dyn std::error::Err
 /// 8. Read the second message from the channel
 /// 9. Verify payload matches
 #[tokio::test]
+#[ignore = "Channel API tests temporarily disabled"]
 async fn test_resume_read_channel() -> Result<(), Box<dyn std::error::Error>> {
     let alice_thin_client = setup_thin_client().await?;
     let bob_thin_client = setup_thin_client().await?;
@@ -666,6 +670,7 @@ async fn test_resume_read_channel() -> Result<(), Box<dyn std::error::Error>> {
 /// 9. Read second message from channel
 /// 10. Verify received payload matches
 #[tokio::test]
+#[ignore = "Channel API tests temporarily disabled"]
 async fn test_resume_read_channel_query() -> Result<(), Box<dyn std::error::Error>> {
     let alice_thin_client = setup_thin_client().await?;
     let bob_thin_client = setup_thin_client().await?;

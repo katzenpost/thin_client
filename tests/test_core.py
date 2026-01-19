@@ -21,9 +21,8 @@ async def test_thin_client_send_receive_integration_test():
     """Test basic send/receive functionality with the echo service."""
     from .conftest import is_daemon_available
 
-    # Skip test if daemon is not available
-    if not is_daemon_available():
-        pytest.skip("Katzenpost client daemon not available")
+    # Fail test if daemon is not available
+    assert is_daemon_available(), "Katzenpost client daemon not available"
     from .conftest import get_config_path
 
     config_path= get_config_path()
@@ -36,6 +35,14 @@ async def test_thin_client_send_receive_integration_test():
 
     try:
         await client.start(loop)
+
+        # Wait for PKI document to be available (received asynchronously)
+        attempts = 0
+        while client.pki_document() is None and attempts < 30:
+            await asyncio.sleep(1)
+            attempts += 1
+
+        assert client.pki_document() is not None, "PKI document not received within 30 seconds"
 
         service_desc = client.get_service("echo")
         surb_id = client.new_surb_id()

@@ -556,12 +556,13 @@ class ThinClient:
         assert response["connection_status_event"] is not None
         await self.handle_response(response)
 
-        # 2nd message is always a new pki doc event
-        #response = await self.recv(loop)
-        #assert response is not None
-        #assert response["new_pki_document_event"] is not None, response
-        #await self.handle_response(response)
-        
+        # 2nd message is always a new pki doc event (payload may be empty if mixnet is still booting)
+        response = await self.recv(loop)
+        if response is not None and response.get("new_pki_document_event") is not None:
+            await self.handle_response(response)
+        else:
+            self.logger.info("No PKI document event received during startup - will receive when available")
+
         # Start the read loop as a background task
         self.logger.debug("starting read loop")
         self.task = loop.create_task(self.worker_loop(loop))
@@ -706,11 +707,18 @@ class ThinClient:
     def parse_pki_doc(self, event: "Dict[str,Any]") -> None:
         """
         Parse and store a new PKI document received from the daemon.
+
+        Handles the case where the daemon may not have a PKI document yet
+        (e.g., during initial connection before the network is fully available).
         """
         self.logger.debug("parse pki doc")
         assert event is not None
-        assert event["payload"] is not None
-        raw_pki_doc = cbor2.loads(event["payload"])
+        payload = event.get("payload")
+        # Handle empty payload - daemon may not have a PKI document yet
+        if payload is None or len(payload) == 0:
+            self.logger.info("No PKI document available yet - will receive when available")
+            return
+        raw_pki_doc = cbor2.loads(payload)
         self.pki_doc = raw_pki_doc
         self.logger.debug("parse pki doc success")
 

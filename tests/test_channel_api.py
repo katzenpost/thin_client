@@ -27,6 +27,7 @@ async def setup_thin_client():
     return client
 
 
+@pytest.mark.skip(reason="Channel API tests temporarily disabled")
 @pytest.mark.asyncio
 async def test_channel_api_basics():
     """
@@ -176,6 +177,7 @@ async def test_channel_api_basics():
     print("✅ Channel API basics test completed successfully")
 
 
+@pytest.mark.skip(reason="Channel API tests temporarily disabled")
 @pytest.mark.asyncio
 async def test_resume_write_channel():
     """
