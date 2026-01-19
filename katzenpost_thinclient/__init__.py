@@ -556,12 +556,13 @@ class ThinClient:
         assert response["connection_status_event"] is not None
         await self.handle_response(response)
 
-        # 2nd message is always a new pki doc event
-        #response = await self.recv(loop)
-        #assert response is not None
-        #assert response["new_pki_document_event"] is not None, response
-        #await self.handle_response(response)
-        
+        # 2nd message is always a new pki doc event (payload may be empty if mixnet is still booting)
+        response = await self.recv(loop)
+        if response is not None and response.get("new_pki_document_event") is not None:
+            await self.handle_response(response)
+        else:
+            self.logger.info("No PKI document event received during startup - will receive when available")
+
         # Start the read loop as a background task
         self.logger.debug("starting read loop")
         self.task = loop.create_task(self.worker_loop(loop))
