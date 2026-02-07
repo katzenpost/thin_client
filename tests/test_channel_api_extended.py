@@ -25,6 +25,7 @@ async def setup_thin_client():
     return client
 
 
+@pytest.mark.skip(reason="OLD Pigeonhole API - disabled in favor of NEW Pigeonhole API tests")
 @pytest.mark.asyncio
 async def test_resume_write_channel_query():
     """
@@ -39,6 +40,8 @@ async def test_resume_write_channel_query():
     7. Create read channel
     8. Read both messages from channel
     9. Verify payloads match
+
+    NOTE: This test uses the OLD Pigeonhole API and is currently disabled.
     """
     alice_thin_client = await setup_thin_client()
     bob_thin_client = await setup_thin_client()
@@ -180,6 +183,7 @@ async def test_resume_write_channel_query():
     print("✅ Resume write channel query test completed successfully")
 
 
+@pytest.mark.skip(reason="OLD Pigeonhole API - disabled in favor of NEW Pigeonhole API tests")
 @pytest.mark.asyncio
 async def test_resume_read_channel():
     """
@@ -194,6 +198,8 @@ async def test_resume_read_channel():
     7. Resume the read channel
     8. Read the second message from the channel
     9. Verify payload matches
+
+    NOTE: This test uses the OLD Pigeonhole API and is currently disabled.
     """
     alice_thin_client = await setup_thin_client()
     bob_thin_client = await setup_thin_client()
@@ -334,6 +340,7 @@ async def test_resume_read_channel():
     print("✅ Resume read channel test completed successfully")
 
 
+@pytest.mark.skip(reason="OLD Pigeonhole API - disabled in favor of NEW Pigeonhole API tests")
 @pytest.mark.asyncio
 async def test_resume_read_channel_query():
     """
@@ -349,6 +356,8 @@ async def test_resume_read_channel_query():
     8. Verify received payload matches
     9. Read second message from channel
     10. Verify received payload matches
+
+    NOTE: This test uses the OLD Pigeonhole API and is currently disabled.
     """
     alice_thin_client = await setup_thin_client()
     bob_thin_client = await setup_thin_client()

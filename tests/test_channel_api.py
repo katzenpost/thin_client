@@ -27,12 +27,15 @@ async def setup_thin_client():
     return client
 
 
+@pytest.mark.skip(reason="OLD Pigeonhole API - disabled in favor of NEW Pigeonhole API tests")
 @pytest.mark.asyncio
 async def test_channel_api_basics():
     """
     Test basic channel API operations - equivalent to TestChannelAPIBasics from Rust.
     This test demonstrates the full channel workflow: Alice creates a write channel,
     Bob creates a read channel, Alice writes messages, Bob reads them back.
+
+    NOTE: This test uses the OLD Pigeonhole API and is currently disabled.
     """
     alice_thin_client = await setup_thin_client()
     bob_thin_client = await setup_thin_client()
@@ -176,6 +179,7 @@ async def test_channel_api_basics():
     print("✅ Channel API basics test completed successfully")
 
 
+@pytest.mark.skip(reason="OLD Pigeonhole API - disabled in favor of NEW Pigeonhole API tests")
 @pytest.mark.asyncio
 async def test_resume_write_channel():
     """
@@ -189,6 +193,8 @@ async def test_resume_write_channel():
     6. Create a read channel
     7. Read first and second message from the channel
     8. Verify payloads match
+
+    NOTE: This test uses the OLD Pigeonhole API and is currently disabled.
     """
     alice_thin_client = await setup_thin_client()
     bob_thin_client = await setup_thin_client()

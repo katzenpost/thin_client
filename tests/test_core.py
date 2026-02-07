@@ -37,6 +37,21 @@ async def test_thin_client_send_receive_integration_test():
     try:
         await client.start(loop)
 
+        # Wait for daemon to connect to mixnet and receive PKI document
+        print("Waiting for daemon to connect to mixnet...")
+        attempts = 0
+        while (not client.is_connected() or client.pki_document() is None) and attempts < 30:
+            await asyncio.sleep(1)
+            attempts += 1
+
+        if not client.is_connected():
+            raise Exception("Daemon failed to connect to mixnet within 30 seconds")
+
+        if client.pki_document() is None:
+            raise Exception("PKI document not received within 30 seconds")
+
+        print("✅ Daemon connected to mixnet, using current PKI document")
+
         service_desc = client.get_service("echo")
         surb_id = client.new_surb_id()
         payload = "hello"
