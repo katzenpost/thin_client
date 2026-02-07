@@ -79,6 +79,17 @@ THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE = 10
 THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY = 11
 THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION = 12
 THIN_CLIENT_PROPAGATION_ERROR = 13
+THIN_CLIENT_ERROR_INVALID_WRITE_CAPABILITY = 14
+THIN_CLIENT_ERROR_INVALID_READ_CAPABILITY = 15
+THIN_CLIENT_ERROR_INVALID_RESUME_WRITE_CHANNEL_REQUEST = 16
+THIN_CLIENT_ERROR_INVALID_RESUME_READ_CHANNEL_REQUEST = 17
+THIN_CLIENT_IMPOSSIBLE_HASH_ERROR = 18
+THIN_CLIENT_IMPOSSIBLE_NEW_WRITE_CAP_ERROR = 19
+THIN_CLIENT_IMPOSSIBLE_NEW_STATEFUL_WRITER_ERROR = 20
+THIN_CLIENT_CAPABILITY_ALREADY_IN_USE = 21
+THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED = 22
+THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED = 23
+THIN_CLIENT_ERROR_START_RESENDING_CANCELLED = 24
 
 def thin_client_error_to_string(error_code: int) -> str:
     """Convert a thin client error code to a human-readable string."""
@@ -89,7 +100,6 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_INVALID_REQUEST: "Invalid request",
         THIN_CLIENT_ERROR_INTERNAL_ERROR: "Internal error",
         THIN_CLIENT_ERROR_MAX_RETRIES: "Maximum retries exceeded",
-
         THIN_CLIENT_ERROR_INVALID_CHANNEL: "Invalid channel",
         THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND: "Channel not found",
         THIN_CLIENT_ERROR_PERMISSION_DENIED: "Permission denied",
@@ -98,6 +108,17 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY: "Duplicate capability",
         THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION: "Courier cache corruption",
         THIN_CLIENT_PROPAGATION_ERROR: "Propagation error",
+        THIN_CLIENT_ERROR_INVALID_WRITE_CAPABILITY: "Invalid write capability",
+        THIN_CLIENT_ERROR_INVALID_READ_CAPABILITY: "Invalid read capability",
+        THIN_CLIENT_ERROR_INVALID_RESUME_WRITE_CHANNEL_REQUEST: "Invalid resume write channel request",
+        THIN_CLIENT_ERROR_INVALID_RESUME_READ_CHANNEL_REQUEST: "Invalid resume read channel request",
+        THIN_CLIENT_IMPOSSIBLE_HASH_ERROR: "Impossible hash error",
+        THIN_CLIENT_IMPOSSIBLE_NEW_WRITE_CAP_ERROR: "Impossible new write cap error",
+        THIN_CLIENT_IMPOSSIBLE_NEW_STATEFUL_WRITER_ERROR: "Impossible new stateful writer error",
+        THIN_CLIENT_CAPABILITY_ALREADY_IN_USE: "Capability already in use",
+        THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED: "MKEM decryption failed",
+        THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED: "BACAP decryption failed",
+        THIN_CLIENT_ERROR_START_RESENDING_CANCELLED: "Start resending cancelled",
     }
     return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
 
@@ -1598,3 +1619,289 @@ class ThinClient:
             self.logger.error(f"Error sending close channel request: {e}")
             raise
         self.logger.info(f"CloseChannel request sent for channel {channel_id}.")
+
+    # New Pigeonhole API methods
+
+    async def new_keypair(self, seed: bytes) -> "Tuple[bytes, bytes, bytes]":
+        """
+        Creates a new keypair for use with the Pigeonhole protocol.
+
+        This method generates a WriteCap and ReadCap from the provided seed using
+        the BACAP (Blinding-and-Capability) protocol. The WriteCap should be stored
+        securely for writing messages, while the ReadCap can be shared with others
+        to allow them to read messages.
+
+        Args:
+            seed: 32-byte seed used to derive the keypair.
+
+        Returns:
+            tuple: (write_cap, read_cap, first_message_index) where:
+                - write_cap is the write capability for sending messages
+                - read_cap is the read capability that can be shared with recipients
+                - first_message_index is the first message index to use when writing
+
+        Raises:
+            Exception: If the keypair creation fails.
+            ValueError: If seed is not exactly 32 bytes.
+
+        Example:
+            >>> import os
+            >>> seed = os.urandom(32)
+            >>> write_cap, read_cap, first_index = await client.new_keypair(seed)
+            >>> # Share read_cap with Bob so he can read messages
+            >>> # Store write_cap for sending messages
+        """
+        if len(seed) != 32:
+            raise ValueError("seed must be exactly 32 bytes")
+
+        query_id = self.new_query_id()
+
+        request = {
+            "new_keypair": {
+                "query_id": query_id,
+                "seed": seed
+            }
+        }
+
+        try:
+            reply = await self._send_and_wait(query_id=query_id, request=request)
+        except Exception as e:
+            self.logger.error(f"Error creating keypair: {e}")
+            raise
+
+        if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(reply['error_code'])
+            raise Exception(f"new_keypair failed: {error_msg}")
+
+        return reply["write_cap"], reply["read_cap"], reply["first_message_index"]
+
+    async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> "Tuple[bytes, bytes, bytes, bytes, int]":
+        """
+        Encrypts a read operation for a given read capability.
+
+        This method prepares an encrypted read request that can be sent to the
+        courier service to retrieve a message from a pigeonhole box. The returned
+        ciphertext should be sent via start_resending_encrypted_message.
+
+        Args:
+            read_cap: Read capability that grants access to the channel.
+            message_box_index: Starting read position for the channel.
+
+        Returns:
+            tuple: (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash, replica_epoch) where:
+                - message_ciphertext is the encrypted message to send to courier
+                - next_message_index is the next message index for subsequent reads
+                - envelope_descriptor is for decrypting the reply
+                - envelope_hash is the hash of the courier envelope
+                - replica_epoch is when the envelope was created
+
+        Raises:
+            Exception: If the encryption fails.
+
+        Example:
+            >>> ciphertext, next_index, env_desc, env_hash, epoch = await client.encrypt_read(
+            ...     read_cap, message_box_index)
+            >>> # Send ciphertext via start_resending_encrypted_message
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "encrypt_read": {
+                "query_id": query_id,
+                "read_cap": read_cap,
+                "message_box_index": message_box_index
+            }
+        }
+
+        try:
+            reply = await self._send_and_wait(query_id=query_id, request=request)
+        except Exception as e:
+            self.logger.error(f"Error encrypting read: {e}")
+            raise
+
+        if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(reply['error_code'])
+            raise Exception(f"encrypt_read failed: {error_msg}")
+
+        return (
+            reply["message_ciphertext"],
+            reply["next_message_index"],
+            reply["envelope_descriptor"],
+            reply["envelope_hash"],
+            reply["replica_epoch"]
+        )
+
+    async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_index: bytes) -> "Tuple[bytes, bytes, bytes, int]":
+        """
+        Encrypts a write operation for a given write capability.
+
+        This method prepares an encrypted write request that can be sent to the
+        courier service to store a message in a pigeonhole box. The returned
+        ciphertext should be sent via start_resending_encrypted_message.
+
+        Args:
+            plaintext: The plaintext message to encrypt.
+            write_cap: Write capability that grants access to the channel.
+            message_box_index: Starting write position for the channel.
+
+        Returns:
+            tuple: (message_ciphertext, envelope_descriptor, envelope_hash, replica_epoch) where:
+                - message_ciphertext is the encrypted message to send to courier
+                - envelope_descriptor is for decrypting the reply
+                - envelope_hash is the hash of the courier envelope
+                - replica_epoch is when the envelope was created
+
+        Raises:
+            Exception: If the encryption fails.
+
+        Example:
+            >>> plaintext = b"Hello, Bob!"
+            >>> ciphertext, env_desc, env_hash, epoch = await client.encrypt_write(
+            ...     plaintext, write_cap, message_box_index)
+            >>> # Send ciphertext via start_resending_encrypted_message
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "encrypt_write": {
+                "query_id": query_id,
+                "plaintext": plaintext,
+                "write_cap": write_cap,
+                "message_box_index": message_box_index
+            }
+        }
+
+        try:
+            reply = await self._send_and_wait(query_id=query_id, request=request)
+        except Exception as e:
+            self.logger.error(f"Error encrypting write: {e}")
+            raise
+
+        if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(reply['error_code'])
+            raise Exception(f"encrypt_write failed: {error_msg}")
+
+        return (
+            reply["message_ciphertext"],
+            reply["envelope_descriptor"],
+            reply["envelope_hash"],
+            reply["replica_epoch"]
+        )
+
+    async def start_resending_encrypted_message(
+        self,
+        read_cap: "bytes|None",
+        write_cap: "bytes|None",
+        next_message_index: "bytes|None",
+        reply_index: "int|None",
+        envelope_descriptor: bytes,
+        message_ciphertext: bytes,
+        envelope_hash: bytes,
+        replica_epoch: int
+    ) -> bytes:
+        """
+        Starts resending an encrypted message via ARQ.
+
+        This method initiates automatic repeat request (ARQ) for an encrypted message,
+        which will be resent periodically until either:
+        - A reply is received from the courier
+        - The message is cancelled via cancel_resending_encrypted_message
+        - The client is shut down
+
+        This is used for both read and write operations in the new Pigeonhole API.
+
+        The daemon implements a finite state machine (FSM) for handling the stop-and-wait ARQ protocol:
+        - For write operations (write_cap != None, read_cap == None):
+          The method waits for an ACK from the courier and returns immediately.
+        - For read operations (read_cap != None, write_cap == None):
+          The method waits for an ACK from the courier, then the daemon automatically
+          sends a new SURB to request the payload, and this method waits for the payload.
+          The daemon performs all decryption (MKEM envelope + BACAP payload) and returns
+          the fully decrypted plaintext.
+
+        Args:
+            read_cap: Read capability (can be None for write operations, required for reads).
+            write_cap: Write capability (can be None for read operations, required for writes).
+            next_message_index: Next message index for BACAP decryption (required for reads).
+            reply_index: Index of the reply to use (typically 0 or 1).
+            envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
+            message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
+            envelope_hash: Hash of the courier envelope.
+            replica_epoch: Epoch when the envelope was created.
+
+        Returns:
+            bytes: Fully decrypted plaintext from the reply (for reads) or empty (for writes).
+
+        Raises:
+            Exception: If the operation fails. Check error_code for specific errors.
+
+        Example:
+            >>> plaintext = await client.start_resending_encrypted_message(
+            ...     read_cap, None, next_index, reply_idx, env_desc, ciphertext, env_hash, epoch)
+            >>> print(f"Received: {plaintext}")
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "start_resending_encrypted_message": {
+                "query_id": query_id,
+                "read_cap": read_cap,
+                "write_cap": write_cap,
+                "next_message_index": next_message_index,
+                "reply_index": reply_index,
+                "envelope_descriptor": envelope_descriptor,
+                "message_ciphertext": message_ciphertext,
+                "envelope_hash": envelope_hash,
+                "replica_epoch": replica_epoch
+            }
+        }
+
+        try:
+            reply = await self._send_and_wait(query_id=query_id, request=request)
+        except Exception as e:
+            self.logger.error(f"Error starting resending encrypted message: {e}")
+            raise
+
+        if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(reply['error_code'])
+            raise Exception(f"start_resending_encrypted_message failed: {error_msg}")
+
+        return reply.get("plaintext", b"")
+
+    async def cancel_resending_encrypted_message(self, envelope_hash: bytes) -> None:
+        """
+        Cancels ARQ resending for an encrypted message.
+
+        This method stops the automatic repeat request (ARQ) for a previously started
+        encrypted message transmission. This is useful when:
+        - A reply has been received through another channel
+        - The operation should be aborted
+        - The message is no longer needed
+
+        Args:
+            envelope_hash: Hash of the courier envelope to cancel.
+
+        Raises:
+            Exception: If the cancellation fails.
+
+        Example:
+            >>> await client.cancel_resending_encrypted_message(env_hash)
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "cancel_resending_encrypted_message": {
+                "query_id": query_id,
+                "envelope_hash": envelope_hash
+            }
+        }
+
+        try:
+            reply = await self._send_and_wait(query_id=query_id, request=request)
+        except Exception as e:
+            self.logger.error(f"Error cancelling resending encrypted message: {e}")
+            raise
+
+        if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(reply['error_code'])
+            raise Exception(f"cancel_resending_encrypted_message failed: {error_msg}")
