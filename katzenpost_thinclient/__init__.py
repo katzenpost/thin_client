@@ -1905,3 +1905,51 @@ class ThinClient:
         if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
             error_msg = thin_client_error_to_string(reply['error_code'])
             raise Exception(f"cancel_resending_encrypted_message failed: {error_msg}")
+
+    async def next_message_box_index(self, message_box_index: bytes) -> bytes:
+        """
+        Increments a MessageBoxIndex using the BACAP NextIndex method.
+
+        This method is used when sending multiple messages to different mailboxes using
+        the same WriteCap or ReadCap. It properly advances the cryptographic state by:
+        - Incrementing the Idx64 counter
+        - Deriving new encryption and blinding keys using HKDF
+        - Updating the HKDF state for the next iteration
+
+        The daemon handles the cryptographic operations internally, ensuring correct
+        BACAP protocol implementation.
+
+        Args:
+            message_box_index: Current message box index to increment (as bytes).
+
+        Returns:
+            bytes: The next message box index.
+
+        Raises:
+            Exception: If the increment operation fails.
+
+        Example:
+            >>> current_index = first_message_index
+            >>> next_index = await client.next_message_box_index(current_index)
+            >>> # Use next_index for the next message
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "next_message_box_index": {
+                "query_id": query_id,
+                "message_box_index": message_box_index
+            }
+        }
+
+        try:
+            reply = await self._send_and_wait(query_id=query_id, request=request)
+        except Exception as e:
+            self.logger.error(f"Error incrementing message box index: {e}")
+            raise
+
+        if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(reply['error_code'])
+            raise Exception(f"next_message_box_index failed: {error_msg}")
+
+        return reply.get("next_message_box_index")

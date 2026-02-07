@@ -307,7 +307,6 @@ async def test_cancel_resending_encrypted_message():
         client.stop()
 
 
-@pytest.mark.skip(reason="Waiting for increment_message_box_index protocol message implementation")
 @pytest.mark.asyncio
 async def test_multiple_messages_sequence():
     """
@@ -369,7 +368,7 @@ async def test_multiple_messages_sequence():
 
             # Increment index for next message
             if i < num_messages - 1:  # Don't increment after last message
-                current_index = increment_message_box_index(current_index)
+                current_index = await alice_client.next_message_box_index(current_index)
                 indices_used.append(current_index)
 
         print("\n--- Waiting for message propagation ---")
@@ -402,7 +401,7 @@ async def test_multiple_messages_sequence():
 
             # Increment index for next read
             if i < num_messages - 1:
-                bob_current_index = increment_message_box_index(bob_current_index)
+                bob_current_index = await bob_client.next_message_box_index(bob_current_index)
 
         # Verify all messages were received correctly
         for i, (sent, received) in enumerate(zip(messages, received_messages)):
