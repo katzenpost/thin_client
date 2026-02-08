@@ -60,7 +60,7 @@ jobs:
           cd katzenpost/docker && make start wait
 
       - name: Brief pause to ensure mixnet is fully ready
-        run: sleep 5
+        run: sleep 10
 
       - name: Run all Python tests (including channel API integration tests)
         timeout-minutes: 20
