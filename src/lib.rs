@@ -964,16 +964,24 @@ impl ThinClient {
             // Try to receive with a short timeout to allow checking the overall timeout
             match tokio::time::timeout(Duration::from_millis(100), event_rx.recv()).await {
                 Ok(Some(reply)) => {
-                    // Check if this reply has the matching query_id
-                    if let Some(Value::Bytes(reply_query_id)) = reply.get(&Value::Text("query_id".to_string())) {
-                        if reply_query_id == query_id {
-                            // Check for error_code
-                            if let Some(Value::Integer(error_code)) = reply.get(&Value::Text("error_code".to_string())) {
-                                if *error_code != 0 {
-                                    return Err(ThinClientError::Other(format!("Request failed with error code: {}", error_code)));
+                    let reply_types = vec![
+                        "new_keypair_reply",
+                        "encrypt_read_reply",
+                        "encrypt_write_reply",
+                        "start_resending_encrypted_message_reply",
+                        "cancel_resending_encrypted_message_reply",
+                        "next_message_box_index_reply",
+                    ];
+
+                    for reply_type in reply_types {
+                        if let Some(Value::Map(inner_reply)) = reply.get(&Value::Text(reply_type.to_string())) {
+                            // Check if this inner reply has the matching query_id
+                            if let Some(Value::Bytes(reply_query_id)) = inner_reply.get(&Value::Text("query_id".to_string())) {
+                                if reply_query_id == query_id {
+                                    // Found our reply! Return the inner map
+                                    return Ok(inner_reply.clone());
                                 }
                             }
-                            return Ok(reply);
                         }
                     }
                     // Not our reply, continue waiting
