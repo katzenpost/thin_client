@@ -41,19 +41,19 @@ class ChannelTestState:
         self.bob_events.append(event)
         self.bob_reply_event.set()
 
-    def bob_sent_handler(self, event):
+    async def bob_sent_handler(self, event):
         """Handle Bob's message sent events."""
         self.bob_events.append(event)
 
-    def alice_sent_handler(self, event):
+    async def alice_sent_handler(self, event):
         """Handle Alice's message sent events."""
         self.alice_events.append(event)
 
-    def alice_connection_handler(self, event):
+    async def alice_connection_handler(self, event):
         """Handle Alice's connection status events."""
         self.alice_events.append(event)
 
-    def bob_connection_handler(self, event):
+    async def bob_connection_handler(self, event):
         """Handle Bob's connection status events."""
         self.bob_events.append(event)
 
