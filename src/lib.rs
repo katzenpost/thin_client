@@ -943,6 +943,10 @@ impl ThinClient {
         // Create an event sink to receive the reply
         let mut event_rx = self.event_sink();
 
+        // Small delay to ensure the event sink drain is registered before sending the request
+        // This prevents a race condition where a fast daemon response arrives before the drain is ready
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
         // Send the request
         self.send_cbor_request(request).await?;
 
