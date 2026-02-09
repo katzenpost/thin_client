@@ -947,7 +947,9 @@ impl ThinClient {
         self.send_cbor_request(request).await?;
 
         // Wait for the reply with matching query_id (with timeout)
-        let timeout_duration = Duration::from_secs(30);
+        // Mixnets are slow due to mixing delays, cover traffic, etc.
+        // Use a generous timeout for integration tests and real-world usage
+        let timeout_duration = Duration::from_secs(600);
         let start = std::time::Instant::now();
 
         loop {
