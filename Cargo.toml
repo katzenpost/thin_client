@@ -15,6 +15,7 @@ keywords = ["katzenpost", "cryptography", "sphinx", "mixnet"]
 libc = "0.2.152"
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
+serde_bytes = "0.11"
 serde_json = "1.0"
 serde_cbor = "0.11"
 blake2 = "0.10"

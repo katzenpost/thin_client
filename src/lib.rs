@@ -268,22 +268,54 @@ use log::{debug, error};
 use crate::error::ThinClientError;
 
 // ========================================================================
+// Helper module for serializing Option<Vec<u8>> as CBOR byte strings
+// ========================================================================
+
+mod optional_bytes {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(value: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(bytes) => serde_bytes::serialize(bytes, serializer),
+            None => Option::<&[u8]>::None.serialize(serializer),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<serde_bytes::ByteBuf> = Option::deserialize(deserializer)?;
+        Ok(opt.map(|b| b.into_vec()))
+    }
+}
+
+// ========================================================================
 // NEW Pigeonhole API Protocol Message Structs
 // ========================================================================
 
 /// Request to create a new keypair for the Pigeonhole protocol.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct NewKeypairRequest {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     seed: Vec<u8>,
 }
 
 /// Reply containing the generated keypair and first message index.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct NewKeypairReply {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     write_cap: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     read_cap: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     first_message_index: Vec<u8>,
     error_code: u8,
 }
@@ -291,18 +323,26 @@ struct NewKeypairReply {
 /// Request to encrypt a read operation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EncryptReadRequest {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     read_cap: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     message_box_index: Vec<u8>,
 }
 
 /// Reply containing the encrypted read operation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EncryptReadReply {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     message_ciphertext: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     next_message_index: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     envelope_descriptor: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     envelope_hash: Vec<u8>,
     replica_epoch: u64,
     error_code: u8,
@@ -311,18 +351,26 @@ struct EncryptReadReply {
 /// Request to encrypt a write operation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EncryptWriteRequest {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     plaintext: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     write_cap: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     message_box_index: Vec<u8>,
 }
 
 /// Reply containing the encrypted write operation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EncryptWriteReply {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     message_ciphertext: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     envelope_descriptor: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     envelope_hash: Vec<u8>,
     replica_epoch: u64,
     error_code: u8,
@@ -331,16 +379,20 @@ struct EncryptWriteReply {
 /// Request to start resending an encrypted message via ARQ.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StartResendingEncryptedMessageRequest {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", with = "optional_bytes")]
     read_cap: Option<Vec<u8>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", with = "optional_bytes")]
     write_cap: Option<Vec<u8>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", with = "optional_bytes")]
     next_message_index: Option<Vec<u8>>,
     reply_index: u8,
+    #[serde(with = "serde_bytes")]
     envelope_descriptor: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     message_ciphertext: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     envelope_hash: Vec<u8>,
     replica_epoch: u64,
 }
@@ -348,21 +400,26 @@ struct StartResendingEncryptedMessageRequest {
 /// Reply containing the plaintext from a resent encrypted message.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StartResendingEncryptedMessageReply {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
-    plaintext: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    plaintext: Option<Vec<u8>>,
     error_code: u8,
 }
 
 /// Request to cancel resending an encrypted message.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CancelResendingEncryptedMessageRequest {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     envelope_hash: Vec<u8>,
 }
 
 /// Reply confirming cancellation of resending.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CancelResendingEncryptedMessageReply {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
     error_code: u8,
 }
@@ -370,15 +427,113 @@ struct CancelResendingEncryptedMessageReply {
 /// Request to increment a MessageBoxIndex.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct NextMessageBoxIndexRequest {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     message_box_index: Vec<u8>,
 }
 
 /// Reply containing the incremented MessageBoxIndex.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct NextMessageBoxIndexReply {
+    #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     next_message_box_index: Vec<u8>,
+    error_code: u8,
+}
+
+/// Request to start resending a copy command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StartResendingCopyCommandRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    write_cap: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default, with = "optional_bytes")]
+    courier_identity_hash: Option<Vec<u8>>,
+    #[serde(skip_serializing_if = "Option::is_none", default, with = "optional_bytes")]
+    courier_queue_id: Option<Vec<u8>>,
+}
+
+/// Reply confirming start of copy command resending.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StartResendingCopyCommandReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    error_code: u8,
+}
+
+/// Request to cancel resending a copy command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CancelResendingCopyCommandRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    write_cap_hash: Vec<u8>,
+}
+
+/// Reply confirming cancellation of copy command resending.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CancelResendingCopyCommandReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    error_code: u8,
+}
+
+/// Request to create courier envelopes from a payload.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CreateCourierEnvelopesFromPayloadRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    stream_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    payload: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    dest_write_cap: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    dest_start_index: Vec<u8>,
+    is_last: bool,
+}
+
+/// Reply containing the created courier envelopes.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CreateCourierEnvelopesFromPayloadReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    envelopes: Vec<serde_bytes::ByteBuf>,
+    error_code: u8,
+}
+
+/// A destination for creating courier envelopes.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EnvelopeDestination {
+    #[serde(with = "serde_bytes")]
+    payload: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    write_cap: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    start_index: Vec<u8>,
+}
+
+/// Request to create courier envelopes from multiple payloads.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CreateCourierEnvelopesFromPayloadsRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    stream_id: Vec<u8>,
+    destinations: Vec<EnvelopeDestination>,
+    is_last: bool,
+}
+
+/// Reply containing the created courier envelopes from multiple payloads.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CreateCourierEnvelopesFromPayloadsReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    envelopes: Vec<serde_bytes::ByteBuf>,
     error_code: u8,
 }
 
@@ -1301,7 +1456,7 @@ impl ThinClient {
             return Err(ThinClientError::Other(format!("start_resending_encrypted_message failed with error code: {}", reply.error_code)));
         }
 
-        Ok(reply.plaintext)
+        Ok(reply.plaintext.unwrap_or_default())
     }
 
     /// Cancels ARQ resending for an encrypted message.
@@ -1379,6 +1534,215 @@ impl ThinClient {
         }
 
         Ok(reply.next_message_box_index)
+    }
+
+    /// Starts resending a copy command to a courier via ARQ.
+    ///
+    /// This method instructs a courier to read data from a temporary channel
+    /// (identified by the write_cap) and write it to the destination channel.
+    /// The command is automatically retransmitted until acknowledged.
+    ///
+    /// If courier_identity_hash and courier_queue_id are both provided,
+    /// the copy command is sent to that specific courier. Otherwise, a
+    /// random courier is selected.
+    ///
+    /// # Arguments
+    /// * `write_cap` - Write capability for the temporary channel containing the data
+    /// * `courier_identity_hash` - Optional identity hash of a specific courier to use
+    /// * `courier_queue_id` - Optional queue ID for the specified courier
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ThinClientError)` on failure
+    pub async fn start_resending_copy_command(
+        &self,
+        write_cap: &[u8],
+        courier_identity_hash: Option<&[u8]>,
+        courier_queue_id: Option<&[u8]>
+    ) -> Result<(), ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let request_inner = StartResendingCopyCommandRequest {
+            query_id: query_id.clone(),
+            write_cap: write_cap.to_vec(),
+            courier_identity_hash: courier_identity_hash.map(|h| h.to_vec()),
+            courier_queue_id: courier_queue_id.map(|q| q.to_vec()),
+        };
+
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("start_resending_copy_command".to_string()), request_value);
+
+        let reply_map = self.send_and_wait(&query_id, request).await?;
+
+        let reply: StartResendingCopyCommandReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        if reply.error_code != 0 {
+            return Err(ThinClientError::Other(format!("start_resending_copy_command failed with error code: {}", reply.error_code)));
+        }
+
+        Ok(())
+    }
+
+    /// Cancels ARQ resending for a copy command.
+    ///
+    /// This method stops the automatic repeat request (ARQ) for a previously started
+    /// copy command.
+    ///
+    /// # Arguments
+    /// * `write_cap_hash` - Hash of the WriteCap used in start_resending_copy_command
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ThinClientError)` on failure
+    pub async fn cancel_resending_copy_command(&self, write_cap_hash: &[u8; 32]) -> Result<(), ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let request_inner = CancelResendingCopyCommandRequest {
+            query_id: query_id.clone(),
+            write_cap_hash: write_cap_hash.to_vec(),
+        };
+
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("cancel_resending_copy_command".to_string()), request_value);
+
+        let reply_map = self.send_and_wait(&query_id, request).await?;
+
+        let reply: CancelResendingCopyCommandReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        if reply.error_code != 0 {
+            return Err(ThinClientError::Other(format!("cancel_resending_copy_command failed with error code: {}", reply.error_code)));
+        }
+
+        Ok(())
+    }
+
+    /// Creates multiple CourierEnvelopes from a payload of any size.
+    ///
+    /// The payload is automatically chunked and each chunk is wrapped in a
+    /// CourierEnvelope. Each returned chunk is a serialized CopyStreamElement
+    /// ready to be written to a box.
+    ///
+    /// Multiple calls can be made with the same stream_id to build up a stream
+    /// incrementally. The first call creates a new encoder (first element gets
+    /// IsStart=true). The final call should have is_last=true (last element
+    /// gets IsFinal=true).
+    ///
+    /// # Arguments
+    /// * `stream_id` - 16-byte identifier for the encoder instance
+    /// * `payload` - The data to be encoded into courier envelopes
+    /// * `dest_write_cap` - Write capability for the destination channel
+    /// * `dest_start_index` - Starting index in the destination channel
+    /// * `is_last` - Whether this is the last payload in the sequence
+    ///
+    /// # Returns
+    /// * `Ok(Vec<Vec<u8>>)` - List of serialized CopyStreamElements
+    /// * `Err(ThinClientError)` on failure
+    pub async fn create_courier_envelopes_from_payload(
+        &self,
+        stream_id: &[u8; 16],
+        payload: &[u8],
+        dest_write_cap: &[u8],
+        dest_start_index: &[u8],
+        is_last: bool
+    ) -> Result<Vec<Vec<u8>>, ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let request_inner = CreateCourierEnvelopesFromPayloadRequest {
+            query_id: query_id.clone(),
+            stream_id: stream_id.to_vec(),
+            payload: payload.to_vec(),
+            dest_write_cap: dest_write_cap.to_vec(),
+            dest_start_index: dest_start_index.to_vec(),
+            is_last,
+        };
+
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("create_courier_envelopes_from_payload".to_string()), request_value);
+
+        let reply_map = self.send_and_wait(&query_id, request).await?;
+
+        let reply: CreateCourierEnvelopesFromPayloadReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        if reply.error_code != 0 {
+            return Err(ThinClientError::Other(format!("create_courier_envelopes_from_payload failed with error code: {}", reply.error_code)));
+        }
+
+        Ok(reply.envelopes.into_iter().map(|b| b.into_vec()).collect())
+    }
+
+    /// Creates CourierEnvelopes from multiple payloads going to different destinations.
+    ///
+    /// This is more space-efficient than calling create_courier_envelopes_from_payload
+    /// multiple times because envelopes from different destinations are packed
+    /// together in the copy stream without wasting space.
+    ///
+    /// # Arguments
+    /// * `stream_id` - 16-byte identifier for the encoder instance
+    /// * `destinations` - List of (payload, write_cap, start_index) tuples
+    /// * `is_last` - Whether this is the last set of payloads in the sequence
+    ///
+    /// # Returns
+    /// * `Ok(Vec<Vec<u8>>)` - List of serialized CopyStreamElements
+    /// * `Err(ThinClientError)` on failure
+    pub async fn create_courier_envelopes_from_payloads(
+        &self,
+        stream_id: &[u8; 16],
+        destinations: Vec<(&[u8], &[u8], &[u8])>,
+        is_last: bool
+    ) -> Result<Vec<Vec<u8>>, ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let destinations_inner: Vec<EnvelopeDestination> = destinations
+            .into_iter()
+            .map(|(payload, write_cap, start_index)| EnvelopeDestination {
+                payload: payload.to_vec(),
+                write_cap: write_cap.to_vec(),
+                start_index: start_index.to_vec(),
+            })
+            .collect();
+
+        let request_inner = CreateCourierEnvelopesFromPayloadsRequest {
+            query_id: query_id.clone(),
+            stream_id: stream_id.to_vec(),
+            destinations: destinations_inner,
+            is_last,
+        };
+
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("create_courier_envelopes_from_payloads".to_string()), request_value);
+
+        let reply_map = self.send_and_wait(&query_id, request).await?;
+
+        let reply: CreateCourierEnvelopesFromPayloadsReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        if reply.error_code != 0 {
+            return Err(ThinClientError::Other(format!("create_courier_envelopes_from_payloads failed with error code: {}", reply.error_code)));
+        }
+
+        Ok(reply.envelopes.into_iter().map(|b| b.into_vec()).collect())
+    }
+
+    /// Generates a new random 16-byte stream ID.
+    pub fn new_stream_id() -> [u8; 16] {
+        let mut stream_id = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut stream_id);
+        stream_id
     }
 }
 
