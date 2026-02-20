@@ -15,10 +15,15 @@
 //! 9. create_courier_envelopes_from_payload - Chunk payload into courier envelopes
 //! 10. create_courier_envelopes_from_payloads - Chunk multiple payloads efficiently
 //!
+//! Helper functions and tests:
+//! - tombstone_box - Overwrite a box with zeros
+//! - tombstone_range - Overwrite a range of boxes with zeros
+//! - is_tombstone_plaintext - Check if plaintext is a tombstone
+//!
 //! These tests require a running mixnet with client daemon for integration testing.
 
 use std::time::Duration;
-use katzenpost_thin_client::{ThinClient, Config};
+use katzenpost_thin_client::{ThinClient, Config, PigeonholeGeometry, is_tombstone_plaintext};
 
 /// Test helper to setup a thin client for integration tests
 async fn setup_thin_client() -> Result<std::sync::Arc<ThinClient>, Box<dyn std::error::Error>> {
@@ -397,4 +402,157 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
     assert_eq!(bob2_plaintext, payload2, "Channel 2 payload mismatch");
 
     println!("✅ create_courier_envelopes_from_payloads multi-channel test passed!");
+}
+
+#[tokio::test]
+async fn test_tombstone_box() {
+    println!("\n=== Test: tombstone_box ===");
+
+    let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
+    let bob_client = setup_thin_client().await.expect("Failed to setup Bob client");
+
+    // Create a geometry with a reasonable payload size
+    // In a real scenario, this would come from the PKI document
+    let geometry = PigeonholeGeometry::new(1024, "x25519");
+
+    // Create keypair
+    let seed: [u8; 32] = rand::random();
+    let (write_cap, read_cap, first_index) = alice_client.new_keypair(&seed).await
+        .expect("Failed to create keypair");
+    println!("✓ Created keypair");
+
+    // Step 1: Alice writes a message
+    println!("\n--- Step 1: Alice writes a message ---");
+    let message = b"Secret message that will be tombstoned";
+    let (ciphertext, env_desc, env_hash, epoch) = alice_client
+        .encrypt_write(message, &write_cap, &first_index).await
+        .expect("Failed to encrypt write");
+
+    let _ = alice_client.start_resending_encrypted_message(
+        None,
+        Some(&write_cap),
+        None,
+        0,
+        &env_desc,
+        &ciphertext,
+        &env_hash,
+        epoch
+    ).await.expect("Failed to send message");
+    println!("✓ Alice wrote message");
+
+    // Wait for message propagation
+    println!("--- Waiting for message propagation (5 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Step 2: Bob reads and verifies
+    println!("\n--- Step 2: Bob reads and verifies ---");
+    let (bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash, bob_epoch) = bob_client
+        .encrypt_read(&read_cap, &first_index).await
+        .expect("Failed to encrypt read");
+
+    let bob_plaintext = bob_client.start_resending_encrypted_message(
+        Some(&read_cap),
+        None,
+        Some(&bob_next_index),
+        0,
+        &bob_env_desc,
+        &bob_ciphertext,
+        &bob_env_hash,
+        bob_epoch
+    ).await.expect("Failed to read message");
+
+    assert_eq!(bob_plaintext, message, "Message mismatch");
+    println!("✓ Bob read message: {:?}", String::from_utf8_lossy(&bob_plaintext));
+
+    // Step 3: Alice tombstones the box
+    println!("\n--- Step 3: Alice tombstones the box ---");
+    alice_client.tombstone_box(&geometry, &write_cap, &first_index).await
+        .expect("Failed to tombstone box");
+    println!("✓ Alice tombstoned the box");
+
+    // Wait for tombstone propagation
+    println!("--- Waiting for tombstone propagation (5 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Step 4: Bob reads again and verifies tombstone
+    println!("\n--- Step 4: Bob reads again and verifies tombstone ---");
+    let (bob_ciphertext2, bob_next_index2, bob_env_desc2, bob_env_hash2, bob_epoch2) = bob_client
+        .encrypt_read(&read_cap, &first_index).await
+        .expect("Failed to encrypt read for tombstone");
+
+    let bob_plaintext2 = bob_client.start_resending_encrypted_message(
+        Some(&read_cap),
+        None,
+        Some(&bob_next_index2),
+        0,
+        &bob_env_desc2,
+        &bob_ciphertext2,
+        &bob_env_hash2,
+        bob_epoch2
+    ).await.expect("Failed to read tombstone");
+
+    assert!(is_tombstone_plaintext(&geometry, &bob_plaintext2), "Expected tombstone (all zeros)");
+    println!("✓ Bob verified tombstone (all zeros)");
+
+    println!("✅ tombstone_box test passed!");
+}
+
+#[tokio::test]
+async fn test_tombstone_range() {
+    println!("\n=== Test: tombstone_range ===");
+
+    let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
+
+    // Create a geometry with a reasonable payload size
+    let geometry = PigeonholeGeometry::new(1024, "x25519");
+
+    // Create keypair
+    let seed: [u8; 32] = rand::random();
+    let (write_cap, _read_cap, first_index) = alice_client.new_keypair(&seed).await
+        .expect("Failed to create keypair");
+    println!("✓ Created keypair");
+
+    // Write 3 messages to sequential boxes
+    let num_messages: u32 = 3;
+    let mut current_index = first_index.clone();
+
+    println!("\n--- Writing {} messages ---", num_messages);
+    for i in 0..num_messages {
+        let message = format!("Message {} to be tombstoned", i + 1);
+        let (ciphertext, env_desc, env_hash, epoch) = alice_client
+            .encrypt_write(message.as_bytes(), &write_cap, &current_index).await
+            .expect("Failed to encrypt write");
+
+        let _ = alice_client.start_resending_encrypted_message(
+            None,
+            Some(&write_cap),
+            None,
+            0,
+            &env_desc,
+            &ciphertext,
+            &env_hash,
+            epoch
+        ).await.expect("Failed to send message");
+        println!("✓ Wrote message {}", i + 1);
+
+        if i < num_messages - 1 {
+            current_index = alice_client.next_message_box_index(&current_index).await
+                .expect("Failed to get next index");
+        }
+    }
+
+    // Wait for messages to propagate
+    println!("--- Waiting for message propagation (10 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    // Tombstone the range
+    println!("\n--- Tombstoning {} boxes ---", num_messages);
+    let result = alice_client.tombstone_range(&geometry, &write_cap, &first_index, num_messages).await;
+
+    println!("✓ Tombstoned {} boxes", result.tombstoned);
+    assert_eq!(result.tombstoned, num_messages, "Expected {} tombstoned, got {}", num_messages, result.tombstoned);
+    assert!(result.error.is_none(), "Unexpected error: {:?}", result.error);
+    assert!(!result.next.is_empty(), "Next index should not be empty");
+
+    println!("✅ tombstone_range test passed! Tombstoned {} boxes successfully!", num_messages);
 }

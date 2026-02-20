@@ -68,12 +68,11 @@ jobs:
           cd thinclient
           python -m pytest tests/ -vvv -s --tb=short --timeout=1200
 
-      # Temporarily disabled - debugging timeout issues
-      # - name: Run Rust integration tests
-      #   timeout-minutes: 20
-      #   run: |
-      #     cd thinclient
-      #     cargo test --test '*' -- --nocapture --test-threads=1
+      - name: Run Rust integration tests
+        timeout-minutes: 20
+        run: |
+          cd thinclient
+          cargo test --test '*' -- --nocapture --test-threads=1
 
       - name: Stop the mixnet
         if: always()

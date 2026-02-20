@@ -629,6 +629,98 @@ pub struct Geometry {
     pub kem_name: String,
 }
 
+/// PigeonholeGeometry describes the geometry of a Pigeonhole envelope.
+///
+/// This provides mathematically precise geometry calculations using trunnel's
+/// fixed binary format.
+///
+/// It supports 3 distinct use cases:
+/// 1. Given MaxPlaintextPayloadLength → compute all envelope sizes
+/// 2. Given precomputed Pigeonhole Geometry → derive accommodating Sphinx Geometry
+/// 3. Given Sphinx Geometry constraint → derive optimal Pigeonhole Geometry
+#[derive(Debug, Clone, Deserialize)]
+pub struct PigeonholeGeometry {
+    /// The maximum usable plaintext payload size within a Box.
+    /// In the TOML config this is called "BoxPayloadLength".
+    #[serde(rename = "BoxPayloadLength")]
+    pub max_plaintext_payload_length: usize,
+
+    /// The size of a CourierQuery containing a ReplicaRead.
+    #[serde(rename = "CourierQueryReadLength")]
+    pub courier_query_read_length: usize,
+
+    /// The size of a CourierQuery containing a ReplicaWrite.
+    #[serde(rename = "CourierQueryWriteLength")]
+    pub courier_query_write_length: usize,
+
+    /// The size of a CourierQueryReply containing a ReplicaReadReply.
+    #[serde(rename = "CourierQueryReplyReadLength")]
+    pub courier_query_reply_read_length: usize,
+
+    /// The size of a CourierQueryReply containing a ReplicaWriteReply.
+    #[serde(rename = "CourierQueryReplyWriteLength")]
+    pub courier_query_reply_write_length: usize,
+
+    /// The NIKE scheme name used in MKEM for encrypting to multiple storage replicas.
+    #[serde(rename = "NIKEName")]
+    pub nike_name: String,
+
+    /// The signature scheme used for BACAP (always "Ed25519").
+    #[serde(rename = "SignatureSchemeName")]
+    pub signature_scheme_name: String,
+}
+
+impl PigeonholeGeometry {
+    /// Creates a new PigeonholeGeometry with the given parameters.
+    ///
+    /// Note: In a real application, the courier query lengths would be computed
+    /// from the max_plaintext_payload_length using the geometry calculations.
+    /// This constructor is primarily for testing where those values may be
+    /// provided directly or defaulted to 0.
+    pub fn new(max_plaintext_payload_length: usize, nike_name: &str) -> Self {
+        Self {
+            max_plaintext_payload_length,
+            courier_query_read_length: 0,
+            courier_query_write_length: 0,
+            courier_query_reply_read_length: 0,
+            courier_query_reply_write_length: 0,
+            nike_name: nike_name.to_string(),
+            signature_scheme_name: "Ed25519".to_string(),
+        }
+    }
+
+    /// Validates that the geometry has valid parameters.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.max_plaintext_payload_length == 0 {
+            return Err("MaxPlaintextPayloadLength must be positive");
+        }
+        if self.nike_name.is_empty() {
+            return Err("NIKEName must be set");
+        }
+        if self.signature_scheme_name != "Ed25519" {
+            return Err("SignatureSchemeName must be Ed25519");
+        }
+        Ok(())
+    }
+}
+
+/// Creates a tombstone plaintext (all zeros) for the given geometry.
+///
+/// A tombstone is used to overwrite/delete a pigeonhole box by filling it
+/// with zeros.
+pub fn tombstone_plaintext(geometry: &PigeonholeGeometry) -> Result<Vec<u8>, &'static str> {
+    geometry.validate()?;
+    Ok(vec![0u8; geometry.max_plaintext_payload_length])
+}
+
+/// Checks if a plaintext is a tombstone (all zeros of the correct length).
+pub fn is_tombstone_plaintext(geometry: &PigeonholeGeometry, plaintext: &[u8]) -> bool {
+    if plaintext.len() != geometry.max_plaintext_payload_length {
+        return false;
+    }
+    plaintext.iter().all(|&b| b == 0)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ConfigFile {
     #[serde(rename = "SphinxGeometry")]
@@ -1126,6 +1218,10 @@ impl ThinClient {
                         "start_resending_encrypted_message_reply",
                         "cancel_resending_encrypted_message_reply",
                         "next_message_box_index_reply",
+                        "start_resending_copy_command_reply",
+                        "cancel_resending_copy_command_reply",
+                        "create_courier_envelopes_from_payload_reply",
+                        "create_courier_envelopes_from_payloads_reply",
                     ];
 
                     for reply_type in reply_types {
@@ -1743,6 +1839,136 @@ impl ThinClient {
         let mut stream_id = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut stream_id);
         stream_id
+    }
+
+    /// Tombstone a single pigeonhole box by overwriting it with zeros.
+    ///
+    /// This method overwrites the specified box with a zero-filled payload,
+    /// effectively deleting its contents. The tombstone is sent via ARQ
+    /// for reliable delivery.
+    ///
+    /// # Arguments
+    /// * `geometry` - Pigeonhole geometry defining payload size
+    /// * `write_cap` - Write capability for the box
+    /// * `box_index` - Index of the box to tombstone
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ThinClientError)` on failure
+    pub async fn tombstone_box(
+        &self,
+        geometry: &PigeonholeGeometry,
+        write_cap: &[u8],
+        box_index: &[u8]
+    ) -> Result<(), ThinClientError> {
+        geometry.validate().map_err(|e| ThinClientError::Other(e.to_string()))?;
+
+        // Create zero-filled tombstone payload
+        let tomb = vec![0u8; geometry.max_plaintext_payload_length];
+
+        // Encrypt the tombstone for the target box
+        let (ciphertext, env_desc, env_hash, epoch) = self
+            .encrypt_write(&tomb, write_cap, box_index).await?;
+
+        // Send via ARQ for reliable delivery
+        let _ = self.start_resending_encrypted_message(
+            None,
+            Some(write_cap),
+            None,
+            0,
+            &env_desc,
+            &ciphertext,
+            &env_hash,
+            epoch
+        ).await?;
+
+        Ok(())
+    }
+}
+
+/// Result of a tombstone_range operation.
+#[derive(Debug)]
+pub struct TombstoneRangeResult {
+    /// Number of boxes successfully tombstoned.
+    pub tombstoned: u32,
+    /// The next MessageBoxIndex after the last processed.
+    pub next: Vec<u8>,
+    /// Error message if the operation failed partway through.
+    pub error: Option<String>,
+}
+
+impl ThinClient {
+    /// Tombstone a range of pigeonhole boxes starting from a given index.
+    ///
+    /// This method tombstones up to max_count boxes, starting from the
+    /// specified box index and advancing through consecutive indices.
+    ///
+    /// If an error occurs during the operation, a partial result is returned
+    /// containing the number of boxes successfully tombstoned and the next
+    /// index that was being processed.
+    ///
+    /// # Arguments
+    /// * `geometry` - Pigeonhole geometry defining payload size
+    /// * `write_cap` - Write capability for the boxes
+    /// * `start` - Starting MessageBoxIndex
+    /// * `max_count` - Maximum number of boxes to tombstone
+    ///
+    /// # Returns
+    /// * `TombstoneRangeResult` containing the count and next index
+    pub async fn tombstone_range(
+        &self,
+        geometry: &PigeonholeGeometry,
+        write_cap: &[u8],
+        start: &[u8],
+        max_count: u32
+    ) -> TombstoneRangeResult {
+        if max_count == 0 {
+            return TombstoneRangeResult {
+                tombstoned: 0,
+                next: start.to_vec(),
+                error: None,
+            };
+        }
+
+        if let Err(e) = geometry.validate() {
+            return TombstoneRangeResult {
+                tombstoned: 0,
+                next: start.to_vec(),
+                error: Some(e.to_string()),
+            };
+        }
+
+        let mut cur = start.to_vec();
+        let mut done: u32 = 0;
+
+        while done < max_count {
+            if let Err(e) = self.tombstone_box(geometry, write_cap, &cur).await {
+                return TombstoneRangeResult {
+                    tombstoned: done,
+                    next: cur,
+                    error: Some(format!("Error tombstoning box at index {}: {:?}", done, e)),
+                };
+            }
+
+            done += 1;
+
+            match self.next_message_box_index(&cur).await {
+                Ok(next) => cur = next,
+                Err(e) => {
+                    return TombstoneRangeResult {
+                        tombstoned: done,
+                        next: cur,
+                        error: Some(format!("Error getting next index after tombstoning: {:?}", e)),
+                    };
+                }
+            }
+        }
+
+        TombstoneRangeResult {
+            tombstoned: done,
+            next: cur,
+            error: None,
+        }
     }
 }
 
