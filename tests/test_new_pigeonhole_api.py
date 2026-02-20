@@ -371,9 +371,10 @@ async def test_create_courier_envelopes_from_payload():
 
         # Step 4: Create copy stream chunks from the large payload
         print("\n--- Step 4: Creating copy stream chunks from large payload ---")
+        query_id = alice_client.new_query_id()
         stream_id = alice_client.new_stream_id()
         copy_stream_chunks = await alice_client.create_courier_envelopes_from_payload(
-            stream_id, large_payload, dest_write_cap, dest_first_index, True  # is_last
+            query_id, stream_id, large_payload, dest_write_cap, dest_first_index, True  # is_last
         )
         assert copy_stream_chunks, "create_courier_envelopes_from_payload returned empty chunks"
         num_chunks = len(copy_stream_chunks)
@@ -524,18 +525,19 @@ async def test_copy_command_multi_channel():
 
         # Step 4: Create copy stream chunks using same streamID but different WriteCaps
         print("\n--- Step 4: Creating copy stream chunks for both channels ---")
+        query_id = alice_client.new_query_id()
         stream_id = alice_client.new_stream_id()
 
         # First call: payload1 -> channel 1 (is_last=False)
         chunks1 = await alice_client.create_courier_envelopes_from_payload(
-            stream_id, payload1, chan1_write_cap, chan1_first_index, False
+            query_id, stream_id, payload1, chan1_write_cap, chan1_first_index, False
         )
         assert chunks1, "create_courier_envelopes_from_payload returned empty chunks for channel 1"
         print(f"✓ Alice created {len(chunks1)} chunks for Channel 1")
 
         # Second call: payload2 -> channel 2 (is_last=True)
         chunks2 = await alice_client.create_courier_envelopes_from_payload(
-            stream_id, payload2, chan2_write_cap, chan2_first_index, True
+            query_id, stream_id, payload2, chan2_write_cap, chan2_first_index, True
         )
         assert chunks2, "create_courier_envelopes_from_payload returned empty chunks for channel 2"
         print(f"✓ Alice created {len(chunks2)} chunks for Channel 2")
