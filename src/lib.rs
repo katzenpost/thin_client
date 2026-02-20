@@ -221,6 +221,51 @@ pub const THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION: u8 = 12;
 /// propagated to replicas.
 pub const THIN_CLIENT_PROPAGATION_ERROR: u8 = 13;
 
+/// ThinClientErrorInvalidWriteCapability indicates that the provided write
+/// capability is invalid.
+pub const THIN_CLIENT_ERROR_INVALID_WRITE_CAPABILITY: u8 = 14;
+
+/// ThinClientErrorInvalidReadCapability indicates that the provided read
+/// capability is invalid.
+pub const THIN_CLIENT_ERROR_INVALID_READ_CAPABILITY: u8 = 15;
+
+/// ThinClientErrorInvalidResumeWriteChannelRequest indicates that the provided
+/// ResumeWriteChannel request is invalid.
+pub const THIN_CLIENT_ERROR_INVALID_RESUME_WRITE_CHANNEL_REQUEST: u8 = 16;
+
+/// ThinClientErrorInvalidResumeReadChannelRequest indicates that the provided
+/// ResumeReadChannel request is invalid.
+pub const THIN_CLIENT_ERROR_INVALID_RESUME_READ_CHANNEL_REQUEST: u8 = 17;
+
+/// ThinClientImpossibleHashError indicates that the provided hash is impossible
+/// to compute, such as when the hash of a write capability is provided but
+/// the write capability itself is not provided.
+pub const THIN_CLIENT_IMPOSSIBLE_HASH_ERROR: u8 = 18;
+
+/// ThinClientImpossibleNewWriteCapError indicates that the daemon was unable
+/// to create a new write capability.
+pub const THIN_CLIENT_IMPOSSIBLE_NEW_WRITE_CAP_ERROR: u8 = 19;
+
+/// ThinClientImpossibleNewStatefulWriterError indicates that the daemon was unable
+/// to create a new stateful writer.
+pub const THIN_CLIENT_IMPOSSIBLE_NEW_STATEFUL_WRITER_ERROR: u8 = 20;
+
+/// ThinClientCapabilityAlreadyInUse indicates that the provided capability
+/// is already in use.
+pub const THIN_CLIENT_CAPABILITY_ALREADY_IN_USE: u8 = 21;
+
+/// ThinClientErrorMKEMDecryptionFailed indicates that MKEM decryption failed.
+/// This occurs when the MKEM envelope cannot be decrypted with any of the replica keys.
+pub const THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED: u8 = 22;
+
+/// ThinClientErrorBACAPDecryptionFailed indicates that BACAP decryption failed.
+/// This occurs when the BACAP payload cannot be decrypted or signature verification fails.
+pub const THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED: u8 = 23;
+
+/// ThinClientErrorStartResendingCancelled indicates that a StartResendingEncryptedMessage
+/// or StartResendingCopyCommand operation was cancelled before completion.
+pub const THIN_CLIENT_ERROR_START_RESENDING_CANCELLED: u8 = 24;
+
 /// Converts a thin client error code to a human-readable string.
 /// This function provides consistent error message formatting across the thin client
 /// protocol and is used for logging and error reporting.
@@ -240,6 +285,17 @@ pub fn thin_client_error_to_string(error_code: u8) -> &'static str {
         THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY => "Duplicate capability",
         THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION => "Courier cache corruption",
         THIN_CLIENT_PROPAGATION_ERROR => "Propagation error",
+        THIN_CLIENT_ERROR_INVALID_WRITE_CAPABILITY => "Invalid write capability",
+        THIN_CLIENT_ERROR_INVALID_READ_CAPABILITY => "Invalid read capability",
+        THIN_CLIENT_ERROR_INVALID_RESUME_WRITE_CHANNEL_REQUEST => "Invalid resume write channel request",
+        THIN_CLIENT_ERROR_INVALID_RESUME_READ_CHANNEL_REQUEST => "Invalid resume read channel request",
+        THIN_CLIENT_IMPOSSIBLE_HASH_ERROR => "Impossible hash error",
+        THIN_CLIENT_IMPOSSIBLE_NEW_WRITE_CAP_ERROR => "Failed to create new write capability",
+        THIN_CLIENT_IMPOSSIBLE_NEW_STATEFUL_WRITER_ERROR => "Failed to create new stateful writer",
+        THIN_CLIENT_CAPABILITY_ALREADY_IN_USE => "Capability already in use",
+        THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED => "MKEM decryption failed",
+        THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED => "BACAP decryption failed",
+        THIN_CLIENT_ERROR_START_RESENDING_CANCELLED => "Start resending cancelled",
         _ => "Unknown thin client error code",
     }
 }

@@ -93,3 +93,83 @@ async def test_config_validation():
     assert cfg_with_callbacks is not None, "Config with callbacks should work"
 
     # Configuration validation passed
+
+
+def test_error_codes_completeness():
+    """
+    Test that all error codes 0-24 are defined and have corresponding error strings.
+
+    This is a unit test that doesn't require a daemon connection.
+    It verifies error code consistency between constants and the error string function.
+    """
+    from katzenpost_thinclient import (
+        THIN_CLIENT_SUCCESS,
+        THIN_CLIENT_ERROR_CONNECTION_LOST,
+        THIN_CLIENT_ERROR_TIMEOUT,
+        THIN_CLIENT_ERROR_INVALID_REQUEST,
+        THIN_CLIENT_ERROR_INTERNAL_ERROR,
+        THIN_CLIENT_ERROR_MAX_RETRIES,
+        THIN_CLIENT_ERROR_INVALID_CHANNEL,
+        THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND,
+        THIN_CLIENT_ERROR_PERMISSION_DENIED,
+        THIN_CLIENT_ERROR_INVALID_PAYLOAD,
+        THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE,
+        THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY,
+        THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION,
+        THIN_CLIENT_PROPAGATION_ERROR,
+        THIN_CLIENT_ERROR_INVALID_WRITE_CAPABILITY,
+        THIN_CLIENT_ERROR_INVALID_READ_CAPABILITY,
+        THIN_CLIENT_ERROR_INVALID_RESUME_WRITE_CHANNEL_REQUEST,
+        THIN_CLIENT_ERROR_INVALID_RESUME_READ_CHANNEL_REQUEST,
+        THIN_CLIENT_IMPOSSIBLE_HASH_ERROR,
+        THIN_CLIENT_IMPOSSIBLE_NEW_WRITE_CAP_ERROR,
+        THIN_CLIENT_IMPOSSIBLE_NEW_STATEFUL_WRITER_ERROR,
+        THIN_CLIENT_CAPABILITY_ALREADY_IN_USE,
+        THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED,
+        THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED,
+        THIN_CLIENT_ERROR_START_RESENDING_CANCELLED,
+        thin_client_error_to_string
+    )
+
+    # Verify all error codes have sequential values 0-24
+    expected_codes = {
+        THIN_CLIENT_SUCCESS: 0,
+        THIN_CLIENT_ERROR_CONNECTION_LOST: 1,
+        THIN_CLIENT_ERROR_TIMEOUT: 2,
+        THIN_CLIENT_ERROR_INVALID_REQUEST: 3,
+        THIN_CLIENT_ERROR_INTERNAL_ERROR: 4,
+        THIN_CLIENT_ERROR_MAX_RETRIES: 5,
+        THIN_CLIENT_ERROR_INVALID_CHANNEL: 6,
+        THIN_CLIENT_ERROR_CHANNEL_NOT_FOUND: 7,
+        THIN_CLIENT_ERROR_PERMISSION_DENIED: 8,
+        THIN_CLIENT_ERROR_INVALID_PAYLOAD: 9,
+        THIN_CLIENT_ERROR_SERVICE_UNAVAILABLE: 10,
+        THIN_CLIENT_ERROR_DUPLICATE_CAPABILITY: 11,
+        THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION: 12,
+        THIN_CLIENT_PROPAGATION_ERROR: 13,
+        THIN_CLIENT_ERROR_INVALID_WRITE_CAPABILITY: 14,
+        THIN_CLIENT_ERROR_INVALID_READ_CAPABILITY: 15,
+        THIN_CLIENT_ERROR_INVALID_RESUME_WRITE_CHANNEL_REQUEST: 16,
+        THIN_CLIENT_ERROR_INVALID_RESUME_READ_CHANNEL_REQUEST: 17,
+        THIN_CLIENT_IMPOSSIBLE_HASH_ERROR: 18,
+        THIN_CLIENT_IMPOSSIBLE_NEW_WRITE_CAP_ERROR: 19,
+        THIN_CLIENT_IMPOSSIBLE_NEW_STATEFUL_WRITER_ERROR: 20,
+        THIN_CLIENT_CAPABILITY_ALREADY_IN_USE: 21,
+        THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED: 22,
+        THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED: 23,
+        THIN_CLIENT_ERROR_START_RESENDING_CANCELLED: 24,
+    }
+
+    for const, expected_value in expected_codes.items():
+        assert const == expected_value, f"Error code constant has wrong value: expected {expected_value}, got {const}"
+
+    # Verify all error codes have non-empty, non-"Unknown" error strings
+    for code in range(25):
+        error_str = thin_client_error_to_string(code)
+        assert error_str, f"Error code {code} has empty error string"
+        assert "Unknown" not in error_str, f"Error code {code} has 'Unknown' in error string: {error_str}"
+
+    # Verify specific error strings for cancel behavior
+    assert thin_client_error_to_string(THIN_CLIENT_ERROR_START_RESENDING_CANCELLED) == "Start resending cancelled"
+
+    print("✅ All error codes 0-24 are defined with proper error strings")

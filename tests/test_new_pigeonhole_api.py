@@ -219,6 +219,173 @@ async def test_cancel_resending_encrypted_message():
 
 
 @pytest.mark.asyncio
+async def test_cancel_causes_start_resending_to_return_error():
+    """
+    Test that calling cancel causes start_resending to return with error code 24.
+
+    This test verifies the core cancel behavior:
+    1. Start a start_resending_encrypted_message call (which blocks waiting for reply)
+    2. Call cancel_resending_encrypted_message from another task
+    3. Verify that the original start_resending call returns with error code 24
+       (THIN_CLIENT_ERROR_START_RESENDING_CANCELLED)
+
+    This requires a running daemon but does NOT require a full mixnet since we're
+    testing the cancel behavior before any reply is received from the mixnet.
+    """
+    from katzenpost_thinclient import THIN_CLIENT_ERROR_START_RESENDING_CANCELLED
+
+    client = await setup_thin_client()
+
+    try:
+        print("\n=== Test: cancel causes start_resending to return error ===")
+
+        # Generate keypair and encrypt a message
+        seed = os.urandom(32)
+        write_cap, read_cap, first_message_index = await client.new_keypair(seed)
+
+        plaintext = b"This message will be cancelled while sending"
+        ciphertext, env_desc, env_hash, epoch = await client.encrypt_write(
+            plaintext, write_cap, first_message_index
+        )
+
+        print(f"✓ Encrypted message")
+        print(f"EnvelopeHash: {env_hash.hex()}")
+
+        # Track whether the start_resending returned with the expected error
+        start_resending_error = None
+        start_resending_completed = asyncio.Event()
+
+        async def start_resending_task():
+            """Task that calls start_resending and captures any error."""
+            nonlocal start_resending_error
+            try:
+                await client.start_resending_encrypted_message(
+                    read_cap=None,
+                    write_cap=write_cap,
+                    next_message_index=None,
+                    reply_index=0,
+                    envelope_descriptor=env_desc,
+                    message_ciphertext=ciphertext,
+                    envelope_hash=env_hash,
+                    replica_epoch=epoch
+                )
+                # If we get here without error, that's unexpected
+                start_resending_error = "No error raised"
+            except Exception as e:
+                start_resending_error = str(e)
+            finally:
+                start_resending_completed.set()
+
+        # Start the start_resending task
+        print("--- Starting start_resending_encrypted_message task ---")
+        resend_task = asyncio.create_task(start_resending_task())
+
+        # Give the task time to start and register with the daemon
+        await asyncio.sleep(1.0)
+
+        # Cancel the resending
+        print("--- Calling cancel_resending_encrypted_message ---")
+        await client.cancel_resending_encrypted_message(env_hash)
+        print("✓ Cancel call completed")
+
+        # Wait for the start_resending task to complete (with timeout)
+        try:
+            await asyncio.wait_for(start_resending_completed.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            resend_task.cancel()
+            raise Exception("start_resending did not return within 5 seconds after cancel")
+
+        # Verify the error
+        print(f"--- Verifying error ---")
+        print(f"Error received: {start_resending_error}")
+
+        assert start_resending_error is not None, "Expected an error but got None"
+        assert "Start resending cancelled" in start_resending_error, \
+            f"Expected 'Start resending cancelled' in error, got: {start_resending_error}"
+
+        print("✅ start_resending returned with expected error code 24 (Start resending cancelled)")
+
+    finally:
+        client.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancel_causes_start_resending_copy_command_to_return_error():
+    """
+    Test that calling cancel causes start_resending_copy_command to return with error.
+
+    This test verifies the cancel behavior for copy commands:
+    1. Create a temporary channel and write some data to it
+    2. Start a start_resending_copy_command call (which blocks)
+    3. Call cancel_resending_copy_command from another task
+    4. Verify that the original start_resending call returns with error code 24
+    """
+    from hashlib import blake2b
+
+    client = await setup_thin_client()
+
+    try:
+        print("\n=== Test: cancel causes start_resending_copy_command to return error ===")
+
+        # Create temporary channel
+        temp_seed = os.urandom(32)
+        temp_write_cap, _, temp_first_index = await client.new_keypair(temp_seed)
+        print("✓ Created temporary copy stream WriteCap")
+
+        # Compute write_cap_hash for cancel
+        write_cap_hash = blake2b(temp_write_cap, digest_size=32).digest()
+        print(f"WriteCapHash: {write_cap_hash.hex()}")
+
+        # Track whether the start_resending returned with the expected error
+        start_resending_error = None
+        start_resending_completed = asyncio.Event()
+
+        async def start_resending_copy_task():
+            """Task that calls start_resending_copy_command and captures any error."""
+            nonlocal start_resending_error
+            try:
+                await client.start_resending_copy_command(temp_write_cap)
+                # If we get here without error, that's unexpected
+                start_resending_error = "No error raised"
+            except Exception as e:
+                start_resending_error = str(e)
+            finally:
+                start_resending_completed.set()
+
+        # Start the start_resending_copy_command task
+        print("--- Starting start_resending_copy_command task ---")
+        resend_task = asyncio.create_task(start_resending_copy_task())
+
+        # Give the task time to start and register with the daemon
+        await asyncio.sleep(1.0)
+
+        # Cancel the resending
+        print("--- Calling cancel_resending_copy_command ---")
+        await client.cancel_resending_copy_command(write_cap_hash)
+        print("✓ Cancel call completed")
+
+        # Wait for the start_resending task to complete (with timeout)
+        try:
+            await asyncio.wait_for(start_resending_completed.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            resend_task.cancel()
+            raise Exception("start_resending_copy_command did not return within 5 seconds after cancel")
+
+        # Verify the error
+        print(f"--- Verifying error ---")
+        print(f"Error received: {start_resending_error}")
+
+        assert start_resending_error is not None, "Expected an error but got None"
+        assert "Start resending cancelled" in start_resending_error, \
+            f"Expected 'Start resending cancelled' in error, got: {start_resending_error}"
+
+        print("✅ start_resending_copy_command returned with expected error code 24 (Start resending cancelled)")
+
+    finally:
+        client.stop()
+
+
+@pytest.mark.asyncio
 async def test_multiple_messages_sequence():
     """
     Test sending multiple messages with incrementing indices.
