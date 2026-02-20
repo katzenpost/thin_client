@@ -143,6 +143,10 @@ SURB_ID_SIZE = 16
 # which is unique to the sent message.
 MESSAGE_ID_SIZE = 16
 
+# STREAM_ID_LENGTH is the length of a stream ID in bytes.
+# Used for multi-call envelope encoding streams.
+STREAM_ID_LENGTH = 16
+
 
 class WriteChannelReply:
     """Reply from WriteChannel operation, matching Rust WriteChannelReply."""
@@ -234,6 +238,128 @@ class Geometry:
             f"NIKEName: {self.NIKEName}\n"
             f"KEMName: {self.KEMName}"
         )
+
+
+class PigeonholeGeometry:
+    """
+    PigeonholeGeometry describes the geometry of a Pigeonhole envelope.
+
+    This provides mathematically precise geometry calculations for the
+    Pigeonhole protocol using trunnel's fixed binary format.
+
+    It supports 3 distinct use cases:
+    1. Given MaxPlaintextPayloadLength → compute all envelope sizes
+    2. Given precomputed Pigeonhole Geometry → derive accommodating Sphinx Geometry
+    3. Given Sphinx Geometry constraint → derive optimal Pigeonhole Geometry
+
+    Attributes:
+        max_plaintext_payload_length (int): The maximum usable plaintext payload size within a Box.
+        courier_query_read_length (int): The size of a CourierQuery containing a ReplicaRead.
+        courier_query_write_length (int): The size of a CourierQuery containing a ReplicaWrite.
+        courier_query_reply_read_length (int): The size of a CourierQueryReply containing a ReplicaReadReply.
+        courier_query_reply_write_length (int): The size of a CourierQueryReply containing a ReplicaWriteReply.
+        nike_name (str): The NIKE scheme name used in MKEM for encrypting to multiple storage replicas.
+        signature_scheme_name (str): The signature scheme used for BACAP (always "Ed25519").
+    """
+
+    # Length prefix for padded payloads
+    LENGTH_PREFIX_SIZE = 4
+
+    def __init__(
+        self,
+        *,
+        max_plaintext_payload_length: int,
+        courier_query_read_length: int = 0,
+        courier_query_write_length: int = 0,
+        courier_query_reply_read_length: int = 0,
+        courier_query_reply_write_length: int = 0,
+        nike_name: str = "",
+        signature_scheme_name: str = "Ed25519"
+    ) -> None:
+        self.max_plaintext_payload_length = max_plaintext_payload_length
+        self.courier_query_read_length = courier_query_read_length
+        self.courier_query_write_length = courier_query_write_length
+        self.courier_query_reply_read_length = courier_query_reply_read_length
+        self.courier_query_reply_write_length = courier_query_reply_write_length
+        self.nike_name = nike_name
+        self.signature_scheme_name = signature_scheme_name
+
+    def validate(self) -> None:
+        """
+        Validates that the geometry has valid parameters.
+
+        Raises:
+            ValueError: If the geometry is invalid.
+        """
+        if self.max_plaintext_payload_length <= 0:
+            raise ValueError("max_plaintext_payload_length must be positive")
+        if not self.nike_name:
+            raise ValueError("nike_name must be set")
+        if self.signature_scheme_name != "Ed25519":
+            raise ValueError("signature_scheme_name must be 'Ed25519'")
+
+    def padded_payload_length(self) -> int:
+        """
+        Returns the payload size after adding length prefix.
+
+        Returns:
+            int: The padded payload length (max_plaintext_payload_length + 4).
+        """
+        return self.max_plaintext_payload_length + self.LENGTH_PREFIX_SIZE
+
+    def __str__(self) -> str:
+        return (
+            f"PigeonholeGeometry:\n"
+            f"  max_plaintext_payload_length: {self.max_plaintext_payload_length} bytes\n"
+            f"  courier_query_read_length: {self.courier_query_read_length} bytes\n"
+            f"  courier_query_write_length: {self.courier_query_write_length} bytes\n"
+            f"  courier_query_reply_read_length: {self.courier_query_reply_read_length} bytes\n"
+            f"  courier_query_reply_write_length: {self.courier_query_reply_write_length} bytes\n"
+            f"  nike_name: {self.nike_name}\n"
+            f"  signature_scheme_name: {self.signature_scheme_name}"
+        )
+
+
+def tombstone_plaintext(geometry: PigeonholeGeometry) -> bytes:
+    """
+    Creates a tombstone plaintext (all zeros) for the given geometry.
+
+    A tombstone is used to overwrite/delete a pigeonhole box by filling it
+    with zeros.
+
+    Args:
+        geometry: Pigeonhole geometry defining the payload size.
+
+    Returns:
+        bytes: Zero-filled bytes of length max_plaintext_payload_length.
+
+    Raises:
+        ValueError: If the geometry is None or invalid.
+    """
+    if geometry is None:
+        raise ValueError("geometry cannot be None")
+    geometry.validate()
+    return bytes(geometry.max_plaintext_payload_length)
+
+
+def is_tombstone_plaintext(geometry: PigeonholeGeometry, plaintext: bytes) -> bool:
+    """
+    Checks if a plaintext is a tombstone (all zeros).
+
+    Args:
+        geometry: Pigeonhole geometry defining the expected payload size.
+        plaintext: The plaintext bytes to check.
+
+    Returns:
+        bool: True if the plaintext is the correct length and all zeros.
+    """
+    if geometry is None:
+        return False
+    if len(plaintext) != geometry.max_plaintext_payload_length:
+        return False
+    # Constant-time comparison to check if all bytes are zero
+    return all(b == 0 for b in plaintext)
+
 
 class ConfigFile:
     """
@@ -802,6 +928,20 @@ class ThinClient:
             bytes: Random 16-byte identifier.
         """
         return os.urandom(16)
+
+    @staticmethod
+    def new_stream_id() -> bytes:
+        """
+        Generate a new 16-byte stream ID for copy stream operations.
+
+        Stream IDs are used to identify encoder instances for multi-call
+        envelope encoding streams. All calls for the same stream must use
+        the same stream ID.
+
+        Returns:
+            bytes: Random 16-byte stream identifier.
+        """
+        return os.urandom(STREAM_ID_LENGTH)
 
     async def _send_and_wait(self, *, query_id:bytes, request: Dict[str, Any]) -> Dict[str, Any]:
         cbor_request = cbor2.dumps(request)
@@ -1992,3 +2132,359 @@ class ThinClient:
             raise Exception(f"next_message_box_index failed: {error_msg}")
 
         return reply.get("next_message_box_index")
+
+    async def start_resending_copy_command(
+        self,
+        write_cap: bytes,
+        courier_identity_hash: "bytes|None" = None,
+        courier_queue_id: "bytes|None" = None
+    ) -> None:
+        """
+        Starts resending a copy command to a courier via ARQ.
+
+        This method instructs a courier to read data from a temporary channel
+        (identified by the write_cap) and write it to the destination channel.
+        The command is automatically retransmitted until acknowledged.
+
+        If courier_identity_hash and courier_queue_id are both provided,
+        the copy command is sent to that specific courier. Otherwise, a
+        random courier is selected.
+
+        Args:
+            write_cap: Write capability for the temporary channel containing the data.
+            courier_identity_hash: Optional identity hash of a specific courier to use.
+            courier_queue_id: Optional queue ID for the specified courier. Must be set
+                             if courier_identity_hash is set.
+
+        Raises:
+            Exception: If the operation fails.
+
+        Example:
+            >>> # Send copy command to a random courier
+            >>> await client.start_resending_copy_command(temp_write_cap)
+            >>> # Send copy command to a specific courier
+            >>> await client.start_resending_copy_command(
+            ...     temp_write_cap, courier_identity_hash, courier_queue_id)
+        """
+        query_id = self.new_query_id()
+
+        request_data = {
+            "query_id": query_id,
+            "write_cap": write_cap,
+        }
+
+        if courier_identity_hash is not None:
+            request_data["courier_identity_hash"] = courier_identity_hash
+        if courier_queue_id is not None:
+            request_data["courier_queue_id"] = courier_queue_id
+
+        request = {
+            "start_resending_copy_command": request_data
+        }
+
+        try:
+            reply = await self._send_and_wait(query_id=query_id, request=request)
+        except Exception as e:
+            self.logger.error(f"Error starting resending copy command: {e}")
+            raise
+
+        if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(reply['error_code'])
+            raise Exception(f"start_resending_copy_command failed: {error_msg}")
+
+    async def cancel_resending_copy_command(self, write_cap_hash: bytes) -> None:
+        """
+        Cancels ARQ resending for a copy command.
+
+        This method stops the automatic repeat request (ARQ) for a previously started
+        copy command. Use this when:
+        - The copy operation should be aborted
+        - The operation is no longer needed
+        - You want to clean up pending ARQ operations
+
+        Args:
+            write_cap_hash: Hash of the WriteCap used in start_resending_copy_command.
+
+        Raises:
+            Exception: If the cancellation fails.
+
+        Example:
+            >>> await client.cancel_resending_copy_command(write_cap_hash)
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "cancel_resending_copy_command": {
+                "query_id": query_id,
+                "write_cap_hash": write_cap_hash
+            }
+        }
+
+        try:
+            reply = await self._send_and_wait(query_id=query_id, request=request)
+        except Exception as e:
+            self.logger.error(f"Error cancelling resending copy command: {e}")
+            raise
+
+        if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(reply['error_code'])
+            raise Exception(f"cancel_resending_copy_command failed: {error_msg}")
+
+    async def create_courier_envelopes_from_payload(
+        self,
+        query_id: bytes,
+        stream_id: bytes,
+        payload: bytes,
+        dest_write_cap: bytes,
+        dest_start_index: bytes,
+        is_last: bool
+    ) -> "List[bytes]":
+        """
+        Creates multiple CourierEnvelopes from a payload of any size.
+
+        The payload is automatically chunked and each chunk is wrapped in a
+        CourierEnvelope. Each returned chunk is a serialized CopyStreamElement
+        ready to be written to a box.
+
+        Multiple calls can be made with the same stream_id to build up a stream
+        incrementally. The first call creates a new encoder (first element gets
+        IsStart=true). The final call should have is_last=True (last element
+        gets IsFinal=true).
+
+        Args:
+            query_id: 16-byte query identifier for correlating requests and replies.
+            stream_id: 16-byte identifier for the encoder instance. All calls for
+                      the same stream must use the same stream ID.
+            payload: The data to be encoded into courier envelopes.
+            dest_write_cap: Write capability for the destination channel.
+            dest_start_index: Starting index in the destination channel.
+            is_last: Whether this is the last payload in the sequence. When True,
+                    the final CopyStreamElement will have IsFinal=true and the
+                    encoder instance will be removed.
+
+        Returns:
+            List[bytes]: List of serialized CopyStreamElements, one per chunk.
+
+        Raises:
+            Exception: If the envelope creation fails.
+
+        Example:
+            >>> query_id = client.new_query_id()
+            >>> stream_id = client.new_stream_id()
+            >>> envelopes = await client.create_courier_envelopes_from_payload(
+            ...     query_id, stream_id, payload, dest_write_cap, dest_start_index, is_last=True)
+            >>> for env in envelopes:
+            ...     # Write each envelope to the copy stream
+            ...     pass
+        """
+
+        request = {
+            "create_courier_envelopes_from_payload": {
+                "query_id": query_id,
+                "stream_id": stream_id,
+                "payload": payload,
+                "dest_write_cap": dest_write_cap,
+                "dest_start_index": dest_start_index,
+                "is_last": is_last
+            }
+        }
+
+        try:
+            reply = await self._send_and_wait(query_id=query_id, request=request)
+        except Exception as e:
+            self.logger.error(f"Error creating courier envelopes from payload: {e}")
+            raise
+
+        if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(reply['error_code'])
+            raise Exception(f"create_courier_envelopes_from_payload failed: {error_msg}")
+
+        return reply.get("envelopes", [])
+
+    async def create_courier_envelopes_from_payloads(
+        self,
+        stream_id: bytes,
+        destinations: "List[Dict[str, Any]]",
+        is_last: bool
+    ) -> "List[bytes]":
+        """
+        Creates CourierEnvelopes from multiple payloads going to different destinations.
+
+        This is more space-efficient than calling create_courier_envelopes_from_payload
+        multiple times because envelopes from different destinations are packed
+        together in the copy stream without wasting space.
+
+        Multiple calls can be made with the same stream_id to build up a stream
+        incrementally. The first call creates a new encoder (first element gets
+        IsStart=true). The final call should have is_last=True (last element
+        gets IsFinal=true).
+
+        Args:
+            stream_id: 16-byte identifier for the encoder instance. All calls for
+                      the same stream must use the same stream ID.
+            destinations: List of destination payloads, each a dict with:
+                         - "payload": bytes - The data to be written
+                         - "write_cap": bytes - Write capability for destination
+                         - "start_index": bytes - Starting index in destination
+            is_last: Whether this is the last set of payloads in the sequence.
+                    When True, the final CopyStreamElement will have IsFinal=true
+                    and the encoder instance will be removed.
+
+        Returns:
+            List[bytes]: List of serialized CopyStreamElements containing all
+                        courier envelopes from all destinations packed efficiently.
+
+        Raises:
+            Exception: If the envelope creation fails.
+
+        Example:
+            >>> stream_id = client.new_stream_id()
+            >>> destinations = [
+            ...     {"payload": data1, "write_cap": cap1, "start_index": idx1},
+            ...     {"payload": data2, "write_cap": cap2, "start_index": idx2},
+            ... ]
+            >>> envelopes = await client.create_courier_envelopes_from_payloads(
+            ...     stream_id, destinations, is_last=True)
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "create_courier_envelopes_from_payloads": {
+                "query_id": query_id,
+                "stream_id": stream_id,
+                "destinations": destinations,
+                "is_last": is_last
+            }
+        }
+
+        try:
+            reply = await self._send_and_wait(query_id=query_id, request=request)
+        except Exception as e:
+            self.logger.error(f"Error creating courier envelopes from payloads: {e}")
+            raise
+
+        if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(reply['error_code'])
+            raise Exception(f"create_courier_envelopes_from_payloads failed: {error_msg}")
+
+        return reply.get("envelopes", [])
+
+    async def tombstone_box(
+        self,
+        geometry: "PigeonholeGeometry",
+        write_cap: bytes,
+        box_index: bytes
+    ) -> None:
+        """
+        Tombstone a single pigeonhole box by overwriting it with zeros.
+
+        This method overwrites the specified box with a zero-filled payload,
+        effectively deleting its contents. The tombstone is sent via ARQ
+        for reliable delivery.
+
+        Args:
+            geometry: Pigeonhole geometry defining payload size.
+            write_cap: Write capability for the box.
+            box_index: Index of the box to tombstone.
+
+        Raises:
+            ValueError: If any argument is None or geometry is invalid.
+            Exception: If the encrypt or send operation fails.
+
+        Example:
+            >>> geometry = PigeonholeGeometry(max_plaintext_payload_length=1024, nike_name="x25519")
+            >>> await client.tombstone_box(geometry, write_cap, box_index)
+        """
+        if geometry is None:
+            raise ValueError("geometry cannot be None")
+        geometry.validate()
+        if write_cap is None:
+            raise ValueError("write_cap cannot be None")
+        if box_index is None:
+            raise ValueError("box_index cannot be None")
+
+        # Create zero-filled tombstone payload
+        tomb = bytes(geometry.max_plaintext_payload_length)
+
+        # Encrypt the tombstone for the target box
+        message_ciphertext, envelope_descriptor, envelope_hash, replica_epoch = await self.encrypt_write(
+            tomb, write_cap, box_index
+        )
+
+        # Send the tombstone via ARQ
+        await self.start_resending_encrypted_message(
+            None,  # read_cap
+            write_cap,
+            None,  # next_message_index
+            None,  # reply_index
+            envelope_descriptor,
+            message_ciphertext,
+            envelope_hash,
+            replica_epoch
+        )
+
+    async def tombstone_range(
+        self,
+        geometry: "PigeonholeGeometry",
+        write_cap: bytes,
+        start: bytes,
+        max_count: int
+    ) -> "Dict[str, Any]":
+        """
+        Tombstone a range of pigeonhole boxes starting from a given index.
+
+        This method tombstones up to max_count boxes, starting from the
+        specified box index and advancing through consecutive indices.
+
+        If an error occurs during the operation, a partial result is returned
+        containing the number of boxes successfully tombstoned and the next
+        index that was being processed.
+
+        Args:
+            geometry: Pigeonhole geometry defining payload size.
+            write_cap: Write capability for the boxes.
+            start: Starting MessageBoxIndex.
+            max_count: Maximum number of boxes to tombstone.
+
+        Returns:
+            Dict[str, Any]: A dictionary with:
+                - "tombstoned" (int): Number of boxes successfully tombstoned.
+                - "next" (bytes): The next MessageBoxIndex after the last processed.
+
+        Raises:
+            ValueError: If geometry, write_cap, or start is None, or if geometry is invalid.
+
+        Example:
+            >>> geometry = PigeonholeGeometry(max_plaintext_payload_length=1024, nike_name="x25519")
+            >>> result = await client.tombstone_range(geometry, write_cap, start_index, 10)
+            >>> print(f"Tombstoned {result['tombstoned']} boxes")
+        """
+        if geometry is None:
+            raise ValueError("geometry cannot be None")
+        geometry.validate()
+        if write_cap is None:
+            raise ValueError("write_cap cannot be None")
+        if start is None:
+            raise ValueError("start index cannot be None")
+        if max_count == 0:
+            return {"tombstoned": 0, "next": start}
+
+        cur = start
+        done = 0
+
+        while done < max_count:
+            try:
+                await self.tombstone_box(geometry, write_cap, cur)
+            except Exception as e:
+                self.logger.error(f"Error tombstoning box at index {done}: {e}")
+                return {"tombstoned": done, "next": cur, "error": str(e)}
+
+            done += 1
+
+            try:
+                cur = await self.next_message_box_index(cur)
+            except Exception as e:
+                self.logger.error(f"Error getting next index after tombstoning: {e}")
+                return {"tombstoned": done, "next": cur, "error": str(e)}
+
+        return {"tombstoned": done, "next": cur}
