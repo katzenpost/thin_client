@@ -697,8 +697,7 @@ pub struct Geometry {
 #[derive(Debug, Clone, Deserialize)]
 pub struct PigeonholeGeometry {
     /// The maximum usable plaintext payload size within a Box.
-    /// In the TOML config this is called "BoxPayloadLength".
-    #[serde(rename = "BoxPayloadLength")]
+    #[serde(rename = "MaxPlaintextPayloadLength")]
     pub max_plaintext_payload_length: usize,
 
     /// The size of a CourierQuery containing a ReplicaRead.
@@ -782,6 +781,9 @@ pub struct ConfigFile {
     #[serde(rename = "SphinxGeometry")]
     pub sphinx_geometry: Geometry,
 
+    #[serde(rename = "PigeonholeGeometry")]
+    pub pigeonhole_geometry: PigeonholeGeometry,
+
     #[serde(rename = "Network")]
     pub network: String,
 
@@ -805,6 +807,7 @@ pub struct Config {
     pub network: String,
     pub address: String,
     pub sphinx_geometry: Geometry,
+    pub pigeonhole_geometry: PigeonholeGeometry,
 
     pub on_connection_status: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
     pub on_new_pki_document: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
@@ -821,6 +824,7 @@ impl Config {
             network: parsed.network,
             address: parsed.address,
             sphinx_geometry: parsed.sphinx_geometry,
+            pigeonhole_geometry: parsed.pigeonhole_geometry,
             on_connection_status: None,
             on_new_pki_document: None,
             on_message_sent: None,
@@ -1022,6 +1026,12 @@ impl ThinClient {
     /// Returns our latest retrieved PKI document.
     pub async fn pki_document(&self) -> BTreeMap<Value, Value> {
         self.pki_doc.read().await.clone().expect("❌ PKI document is missing!")
+    }
+
+    /// Returns the pigeonhole geometry from the config.
+    /// This geometry defines the payload sizes and envelope formats for the pigeonhole protocol.
+    pub fn pigeonhole_geometry(&self) -> &PigeonholeGeometry {
+        &self.config.pigeonhole_geometry
     }
 
     /// Given a service name this returns a ServiceDescriptor if the service exists

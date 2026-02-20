@@ -411,9 +411,8 @@ async fn test_tombstone_box() {
     let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
     let bob_client = setup_thin_client().await.expect("Failed to setup Bob client");
 
-    // Create a geometry with a reasonable payload size
-    // In a real scenario, this would come from the PKI document
-    let geometry = PigeonholeGeometry::new(1024, "x25519");
+    // Get the geometry from the config - this ensures we use the correct payload size
+    let geometry = alice_client.pigeonhole_geometry().clone();
 
     // Create keypair
     let seed: [u8; 32] = rand::random();
@@ -503,8 +502,8 @@ async fn test_tombstone_range() {
 
     let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
 
-    // Create a geometry with a reasonable payload size
-    let geometry = PigeonholeGeometry::new(1024, "x25519");
+    // Get the geometry from the config
+    let geometry = alice_client.pigeonhole_geometry().clone();
 
     // Create keypair
     let seed: [u8; 32] = rand::random();
