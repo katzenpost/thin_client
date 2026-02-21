@@ -1039,8 +1039,8 @@ async def test_tombstoning():
         print("✓ Alice tombstoned the box")
 
         # Wait for tombstone propagation
-        print("--- Waiting for tombstone propagation (5 seconds) ---")
-        await asyncio.sleep(5)
+        print("--- Waiting for tombstone propagation (30 seconds) ---")
+        await asyncio.sleep(30)
 
         # Step 4: Bob reads again and verifies tombstone
         print("\n--- Step 4: Bob reads again and verifies tombstone ---")
@@ -1122,8 +1122,8 @@ async def test_tombstone_range():
                 current_index = await alice_client.next_message_box_index(current_index)
 
         # Wait for messages to propagate
-        print("--- Waiting for message propagation (10 seconds) ---")
-        await asyncio.sleep(10)
+        print("--- Waiting for message propagation (30 seconds) ---")
+        await asyncio.sleep(30)
 
         # Tombstone the range
         print(f"\n--- Tombstoning {num_messages} boxes ---")

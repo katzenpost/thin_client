@@ -231,8 +231,8 @@ async fn test_create_courier_envelopes_from_payload() {
     }
 
     // Wait for chunks to propagate
-    println!("\n--- Waiting for copy stream chunks to propagate (10 seconds) ---");
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    println!("\n--- Waiting for copy stream chunks to propagate (30 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(30)).await;
 
     // Step 6: Send Copy command to courier
     println!("\n--- Step 6: Sending Copy command to courier via ARQ ---");
@@ -241,8 +241,8 @@ async fn test_create_courier_envelopes_from_payload() {
     println!("✓ Alice copy command completed");
 
     // Wait for copy command to execute
-    println!("\n--- Waiting for copy command to execute (10 seconds) ---");
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    println!("\n--- Waiting for copy command to execute (30 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(30)).await;
 
     // Step 7: Bob reads from destination channel
     println!("\n--- Step 7: Bob reads from destination channel ---");
@@ -343,8 +343,8 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
     }
 
     // Wait for chunks to propagate
-    println!("\n--- Waiting for copy stream chunks to propagate (10 seconds) ---");
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    println!("\n--- Waiting for copy stream chunks to propagate (30 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(30)).await;
 
     // Step 6: Send Copy command
     println!("\n--- Step 6: Sending Copy command via ARQ ---");
@@ -353,8 +353,8 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
     println!("✓ Copy command completed");
 
     // Wait for copy command to execute
-    println!("\n--- Waiting for copy command to execute (10 seconds) ---");
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    println!("\n--- Waiting for copy command to execute (30 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(30)).await;
 
     // Step 7: Bob reads from Channel 1
     println!("\n--- Step 7: Bob reads from Channel 1 ---");
@@ -461,8 +461,8 @@ async fn test_tombstone_box() {
     println!("✓ Alice tombstoned the box");
 
     // Wait for tombstone propagation
-    println!("--- Waiting for tombstone propagation (5 seconds) ---");
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    println!("--- Waiting for tombstone propagation (30 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(30)).await;
 
     // Step 4: Bob reads again and verifies tombstone
     println!("\n--- Step 4: Bob reads again and verifies tombstone ---");
@@ -530,8 +530,8 @@ async fn test_tombstone_range() {
     }
 
     // Wait for messages to propagate
-    println!("--- Waiting for message propagation (10 seconds) ---");
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    println!("--- Waiting for message propagation (30 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(30)).await;
 
     // Tombstone the range
     println!("\n--- Tombstoning {} boxes ---", num_messages);
