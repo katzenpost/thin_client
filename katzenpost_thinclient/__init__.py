@@ -1867,18 +1867,17 @@ class ThinClient:
             message_box_index: Starting read position for the channel.
 
         Returns:
-            tuple: (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash, replica_epoch) where:
+            tuple: (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash) where:
                 - message_ciphertext is the encrypted message to send to courier
                 - next_message_index is the next message index for subsequent reads
                 - envelope_descriptor is for decrypting the reply
                 - envelope_hash is the hash of the courier envelope
-                - replica_epoch is when the envelope was created
 
         Raises:
             Exception: If the encryption fails.
 
         Example:
-            >>> ciphertext, next_index, env_desc, env_hash, epoch = await client.encrypt_read(
+            >>> ciphertext, next_index, env_desc, env_hash = await client.encrypt_read(
             ...     read_cap, message_box_index)
             >>> # Send ciphertext via start_resending_encrypted_message
         """
@@ -1906,11 +1905,10 @@ class ThinClient:
             reply["message_ciphertext"],
             reply["next_message_index"],
             reply["envelope_descriptor"],
-            reply["envelope_hash"],
-            reply["replica_epoch"]
+            reply["envelope_hash"]
         )
 
-    async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_index: bytes) -> "Tuple[bytes, bytes, bytes, int]":
+    async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_index: bytes) -> "Tuple[bytes, bytes, bytes]":
         """
         Encrypts a write operation for a given write capability.
 
@@ -1924,18 +1922,17 @@ class ThinClient:
             message_box_index: Starting write position for the channel.
 
         Returns:
-            tuple: (message_ciphertext, envelope_descriptor, envelope_hash, replica_epoch) where:
+            tuple: (message_ciphertext, envelope_descriptor, envelope_hash) where:
                 - message_ciphertext is the encrypted message to send to courier
                 - envelope_descriptor is for decrypting the reply
                 - envelope_hash is the hash of the courier envelope
-                - replica_epoch is when the envelope was created
 
         Raises:
             Exception: If the encryption fails.
 
         Example:
             >>> plaintext = b"Hello, Bob!"
-            >>> ciphertext, env_desc, env_hash, epoch = await client.encrypt_write(
+            >>> ciphertext, env_desc, env_hash = await client.encrypt_write(
             ...     plaintext, write_cap, message_box_index)
             >>> # Send ciphertext via start_resending_encrypted_message
         """
@@ -1963,8 +1960,7 @@ class ThinClient:
         return (
             reply["message_ciphertext"],
             reply["envelope_descriptor"],
-            reply["envelope_hash"],
-            reply["replica_epoch"]
+            reply["envelope_hash"]
         )
 
     async def start_resending_encrypted_message(
@@ -1975,8 +1971,7 @@ class ThinClient:
         reply_index: "int|None",
         envelope_descriptor: bytes,
         message_ciphertext: bytes,
-        envelope_hash: bytes,
-        replica_epoch: int
+        envelope_hash: bytes
     ) -> bytes:
         """
         Starts resending an encrypted message via ARQ.
@@ -2006,7 +2001,6 @@ class ThinClient:
             envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
             message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
             envelope_hash: Hash of the courier envelope.
-            replica_epoch: Epoch when the envelope was created.
 
         Returns:
             bytes: Fully decrypted plaintext from the reply (for reads) or empty (for writes).
@@ -2016,7 +2010,7 @@ class ThinClient:
 
         Example:
             >>> plaintext = await client.start_resending_encrypted_message(
-            ...     read_cap, None, next_index, reply_idx, env_desc, ciphertext, env_hash, epoch)
+            ...     read_cap, None, next_index, reply_idx, env_desc, ciphertext, env_hash)
             >>> print(f"Received: {plaintext}")
         """
         query_id = self.new_query_id()
@@ -2030,8 +2024,7 @@ class ThinClient:
                 "reply_index": reply_index,
                 "envelope_descriptor": envelope_descriptor,
                 "message_ciphertext": message_ciphertext,
-                "envelope_hash": envelope_hash,
-                "replica_epoch": replica_epoch
+                "envelope_hash": envelope_hash
             }
         }
 
@@ -2407,7 +2400,7 @@ class ThinClient:
         tomb = bytes(geometry.max_plaintext_payload_length)
 
         # Encrypt the tombstone for the target box
-        message_ciphertext, envelope_descriptor, envelope_hash, replica_epoch = await self.encrypt_write(
+        message_ciphertext, envelope_descriptor, envelope_hash = await self.encrypt_write(
             tomb, write_cap, box_index
         )
 
@@ -2419,8 +2412,7 @@ class ThinClient:
             None,  # reply_index
             envelope_descriptor,
             message_ciphertext,
-            envelope_hash,
-            replica_epoch
+            envelope_hash
         )
 
     async def tombstone_range(

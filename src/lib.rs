@@ -400,7 +400,6 @@ struct EncryptReadReply {
     envelope_descriptor: Vec<u8>,
     #[serde(with = "serde_bytes")]
     envelope_hash: Vec<u8>,
-    replica_epoch: u64,
     error_code: u8,
 }
 
@@ -428,7 +427,6 @@ struct EncryptWriteReply {
     envelope_descriptor: Vec<u8>,
     #[serde(with = "serde_bytes")]
     envelope_hash: Vec<u8>,
-    replica_epoch: u64,
     error_code: u8,
 }
 
@@ -450,7 +448,6 @@ struct StartResendingEncryptedMessageRequest {
     message_ciphertext: Vec<u8>,
     #[serde(with = "serde_bytes")]
     envelope_hash: Vec<u8>,
-    replica_epoch: u64,
 }
 
 /// Reply containing the plaintext from a resent encrypted message.
@@ -1463,13 +1460,13 @@ impl ThinClient {
     /// * `message_box_index` - Starting read position for the channel
     ///
     /// # Returns
-    /// * `Ok((message_ciphertext, next_message_index, envelope_descriptor, envelope_hash, replica_epoch))` on success
+    /// * `Ok((message_ciphertext, next_message_index, envelope_descriptor, envelope_hash))` on success
     /// * `Err(ThinClientError)` on failure
     pub async fn encrypt_read(
         &self,
         read_cap: &[u8],
         message_box_index: &[u8]
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, [u8; 32], u64), ThinClientError> {
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, [u8; 32]), ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = EncryptReadRequest {
@@ -1500,8 +1497,7 @@ impl ThinClient {
             reply.message_ciphertext,
             reply.next_message_index,
             reply.envelope_descriptor,
-            envelope_hash,
-            reply.replica_epoch
+            envelope_hash
         ))
     }
 
@@ -1516,14 +1512,14 @@ impl ThinClient {
     /// * `message_box_index` - Starting write position for the channel
     ///
     /// # Returns
-    /// * `Ok((message_ciphertext, envelope_descriptor, envelope_hash, replica_epoch))` on success
+    /// * `Ok((message_ciphertext, envelope_descriptor, envelope_hash))` on success
     /// * `Err(ThinClientError)` on failure
     pub async fn encrypt_write(
         &self,
         plaintext: &[u8],
         write_cap: &[u8],
         message_box_index: &[u8]
-    ) -> Result<(Vec<u8>, Vec<u8>, [u8; 32], u64), ThinClientError> {
+    ) -> Result<(Vec<u8>, Vec<u8>, [u8; 32]), ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = EncryptWriteRequest {
@@ -1554,8 +1550,7 @@ impl ThinClient {
         Ok((
             reply.message_ciphertext,
             reply.envelope_descriptor,
-            envelope_hash,
-            reply.replica_epoch
+            envelope_hash
         ))
     }
 
@@ -1573,7 +1568,6 @@ impl ThinClient {
     /// * `envelope_descriptor` - Envelope descriptor from encrypt_read/encrypt_write
     /// * `message_ciphertext` - Encrypted message from encrypt_read/encrypt_write
     /// * `envelope_hash` - Envelope hash from encrypt_read/encrypt_write
-    /// * `replica_epoch` - Replica epoch from encrypt_read/encrypt_write
     ///
     /// # Returns
     /// * `Ok(plaintext)` - The plaintext reply received
@@ -1586,8 +1580,7 @@ impl ThinClient {
         reply_index: u8,
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
-        envelope_hash: &[u8; 32],
-        replica_epoch: u64
+        envelope_hash: &[u8; 32]
     ) -> Result<Vec<u8>, ThinClientError> {
         let query_id = Self::new_query_id();
 
@@ -1600,7 +1593,6 @@ impl ThinClient {
             envelope_descriptor: envelope_descriptor.to_vec(),
             message_ciphertext: message_ciphertext.to_vec(),
             envelope_hash: envelope_hash.to_vec(),
-            replica_epoch,
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
@@ -1933,7 +1925,7 @@ impl ThinClient {
         let tomb = vec![0u8; geometry.max_plaintext_payload_length];
 
         // Encrypt the tombstone for the target box
-        let (ciphertext, env_desc, env_hash, epoch) = self
+        let (ciphertext, env_desc, env_hash) = self
             .encrypt_write(&tomb, write_cap, box_index).await?;
 
         // Send via ARQ for reliable delivery
@@ -1944,8 +1936,7 @@ impl ThinClient {
             0,
             &env_desc,
             &ciphertext,
-            &env_hash,
-            epoch
+            &env_hash
         ).await?;
 
         Ok(())

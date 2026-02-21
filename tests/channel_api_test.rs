@@ -80,7 +80,7 @@ async fn test_alice_sends_bob_complete_workflow() {
 
     // Alice encrypts and sends a message
     let message = b"Hello Bob, this is Alice!";
-    let (ciphertext, env_desc, env_hash, epoch) = alice_client
+    let (ciphertext, env_desc, env_hash) = alice_client
         .encrypt_write(message, &alice_write_cap, &first_index).await
         .expect("Failed to encrypt write");
     println!("✓ Alice encrypted message");
@@ -93,8 +93,7 @@ async fn test_alice_sends_bob_complete_workflow() {
         0,
         &env_desc,
         &ciphertext,
-        &env_hash,
-        epoch
+        &env_hash
     ).await.expect("Failed to start resending");
 
     println!("✓ Alice sent message via ARQ");
@@ -104,7 +103,7 @@ async fn test_alice_sends_bob_complete_workflow() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Bob encrypts a read operation
-    let (bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash, bob_epoch) = bob_client
+    let (bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash) = bob_client
         .encrypt_read(&bob_read_cap, &first_index).await
         .expect("Failed to encrypt read");
     println!("✓ Bob encrypted read operation");
@@ -117,8 +116,7 @@ async fn test_alice_sends_bob_complete_workflow() {
         0,
         &bob_env_desc,
         &bob_ciphertext,
-        &bob_env_hash,
-        bob_epoch
+        &bob_env_hash
     ).await.expect("Failed to retrieve message");
 
     println!("✓ Bob received message");
@@ -211,7 +209,7 @@ async fn test_create_courier_envelopes_from_payload() {
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
     let mut temp_index = temp_first_index.clone();
     for (i, chunk) in copy_stream_chunks.iter().enumerate() {
-        let (ciphertext, env_desc, env_hash, epoch) = alice_client
+        let (ciphertext, env_desc, env_hash) = alice_client
             .encrypt_write(chunk, &temp_write_cap, &temp_index).await
             .expect("Failed to encrypt chunk");
 
@@ -222,8 +220,7 @@ async fn test_create_courier_envelopes_from_payload() {
             0,
             &env_desc,
             &ciphertext,
-            &env_hash,
-            epoch
+            &env_hash
         ).await.expect("Failed to send chunk via ARQ");
 
         println!("  ✓ Wrote chunk {} ({} bytes)", i + 1, chunk.len());
@@ -249,7 +246,7 @@ async fn test_create_courier_envelopes_from_payload() {
 
     // Step 7: Bob reads from destination channel
     println!("\n--- Step 7: Bob reads from destination channel ---");
-    let (bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash, bob_epoch) = bob_client
+    let (bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash) = bob_client
         .encrypt_read(&dest_read_cap, &dest_first_index).await
         .expect("Failed to encrypt read");
 
@@ -260,8 +257,7 @@ async fn test_create_courier_envelopes_from_payload() {
         0,
         &bob_env_desc,
         &bob_ciphertext,
-        &bob_env_hash,
-        bob_epoch
+        &bob_env_hash
     ).await.expect("Failed to retrieve message");
 
     println!("✓ Bob received {} bytes", bob_plaintext.len());
@@ -326,7 +322,7 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
     let mut temp_index = temp_first_index.clone();
     for (i, chunk) in all_chunks.iter().enumerate() {
-        let (ciphertext, env_desc, env_hash, epoch) = alice_client
+        let (ciphertext, env_desc, env_hash) = alice_client
             .encrypt_write(chunk, &temp_write_cap, &temp_index).await
             .expect("Failed to encrypt chunk");
 
@@ -337,8 +333,7 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
             0,
             &env_desc,
             &ciphertext,
-            &env_hash,
-            epoch
+            &env_hash
         ).await.expect("Failed to send chunk via ARQ");
 
         println!("  ✓ Wrote chunk {} ({} bytes)", i + 1, chunk.len());
@@ -363,7 +358,7 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
 
     // Step 7: Bob reads from Channel 1
     println!("\n--- Step 7: Bob reads from Channel 1 ---");
-    let (bob1_ciphertext, bob1_next_index, bob1_env_desc, bob1_env_hash, bob1_epoch) = bob_client
+    let (bob1_ciphertext, bob1_next_index, bob1_env_desc, bob1_env_hash) = bob_client
         .encrypt_read(&chan1_read_cap, &chan1_first_index).await
         .expect("Failed to encrypt read for channel 1");
 
@@ -374,8 +369,7 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
         0,
         &bob1_env_desc,
         &bob1_ciphertext,
-        &bob1_env_hash,
-        bob1_epoch
+        &bob1_env_hash
     ).await.expect("Failed to retrieve from channel 1");
 
     println!("✓ Bob received from Channel 1: {:?}", String::from_utf8_lossy(&bob1_plaintext));
@@ -383,7 +377,7 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
 
     // Step 8: Bob reads from Channel 2
     println!("\n--- Step 8: Bob reads from Channel 2 ---");
-    let (bob2_ciphertext, bob2_next_index, bob2_env_desc, bob2_env_hash, bob2_epoch) = bob_client
+    let (bob2_ciphertext, bob2_next_index, bob2_env_desc, bob2_env_hash) = bob_client
         .encrypt_read(&chan2_read_cap, &chan2_first_index).await
         .expect("Failed to encrypt read for channel 2");
 
@@ -394,8 +388,7 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
         0,
         &bob2_env_desc,
         &bob2_ciphertext,
-        &bob2_env_hash,
-        bob2_epoch
+        &bob2_env_hash
     ).await.expect("Failed to retrieve from channel 2");
 
     println!("✓ Bob received from Channel 2: {:?}", String::from_utf8_lossy(&bob2_plaintext));
@@ -423,7 +416,7 @@ async fn test_tombstone_box() {
     // Step 1: Alice writes a message
     println!("\n--- Step 1: Alice writes a message ---");
     let message = b"Secret message that will be tombstoned";
-    let (ciphertext, env_desc, env_hash, epoch) = alice_client
+    let (ciphertext, env_desc, env_hash) = alice_client
         .encrypt_write(message, &write_cap, &first_index).await
         .expect("Failed to encrypt write");
 
@@ -434,8 +427,7 @@ async fn test_tombstone_box() {
         0,
         &env_desc,
         &ciphertext,
-        &env_hash,
-        epoch
+        &env_hash
     ).await.expect("Failed to send message");
     println!("✓ Alice wrote message");
 
@@ -445,7 +437,7 @@ async fn test_tombstone_box() {
 
     // Step 2: Bob reads and verifies
     println!("\n--- Step 2: Bob reads and verifies ---");
-    let (bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash, bob_epoch) = bob_client
+    let (bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash) = bob_client
         .encrypt_read(&read_cap, &first_index).await
         .expect("Failed to encrypt read");
 
@@ -456,8 +448,7 @@ async fn test_tombstone_box() {
         0,
         &bob_env_desc,
         &bob_ciphertext,
-        &bob_env_hash,
-        bob_epoch
+        &bob_env_hash
     ).await.expect("Failed to read message");
 
     assert_eq!(bob_plaintext, message, "Message mismatch");
@@ -475,7 +466,7 @@ async fn test_tombstone_box() {
 
     // Step 4: Bob reads again and verifies tombstone
     println!("\n--- Step 4: Bob reads again and verifies tombstone ---");
-    let (bob_ciphertext2, bob_next_index2, bob_env_desc2, bob_env_hash2, bob_epoch2) = bob_client
+    let (bob_ciphertext2, bob_next_index2, bob_env_desc2, bob_env_hash2) = bob_client
         .encrypt_read(&read_cap, &first_index).await
         .expect("Failed to encrypt read for tombstone");
 
@@ -486,8 +477,7 @@ async fn test_tombstone_box() {
         0,
         &bob_env_desc2,
         &bob_ciphertext2,
-        &bob_env_hash2,
-        bob_epoch2
+        &bob_env_hash2
     ).await.expect("Failed to read tombstone");
 
     assert!(is_tombstone_plaintext(&geometry, &bob_plaintext2), "Expected tombstone (all zeros)");
@@ -518,7 +508,7 @@ async fn test_tombstone_range() {
     println!("\n--- Writing {} messages ---", num_messages);
     for i in 0..num_messages {
         let message = format!("Message {} to be tombstoned", i + 1);
-        let (ciphertext, env_desc, env_hash, epoch) = alice_client
+        let (ciphertext, env_desc, env_hash) = alice_client
             .encrypt_write(message.as_bytes(), &write_cap, &current_index).await
             .expect("Failed to encrypt write");
 
@@ -529,8 +519,7 @@ async fn test_tombstone_range() {
             0,
             &env_desc,
             &ciphertext,
-            &env_hash,
-            epoch
+            &env_hash
         ).await.expect("Failed to send message");
         println!("✓ Wrote message {}", i + 1);
 

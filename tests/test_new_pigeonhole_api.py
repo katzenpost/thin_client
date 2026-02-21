@@ -120,7 +120,7 @@ async def test_alice_sends_bob_complete_workflow():
         alice_message = b"Bob, Beware they are jamming GPS."
         print(f"Alice's message: {alice_message.decode()}")
 
-        alice_ciphertext, alice_env_desc, alice_env_hash, alice_epoch = await alice_client.encrypt_write(
+        alice_ciphertext, alice_env_desc, alice_env_hash = await alice_client.encrypt_write(
             alice_message, alice_write_cap, alice_first_index
         )
         print(f"✓ Alice encrypted message (ciphertext: {len(alice_ciphertext)} bytes)")
@@ -136,8 +136,7 @@ async def test_alice_sends_bob_complete_workflow():
             reply_index=reply_index,
             envelope_descriptor=alice_env_desc,
             message_ciphertext=alice_ciphertext,
-            envelope_hash=alice_env_hash,
-            replica_epoch=alice_epoch
+            envelope_hash=alice_env_hash
         )
 
         # For write operations, plaintext should be empty (ACK only)
@@ -149,7 +148,7 @@ async def test_alice_sends_bob_complete_workflow():
 
         # Step 4: Bob encrypts a read request
         print("\n--- Step 4: Bob encrypts read request ---")
-        bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash, bob_epoch = await bob_client.encrypt_read(
+        bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash = await bob_client.encrypt_read(
             bob_read_cap, alice_first_index
         )
         print(f"✓ Bob encrypted read request (ciphertext: {len(bob_ciphertext)} bytes)")
@@ -163,8 +162,7 @@ async def test_alice_sends_bob_complete_workflow():
             reply_index=reply_index,
             envelope_descriptor=bob_env_desc,
             message_ciphertext=bob_ciphertext,
-            envelope_hash=bob_env_hash,
-            replica_epoch=bob_epoch
+            envelope_hash=bob_env_hash
         )
 
         # Step 6: Verify Bob received Alice's message
@@ -200,7 +198,7 @@ async def test_cancel_resending_encrypted_message():
         write_cap, read_cap, first_message_index = await client.new_keypair(seed)
 
         plaintext = b"This message will be cancelled"
-        ciphertext, env_desc, env_hash, epoch = await client.encrypt_write(
+        ciphertext, env_desc, env_hash = await client.encrypt_write(
             plaintext, write_cap, first_message_index
         )
 
@@ -244,7 +242,7 @@ async def test_cancel_causes_start_resending_to_return_error():
         write_cap, read_cap, first_message_index = await client.new_keypair(seed)
 
         plaintext = b"This message will be cancelled while sending"
-        ciphertext, env_desc, env_hash, epoch = await client.encrypt_write(
+        ciphertext, env_desc, env_hash = await client.encrypt_write(
             plaintext, write_cap, first_message_index
         )
 
@@ -266,8 +264,7 @@ async def test_cancel_causes_start_resending_to_return_error():
                     reply_index=0,
                     envelope_descriptor=env_desc,
                     message_ciphertext=ciphertext,
-                    envelope_hash=env_hash,
-                    replica_epoch=epoch
+                    envelope_hash=env_hash
                 )
                 # If we get here without error, that's unexpected
                 start_resending_error = "No error raised"
@@ -280,8 +277,10 @@ async def test_cancel_causes_start_resending_to_return_error():
         print("--- Starting start_resending_encrypted_message task ---")
         resend_task = asyncio.create_task(start_resending_task())
 
-        # Give the task time to start and register with the daemon
-        await asyncio.sleep(1.0)
+        # Give the task just enough time to start and register with the daemon
+        # We need to call cancel BEFORE the message gets ACKed by the mixnet,
+        # so we use a very short delay (just enough for the async task to start)
+        await asyncio.sleep(0.1)
 
         # Cancel the resending
         print("--- Calling cancel_resending_encrypted_message ---")
@@ -356,8 +355,10 @@ async def test_cancel_causes_start_resending_copy_command_to_return_error():
         print("--- Starting start_resending_copy_command task ---")
         resend_task = asyncio.create_task(start_resending_copy_task())
 
-        # Give the task time to start and register with the daemon
-        await asyncio.sleep(1.0)
+        # Give the task just enough time to start and register with the daemon
+        # We need to call cancel BEFORE the message gets ACKed by the mixnet,
+        # so we use a very short delay (just enough for the async task to start)
+        await asyncio.sleep(0.1)
 
         # Cancel the resending
         print("--- Calling cancel_resending_copy_command ---")
@@ -427,7 +428,7 @@ async def test_multiple_messages_sequence():
             print(f"Message: {message.decode()}")
 
             # Encrypt and send to current index
-            ciphertext, env_desc, env_hash, epoch = await alice_client.encrypt_write(
+            ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
                 message, alice_write_cap, current_index
             )
 
@@ -438,8 +439,7 @@ async def test_multiple_messages_sequence():
                 reply_index=0,
                 envelope_descriptor=env_desc,
                 message_ciphertext=ciphertext,
-                envelope_hash=env_hash,
-                replica_epoch=epoch
+                envelope_hash=env_hash
             )
 
             print(f"✓ Message {i+1} sent to index successfully")
@@ -459,7 +459,7 @@ async def test_multiple_messages_sequence():
 
         for i in range(num_messages):
             print(f"\nReading message {i+1}/{num_messages}...")
-            bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash, bob_epoch = await bob_client.encrypt_read(
+            bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash = await bob_client.encrypt_read(
                 bob_read_cap, bob_current_index
             )
 
@@ -470,8 +470,7 @@ async def test_multiple_messages_sequence():
                 reply_index=0,
                 envelope_descriptor=bob_env_desc,
                 message_ciphertext=bob_ciphertext,
-                envelope_hash=bob_env_hash,
-                replica_epoch=bob_epoch
+                envelope_hash=bob_env_hash
             )
 
             print(f"Bob received: {bob_plaintext.decode() if bob_plaintext else '(empty)'}")
@@ -555,7 +554,7 @@ async def test_create_courier_envelopes_from_payload():
             print(f"--- Writing copy stream chunk {i+1}/{num_chunks} to temporary channel ---")
 
             # Encrypt the chunk for the copy stream
-            ciphertext, env_desc, env_hash, epoch = await alice_client.encrypt_write(
+            ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
                 chunk, temp_write_cap, temp_index
             )
             print(f"✓ Alice encrypted copy stream chunk {i+1} ({len(chunk)} bytes plaintext -> {len(ciphertext)} bytes ciphertext)")
@@ -568,8 +567,7 @@ async def test_create_courier_envelopes_from_payload():
                 reply_index=0,
                 envelope_descriptor=env_desc,
                 message_ciphertext=ciphertext,
-                envelope_hash=env_hash,
-                replica_epoch=epoch
+                envelope_hash=env_hash
             )
             print(f"✓ Alice sent copy stream chunk {i+1} to temporary channel")
 
@@ -597,7 +595,7 @@ async def test_create_courier_envelopes_from_payload():
             print(f"--- Bob reading chunk {chunk_num} ---")
 
             # Bob encrypts read request
-            bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash, bob_epoch = await bob_client.encrypt_read(
+            bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash = await bob_client.encrypt_read(
                 bob_read_cap, bob_index
             )
             print(f"✓ Bob encrypted read request {chunk_num}")
@@ -610,8 +608,7 @@ async def test_create_courier_envelopes_from_payload():
                 reply_index=0,
                 envelope_descriptor=bob_env_desc,
                 message_ciphertext=bob_ciphertext,
-                envelope_hash=bob_env_hash,
-                replica_epoch=bob_epoch
+                envelope_hash=bob_env_hash
             )
             assert bob_plaintext, f"Bob: Failed to receive chunk {chunk_num}"
             print(f"✓ Bob received and decrypted chunk {chunk_num} ({len(bob_plaintext)} bytes)")
@@ -721,7 +718,7 @@ async def test_copy_command_multi_channel():
             print(f"--- Writing chunk {i+1}/{len(all_chunks)} to temporary channel ---")
 
             # Encrypt the chunk for the copy stream
-            ciphertext, env_desc, env_hash, epoch = await alice_client.encrypt_write(
+            ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
                 chunk, temp_write_cap, temp_index
             )
             print(f"✓ Alice encrypted chunk {i+1} ({len(chunk)} bytes plaintext -> {len(ciphertext)} bytes ciphertext)")
@@ -734,8 +731,7 @@ async def test_copy_command_multi_channel():
                 reply_index=0,
                 envelope_descriptor=env_desc,
                 message_ciphertext=ciphertext,
-                envelope_hash=env_hash,
-                replica_epoch=epoch
+                envelope_hash=env_hash
             )
             print(f"✓ Alice sent chunk {i+1} to temporary channel")
 
@@ -756,7 +752,7 @@ async def test_copy_command_multi_channel():
 
         # Read from Channel 1
         print("--- Bob reading from Channel 1 ---")
-        bob1_ciphertext, bob1_next_index, bob1_env_desc, bob1_env_hash, bob1_epoch = await bob_client.encrypt_read(
+        bob1_ciphertext, bob1_next_index, bob1_env_desc, bob1_env_hash = await bob_client.encrypt_read(
             chan1_read_cap, chan1_first_index
         )
         assert bob1_ciphertext, "Bob: EncryptRead returned empty ciphertext for Channel 1"
@@ -768,8 +764,7 @@ async def test_copy_command_multi_channel():
             reply_index=0,
             envelope_descriptor=bob1_env_desc,
             message_ciphertext=bob1_ciphertext,
-            envelope_hash=bob1_env_hash,
-            replica_epoch=bob1_epoch
+            envelope_hash=bob1_env_hash
         )
         assert bob1_plaintext, "Bob: Failed to receive data from Channel 1"
         print(f"✓ Bob received from Channel 1: {bob1_plaintext.decode()} ({len(bob1_plaintext)} bytes)")
@@ -780,7 +775,7 @@ async def test_copy_command_multi_channel():
 
         # Read from Channel 2
         print("--- Bob reading from Channel 2 ---")
-        bob2_ciphertext, bob2_next_index, bob2_env_desc, bob2_env_hash, bob2_epoch = await bob_client.encrypt_read(
+        bob2_ciphertext, bob2_next_index, bob2_env_desc, bob2_env_hash = await bob_client.encrypt_read(
             chan2_read_cap, chan2_first_index
         )
         assert bob2_ciphertext, "Bob: EncryptRead returned empty ciphertext for Channel 2"
@@ -792,8 +787,7 @@ async def test_copy_command_multi_channel():
             reply_index=0,
             envelope_descriptor=bob2_env_desc,
             message_ciphertext=bob2_ciphertext,
-            envelope_hash=bob2_env_hash,
-            replica_epoch=bob2_epoch
+            envelope_hash=bob2_env_hash
         )
         assert bob2_plaintext, "Bob: Failed to receive data from Channel 2"
         print(f"✓ Bob received from Channel 2: {bob2_plaintext.decode()} ({len(bob2_plaintext)} bytes)")
@@ -888,7 +882,7 @@ async def test_copy_command_multi_channel_efficient():
             print(f"--- Writing chunk {i+1}/{len(all_chunks)} to temporary channel ---")
 
             # Encrypt the chunk for the copy stream
-            ciphertext, env_desc, env_hash, epoch = await alice_client.encrypt_write(
+            ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
                 chunk, temp_write_cap, temp_index
             )
             print(f"✓ Alice encrypted chunk {i+1} ({len(chunk)} bytes plaintext -> {len(ciphertext)} bytes ciphertext)")
@@ -901,8 +895,7 @@ async def test_copy_command_multi_channel_efficient():
                 reply_index=0,
                 envelope_descriptor=env_desc,
                 message_ciphertext=ciphertext,
-                envelope_hash=env_hash,
-                replica_epoch=epoch
+                envelope_hash=env_hash
             )
             print(f"✓ Alice sent chunk {i+1} to temporary channel")
 
@@ -923,7 +916,7 @@ async def test_copy_command_multi_channel_efficient():
 
         # Read from Channel 1
         print("--- Bob reading from Channel 1 ---")
-        bob1_ciphertext, bob1_next_index, bob1_env_desc, bob1_env_hash, bob1_epoch = await bob_client.encrypt_read(
+        bob1_ciphertext, bob1_next_index, bob1_env_desc, bob1_env_hash = await bob_client.encrypt_read(
             chan1_read_cap, chan1_first_index
         )
 
@@ -934,8 +927,7 @@ async def test_copy_command_multi_channel_efficient():
             reply_index=0,
             envelope_descriptor=bob1_env_desc,
             message_ciphertext=bob1_ciphertext,
-            envelope_hash=bob1_env_hash,
-            replica_epoch=bob1_epoch
+            envelope_hash=bob1_env_hash
         )
         assert bob1_plaintext, "Bob: Failed to receive data from Channel 1"
         print(f"✓ Bob received from Channel 1: {bob1_plaintext.decode()} ({len(bob1_plaintext)} bytes)")
@@ -944,7 +936,7 @@ async def test_copy_command_multi_channel_efficient():
 
         # Read from Channel 2
         print("--- Bob reading from Channel 2 ---")
-        bob2_ciphertext, bob2_next_index, bob2_env_desc, bob2_env_hash, bob2_epoch = await bob_client.encrypt_read(
+        bob2_ciphertext, bob2_next_index, bob2_env_desc, bob2_env_hash = await bob_client.encrypt_read(
             chan2_read_cap, chan2_first_index
         )
 
@@ -955,8 +947,7 @@ async def test_copy_command_multi_channel_efficient():
             reply_index=0,
             envelope_descriptor=bob2_env_desc,
             message_ciphertext=bob2_ciphertext,
-            envelope_hash=bob2_env_hash,
-            replica_epoch=bob2_epoch
+            envelope_hash=bob2_env_hash
         )
         assert bob2_plaintext, "Bob: Failed to receive data from Channel 2"
         print(f"✓ Bob received from Channel 2: {bob2_plaintext.decode()} ({len(bob2_plaintext)} bytes)")
@@ -1006,7 +997,7 @@ async def test_tombstoning():
         # Step 1: Alice writes a message
         print("\n--- Step 1: Alice writes a message ---")
         message = b"Secret message that will be tombstoned"
-        ciphertext, env_desc, env_hash, epoch = await alice_client.encrypt_write(
+        ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
             message, write_cap, first_index
         )
 
@@ -1017,8 +1008,7 @@ async def test_tombstoning():
             reply_index=0,
             envelope_descriptor=env_desc,
             message_ciphertext=ciphertext,
-            envelope_hash=env_hash,
-            replica_epoch=epoch
+            envelope_hash=env_hash
         )
         print("✓ Alice wrote message")
 
@@ -1028,7 +1018,7 @@ async def test_tombstoning():
 
         # Step 2: Bob reads and verifies
         print("\n--- Step 2: Bob reads and verifies ---")
-        bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash, bob_epoch = await bob_client.encrypt_read(
+        bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash = await bob_client.encrypt_read(
             read_cap, first_index
         )
         bob_plaintext = await bob_client.start_resending_encrypted_message(
@@ -1038,8 +1028,7 @@ async def test_tombstoning():
             reply_index=0,
             envelope_descriptor=bob_env_desc,
             message_ciphertext=bob_ciphertext,
-            envelope_hash=bob_env_hash,
-            replica_epoch=bob_epoch
+            envelope_hash=bob_env_hash
         )
         assert bob_plaintext == message, f"Message mismatch: expected {message}, got {bob_plaintext}"
         print(f"✓ Bob read message: {bob_plaintext.decode()}")
@@ -1055,7 +1044,7 @@ async def test_tombstoning():
 
         # Step 4: Bob reads again and verifies tombstone
         print("\n--- Step 4: Bob reads again and verifies tombstone ---")
-        bob_ciphertext2, bob_next_index2, bob_env_desc2, bob_env_hash2, bob_epoch2 = await bob_client.encrypt_read(
+        bob_ciphertext2, bob_next_index2, bob_env_desc2, bob_env_hash2 = await bob_client.encrypt_read(
             read_cap, first_index
         )
         bob_plaintext2 = await bob_client.start_resending_encrypted_message(
@@ -1065,8 +1054,7 @@ async def test_tombstoning():
             reply_index=0,
             envelope_descriptor=bob_env_desc2,
             message_ciphertext=bob_ciphertext2,
-            envelope_hash=bob_env_hash2,
-            replica_epoch=bob_epoch2
+            envelope_hash=bob_env_hash2
         )
 
         assert is_tombstone_plaintext(geometry, bob_plaintext2), "Expected tombstone plaintext (all zeros)"
@@ -1116,7 +1104,7 @@ async def test_tombstone_range():
         print(f"\n--- Writing {num_messages} messages ---")
         for i in range(num_messages):
             message = f"Message {i+1} to be tombstoned".encode()
-            ciphertext, env_desc, env_hash, epoch = await alice_client.encrypt_write(
+            ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
                 message, write_cap, current_index
             )
             await alice_client.start_resending_encrypted_message(
@@ -1126,8 +1114,7 @@ async def test_tombstone_range():
                 reply_index=0,
                 envelope_descriptor=env_desc,
                 message_ciphertext=ciphertext,
-                envelope_hash=env_hash,
-                replica_epoch=epoch
+                envelope_hash=env_hash
             )
             print(f"✓ Wrote message {i+1}")
 
