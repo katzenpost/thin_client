@@ -963,43 +963,6 @@ class ThinClient:
         finally:
             del self.response_queues[query_id]
 
-    async def _wait_for_channel_reply(self, expected_reply_type: str) -> Dict[Any, Any]:
-        """
-        Wait for a channel API reply using response queues (simulating Rust's event sinks).
-
-        Args:
-            expected_reply_type: The expected reply type (e.g., "create_write_channel_reply").
-
-        Returns:
-            Dict: The reply data.
-
-        Raises:
-            Exception: If the reply contains an error or times out.
-        """
-        # Create a queue for this reply type
-        queue = asyncio.Queue(maxsize=1)
-        self.channel_response_queues[expected_reply_type] = queue
-
-        try:
-            # Wait for the reply with timeout
-            reply = await asyncio.wait_for(queue.get(), timeout=30.0)
-
-            # Check for errors (matching Rust implementation)
-            error_code = reply.get("error_code", 0)
-            if error_code != 0:
-                raise Exception(f"{expected_reply_type} failed with error code: {error_code}")
-
-            if reply.get("err"):
-                raise Exception(f"{expected_reply_type} failed: {reply['err']}")
-
-            return reply
-
-        except asyncio.TimeoutError:
-            raise Exception(f"Timeout waiting for {expected_reply_type}")
-        finally:
-            # Clean up
-            self.channel_response_queues.pop(expected_reply_type, None)
-
     async def handle_response(self, response: "Dict[str,Any]") -> None:
         """
         Dispatch a parsed CBOR response to the appropriate handler or callback.
