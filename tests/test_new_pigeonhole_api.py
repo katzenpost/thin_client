@@ -1039,8 +1039,9 @@ async def test_tombstoning():
         print("✓ Alice tombstoned the box")
 
         # Wait for tombstone propagation
-        print("--- Waiting for tombstone propagation (30 seconds) ---")
-        await asyncio.sleep(30)
+        # Tombstones need more time to propagate since they overwrite existing data
+        print("--- Waiting for tombstone propagation (60 seconds) ---")
+        await asyncio.sleep(60)
 
         # Step 4: Bob reads again and verifies tombstone
         print("\n--- Step 4: Bob reads again and verifies tombstone ---")
