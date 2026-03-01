@@ -456,13 +456,29 @@ async fn test_tombstone_box() {
 
     // Step 3: Alice tombstones the box
     println!("\n--- Step 3: Alice tombstones the box ---");
-    alice_client.tombstone_box(&geometry, &write_cap, &first_index).await
-        .expect("Failed to tombstone box");
+    let (tomb_ciphertext, tomb_env_desc, tomb_env_hash) = alice_client
+        .tombstone_box(&geometry, &write_cap, &first_index).await
+        .expect("Failed to create tombstone");
+
+    // Convert envelope_hash Vec<u8> to [u8; 32]
+    let tomb_env_hash_arr: [u8; 32] = tomb_env_hash.try_into()
+        .expect("envelope_hash should be 32 bytes");
+
+    // Send the tombstone
+    alice_client.start_resending_encrypted_message(
+        None,
+        Some(&write_cap),
+        None,
+        0,
+        &tomb_env_desc,
+        &tomb_ciphertext,
+        &tomb_env_hash_arr
+    ).await.expect("Failed to send tombstone");
     println!("✓ Alice tombstoned the box");
 
     // Wait for tombstone propagation
-    println!("--- Waiting for tombstone propagation (30 seconds) ---");
-    tokio::time::sleep(Duration::from_secs(30)).await;
+    println!("--- Waiting for tombstone propagation (60 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(60)).await;
 
     // Step 4: Bob reads again and verifies tombstone
     println!("\n--- Step 4: Bob reads again and verifies tombstone ---");
@@ -479,6 +495,14 @@ async fn test_tombstone_box() {
         &bob_ciphertext2,
         &bob_env_hash2
     ).await.expect("Failed to read tombstone");
+
+    // Debug: print what we actually got
+    let expected_len = geometry.max_plaintext_payload_length;
+    let all_zeros = bob_plaintext2.iter().all(|&b| b == 0);
+    println!("DEBUG: plaintext2 len={}, expected={}, all_zeros={}", bob_plaintext2.len(), expected_len, all_zeros);
+    if !all_zeros && bob_plaintext2.len() < 100 {
+        println!("DEBUG: plaintext2 content: {:?}", String::from_utf8_lossy(&bob_plaintext2));
+    }
 
     assert!(is_tombstone_plaintext(&geometry, &bob_plaintext2), "Expected tombstone (all zeros)");
     println!("✓ Bob verified tombstone (all zeros)");

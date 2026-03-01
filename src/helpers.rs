@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (C) 2025 David Stainton
+// SPDX-FileCopyrightText: Copyright (C) 2026 David Stainton
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Helper functions for working with PKI documents and service discovery.
