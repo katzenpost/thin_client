@@ -533,14 +533,32 @@ async fn test_tombstone_range() {
     println!("--- Waiting for message propagation (30 seconds) ---");
     tokio::time::sleep(Duration::from_secs(30)).await;
 
-    // Tombstone the range
-    println!("\n--- Tombstoning {} boxes ---", num_messages);
+    // Tombstone the range - creates envelopes without sending
+    println!("\n--- Creating tombstones for {} boxes ---", num_messages);
     let result = alice_client.tombstone_range(&geometry, &write_cap, &first_index, num_messages).await;
 
-    println!("✓ Tombstoned {} boxes", result.tombstoned);
-    assert_eq!(result.tombstoned, num_messages, "Expected {} tombstoned, got {}", num_messages, result.tombstoned);
     assert!(result.error.is_none(), "Unexpected error: {:?}", result.error);
+    assert_eq!(result.envelopes.len(), num_messages as usize, "Expected {} envelopes, got {}", num_messages, result.envelopes.len());
     assert!(!result.next.is_empty(), "Next index should not be empty");
+    println!("✓ Created {} tombstone envelopes", result.envelopes.len());
 
-    println!("✅ tombstone_range test passed! Tombstoned {} boxes successfully!", num_messages);
+    // Send all tombstone envelopes
+    println!("\n--- Sending {} tombstone envelopes ---", num_messages);
+    for (i, envelope) in result.envelopes.iter().enumerate() {
+        // Convert envelope_hash Vec<u8> to [u8; 32]
+        let env_hash: [u8; 32] = envelope.envelope_hash.clone().try_into()
+            .expect("envelope_hash should be 32 bytes");
+        alice_client.start_resending_encrypted_message(
+            None,
+            Some(&write_cap),
+            None,
+            0, // reply_index
+            &envelope.envelope_descriptor,
+            &envelope.message_ciphertext,
+            &env_hash
+        ).await.expect("Failed to send tombstone envelope");
+        println!("✓ Sent tombstone envelope {}", i + 1);
+    }
+
+    println!("✅ tombstone_range test passed! Created and sent {} tombstones successfully!", num_messages);
 }
