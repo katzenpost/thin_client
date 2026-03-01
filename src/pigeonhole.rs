@@ -775,11 +775,11 @@ impl ThinClient {
         stream_id
     }
 
-    /// Tombstone a single pigeonhole box by overwriting it with zeros.
+    /// Create an encrypted tombstone for a single pigeonhole box.
     ///
-    /// This method overwrites the specified box with a zero-filled payload,
-    /// effectively deleting its contents. The tombstone is sent via ARQ
-    /// for reliable delivery.
+    /// This method creates an encrypted zero-filled payload for overwriting
+    /// the specified box. The caller must send the returned values via
+    /// start_resending_encrypted_message to complete the tombstone operation.
     ///
     /// # Arguments
     /// * `geometry` - Pigeonhole geometry defining payload size
@@ -787,14 +787,14 @@ impl ThinClient {
     /// * `box_index` - Index of the box to tombstone
     ///
     /// # Returns
-    /// * `Ok(())` on success
+    /// * `Ok((ciphertext, envelope_descriptor, envelope_hash))` on success
     /// * `Err(ThinClientError)` on failure
     pub async fn tombstone_box(
         &self,
         geometry: &PigeonholeGeometry,
         write_cap: &[u8],
         box_index: &[u8]
-    ) -> Result<(), ThinClientError> {
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
         geometry.validate().map_err(|e| ThinClientError::Other(e.to_string()))?;
 
         // Create zero-filled tombstone payload
@@ -804,26 +804,28 @@ impl ThinClient {
         let (ciphertext, env_desc, env_hash) = self
             .encrypt_write(&tomb, write_cap, box_index).await?;
 
-        // Send via ARQ for reliable delivery
-        let _ = self.start_resending_encrypted_message(
-            None,
-            Some(write_cap),
-            None,
-            0,
-            &env_desc,
-            &ciphertext,
-            &env_hash
-        ).await?;
-
-        Ok(())
+        Ok((ciphertext, env_desc, env_hash.to_vec()))
     }
+}
+
+/// A single tombstone envelope ready to be sent.
+#[derive(Debug, Clone)]
+pub struct TombstoneEnvelope {
+    /// The encrypted tombstone payload.
+    pub message_ciphertext: Vec<u8>,
+    /// The envelope descriptor.
+    pub envelope_descriptor: Vec<u8>,
+    /// The envelope hash for cancellation.
+    pub envelope_hash: Vec<u8>,
+    /// The box index this envelope is for.
+    pub box_index: Vec<u8>,
 }
 
 /// Result of a tombstone_range operation.
 #[derive(Debug)]
 pub struct TombstoneRangeResult {
-    /// Number of boxes successfully tombstoned.
-    pub tombstoned: u32,
+    /// List of tombstone envelopes ready to be sent.
+    pub envelopes: Vec<TombstoneEnvelope>,
     /// The next MessageBoxIndex after the last processed.
     pub next: Vec<u8>,
     /// Error message if the operation failed partway through.
@@ -831,14 +833,15 @@ pub struct TombstoneRangeResult {
 }
 
 impl ThinClient {
-    /// Tombstone a range of pigeonhole boxes starting from a given index.
+    /// Create encrypted tombstones for a range of pigeonhole boxes.
     ///
-    /// This method tombstones up to max_count boxes, starting from the
-    /// specified box index and advancing through consecutive indices.
+    /// This method creates encrypted tombstones for up to max_count boxes,
+    /// starting from the specified box index and advancing through consecutive
+    /// indices. The caller must send each envelope via start_resending_encrypted_message
+    /// to complete the tombstone operations.
     ///
     /// If an error occurs during the operation, a partial result is returned
-    /// containing the number of boxes successfully tombstoned and the next
-    /// index that was being processed.
+    /// containing the envelopes created so far and the next index.
     ///
     /// # Arguments
     /// * `geometry` - Pigeonhole geometry defining payload size
@@ -847,7 +850,7 @@ impl ThinClient {
     /// * `max_count` - Maximum number of boxes to tombstone
     ///
     /// # Returns
-    /// * `TombstoneRangeResult` containing the count and next index
+    /// * `TombstoneRangeResult` containing the envelopes and next index
     pub async fn tombstone_range(
         &self,
         geometry: &PigeonholeGeometry,
@@ -857,7 +860,7 @@ impl ThinClient {
     ) -> TombstoneRangeResult {
         if max_count == 0 {
             return TombstoneRangeResult {
-                tombstoned: 0,
+                envelopes: Vec::new(),
                 next: start.to_vec(),
                 error: None,
             };
@@ -865,40 +868,49 @@ impl ThinClient {
 
         if let Err(e) = geometry.validate() {
             return TombstoneRangeResult {
-                tombstoned: 0,
+                envelopes: Vec::new(),
                 next: start.to_vec(),
                 error: Some(e.to_string()),
             };
         }
 
         let mut cur = start.to_vec();
-        let mut done: u32 = 0;
+        let mut envelopes: Vec<TombstoneEnvelope> = Vec::with_capacity(max_count as usize);
 
-        while done < max_count {
-            if let Err(e) = self.tombstone_box(geometry, write_cap, &cur).await {
-                return TombstoneRangeResult {
-                    tombstoned: done,
-                    next: cur,
-                    error: Some(format!("Error tombstoning box at index {}: {:?}", done, e)),
-                };
+        while (envelopes.len() as u32) < max_count {
+            match self.tombstone_box(geometry, write_cap, &cur).await {
+                Ok((ciphertext, env_desc, env_hash)) => {
+                    envelopes.push(TombstoneEnvelope {
+                        message_ciphertext: ciphertext,
+                        envelope_descriptor: env_desc,
+                        envelope_hash: env_hash,
+                        box_index: cur.clone(),
+                    });
+                }
+                Err(e) => {
+                    let count = envelopes.len();
+                    return TombstoneRangeResult {
+                        envelopes,
+                        next: cur,
+                        error: Some(format!("Error creating tombstone at index {}: {:?}", count, e)),
+                    };
+                }
             }
-
-            done += 1;
 
             match self.next_message_box_index(&cur).await {
                 Ok(next) => cur = next,
                 Err(e) => {
                     return TombstoneRangeResult {
-                        tombstoned: done,
+                        envelopes,
                         next: cur,
-                        error: Some(format!("Error getting next index after tombstoning: {:?}", e)),
+                        error: Some(format!("Error getting next index after creating tombstone: {:?}", e)),
                     };
                 }
             }
         }
 
         TombstoneRangeResult {
-            tombstoned: done,
+            envelopes,
             next: cur,
             error: None,
         }

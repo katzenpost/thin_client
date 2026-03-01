@@ -597,26 +597,33 @@ async def tombstone_box(
     geometry: "PigeonholeGeometry",
     write_cap: bytes,
     box_index: bytes
-) -> None:
+) -> "Tuple[bytes, bytes, bytes]":
     """
-    Tombstone a single pigeonhole box by overwriting it with zeros.
+    Create an encrypted tombstone for a single pigeonhole box.
 
-    This method overwrites the specified box with a zero-filled payload,
-    effectively deleting its contents. The tombstone is sent via ARQ
-    for reliable delivery.
+    This method creates an encrypted zero-filled payload for overwriting
+    the specified box. The caller must send the returned values via
+    start_resending_encrypted_message to complete the tombstone operation.
 
     Args:
         geometry: Pigeonhole geometry defining payload size.
         write_cap: Write capability for the box.
         box_index: Index of the box to tombstone.
 
+    Returns:
+        Tuple[bytes, bytes, bytes]: A tuple containing:
+            - message_ciphertext: The encrypted tombstone payload.
+            - envelope_descriptor: The envelope descriptor.
+            - envelope_hash: The envelope hash for cancellation.
+
     Raises:
         ValueError: If any argument is None or geometry is invalid.
-        Exception: If the encrypt or send operation fails.
+        Exception: If the encrypt operation fails.
 
     Example:
         >>> geometry = PigeonholeGeometry(max_plaintext_payload_length=1024, nike_name="x25519")
-        >>> await client.tombstone_box(geometry, write_cap, box_index)
+        >>> ciphertext, env_desc, env_hash = await client.tombstone_box(geometry, write_cap, box_index)
+        >>> await client.start_resending_encrypted_message(None, write_cap, None, None, env_desc, ciphertext, env_hash)
     """
     if geometry is None:
         raise ValueError("geometry cannot be None")
@@ -634,16 +641,7 @@ async def tombstone_box(
         tomb, write_cap, box_index
     )
 
-    # Send the tombstone via ARQ
-    await self.start_resending_encrypted_message(
-        None,  # read_cap
-        write_cap,
-        None,  # next_message_index
-        None,  # reply_index
-        envelope_descriptor,
-        message_ciphertext,
-        envelope_hash
-    )
+    return message_ciphertext, envelope_descriptor, envelope_hash
 
 
 async def tombstone_range(
@@ -654,14 +652,15 @@ async def tombstone_range(
     max_count: int
 ) -> "Dict[str, Any]":
     """
-    Tombstone a range of pigeonhole boxes starting from a given index.
+    Create encrypted tombstones for a range of pigeonhole boxes.
 
-    This method tombstones up to max_count boxes, starting from the
-    specified box index and advancing through consecutive indices.
+    This method creates encrypted tombstones for up to max_count boxes,
+    starting from the specified box index and advancing through consecutive
+    indices. The caller must send each envelope via start_resending_encrypted_message
+    to complete the tombstone operations.
 
     If an error occurs during the operation, a partial result is returned
-    containing the number of boxes successfully tombstoned and the next
-    index that was being processed.
+    containing the envelopes created so far and the next index.
 
     Args:
         geometry: Pigeonhole geometry defining payload size.
@@ -671,7 +670,11 @@ async def tombstone_range(
 
     Returns:
         Dict[str, Any]: A dictionary with:
-            - "tombstoned" (int): Number of boxes successfully tombstoned.
+            - "envelopes" (List[Dict]): List of envelope dicts, each containing:
+                - "message_ciphertext": The encrypted tombstone payload.
+                - "envelope_descriptor": The envelope descriptor.
+                - "envelope_hash": The envelope hash for cancellation.
+                - "box_index": The box index this envelope is for.
             - "next" (bytes): The next MessageBoxIndex after the last processed.
 
     Raises:
@@ -680,7 +683,12 @@ async def tombstone_range(
     Example:
         >>> geometry = PigeonholeGeometry(max_plaintext_payload_length=1024, nike_name="x25519")
         >>> result = await client.tombstone_range(geometry, write_cap, start_index, 10)
-        >>> print(f"Tombstoned {result['tombstoned']} boxes")
+        >>> for envelope in result["envelopes"]:
+        ...     await client.start_resending_encrypted_message(
+        ...         None, write_cap, None, None,
+        ...         envelope["envelope_descriptor"],
+        ...         envelope["message_ciphertext"],
+        ...         envelope["envelope_hash"])
     """
     if geometry is None:
         raise ValueError("geometry cannot be None")
@@ -690,25 +698,31 @@ async def tombstone_range(
     if start is None:
         raise ValueError("start index cannot be None")
     if max_count == 0:
-        return {"tombstoned": 0, "next": start}
+        return {"envelopes": [], "next": start}
 
     cur = start
-    done = 0
+    envelopes = []
 
-    while done < max_count:
+    while len(envelopes) < max_count:
         try:
-            await self.tombstone_box(geometry, write_cap, cur)
+            message_ciphertext, envelope_descriptor, envelope_hash = await self.tombstone_box(
+                geometry, write_cap, cur
+            )
+            envelopes.append({
+                "message_ciphertext": message_ciphertext,
+                "envelope_descriptor": envelope_descriptor,
+                "envelope_hash": envelope_hash,
+                "box_index": cur,
+            })
         except Exception as e:
-            self.logger.error(f"Error tombstoning box at index {done}: {e}")
-            return {"tombstoned": done, "next": cur, "error": str(e)}
-
-        done += 1
+            self.logger.error(f"Error creating tombstone for box at index {len(envelopes)}: {e}")
+            return {"envelopes": envelopes, "next": cur, "error": str(e)}
 
         try:
             cur = await self.next_message_box_index(cur)
         except Exception as e:
-            self.logger.error(f"Error getting next index after tombstoning: {e}")
-            return {"tombstoned": done, "next": cur, "error": str(e)}
+            self.logger.error(f"Error getting next index after creating tombstone: {e}")
+            return {"envelopes": envelopes, "next": cur, "error": str(e)}
 
-    return {"tombstoned": done, "next": cur}
+    return {"envelopes": envelopes, "next": cur}
 
