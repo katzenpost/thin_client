@@ -90,7 +90,7 @@ async fn test_alice_sends_bob_complete_workflow() {
         None,
         Some(&alice_write_cap),
         None,
-        0,
+        Some(0),
         &env_desc,
         &ciphertext,
         &env_hash
@@ -113,7 +113,7 @@ async fn test_alice_sends_bob_complete_workflow() {
         Some(&bob_read_cap),
         None,
         Some(&bob_next_index),
-        0,
+        Some(0),
         &bob_env_desc,
         &bob_ciphertext,
         &bob_env_hash
@@ -217,7 +217,7 @@ async fn test_create_courier_envelopes_from_payload() {
             None,
             Some(&temp_write_cap),
             None,
-            0,
+            Some(0),
             &env_desc,
             &ciphertext,
             &env_hash
@@ -254,7 +254,7 @@ async fn test_create_courier_envelopes_from_payload() {
         Some(&dest_read_cap),
         None,
         Some(&bob_next_index),
-        0,
+        Some(0),
         &bob_env_desc,
         &bob_ciphertext,
         &bob_env_hash
@@ -330,7 +330,7 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
             None,
             Some(&temp_write_cap),
             None,
-            0,
+            Some(0),
             &env_desc,
             &ciphertext,
             &env_hash
@@ -366,7 +366,7 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
         Some(&chan1_read_cap),
         None,
         Some(&bob1_next_index),
-        0,
+        Some(0),
         &bob1_env_desc,
         &bob1_ciphertext,
         &bob1_env_hash
@@ -385,7 +385,7 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
         Some(&chan2_read_cap),
         None,
         Some(&bob2_next_index),
-        0,
+        Some(0),
         &bob2_env_desc,
         &bob2_ciphertext,
         &bob2_env_hash
@@ -424,7 +424,7 @@ async fn test_tombstone_box() {
         None,
         Some(&write_cap),
         None,
-        0,
+        Some(0),
         &env_desc,
         &ciphertext,
         &env_hash
@@ -445,7 +445,7 @@ async fn test_tombstone_box() {
         Some(&read_cap),
         None,
         Some(&bob_next_index),
-        0,
+        Some(0),
         &bob_env_desc,
         &bob_ciphertext,
         &bob_env_hash
@@ -464,12 +464,12 @@ async fn test_tombstone_box() {
     let tomb_env_hash_arr: [u8; 32] = tomb_env_hash.try_into()
         .expect("envelope_hash should be 32 bytes");
 
-    // Send the tombstone
+    // Send the tombstone - use None for reply_index as Go does
     alice_client.start_resending_encrypted_message(
         None,
         Some(&write_cap),
         None,
-        0,
+        None,  // reply_index must be None for tombstone writes
         &tomb_env_desc,
         &tomb_ciphertext,
         &tomb_env_hash_arr
@@ -490,7 +490,7 @@ async fn test_tombstone_box() {
         Some(&read_cap),
         None,
         Some(&bob_next_index2),
-        0,
+        Some(0),
         &bob_env_desc2,
         &bob_ciphertext2,
         &bob_env_hash2
@@ -540,7 +540,7 @@ async fn test_tombstone_range() {
             None,
             Some(&write_cap),
             None,
-            0,
+            Some(0),
             &env_desc,
             &ciphertext,
             &env_hash
@@ -576,7 +576,7 @@ async fn test_tombstone_range() {
             None,
             Some(&write_cap),
             None,
-            0, // reply_index
+            None, // reply_index must be None for tombstone writes
             &envelope.envelope_descriptor,
             &envelope.message_ciphertext,
             &env_hash

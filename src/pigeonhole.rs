@@ -133,7 +133,8 @@ struct StartResendingEncryptedMessageRequest {
     write_cap: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none", with = "optional_bytes")]
     next_message_index: Option<Vec<u8>>,
-    reply_index: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_index: Option<u8>,
     #[serde(with = "serde_bytes")]
     envelope_descriptor: Vec<u8>,
     #[serde(with = "serde_bytes")]
@@ -440,7 +441,7 @@ impl ThinClient {
     /// * `read_cap` - Optional read capability (for read operations)
     /// * `write_cap` - Optional write capability (for write operations)
     /// * `next_message_index` - Optional next message index (for read operations)
-    /// * `reply_index` - Reply index for the operation
+    /// * `reply_index` - Reply index for the operation (None for tombstone writes)
     /// * `envelope_descriptor` - Envelope descriptor from encrypt_read/encrypt_write
     /// * `message_ciphertext` - Encrypted message from encrypt_read/encrypt_write
     /// * `envelope_hash` - Envelope hash from encrypt_read/encrypt_write
@@ -453,7 +454,7 @@ impl ThinClient {
         read_cap: Option<&[u8]>,
         write_cap: Option<&[u8]>,
         next_message_index: Option<&[u8]>,
-        reply_index: u8,
+        reply_index: Option<u8>,
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
         envelope_hash: &[u8; 32]
