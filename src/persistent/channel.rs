@@ -209,7 +209,94 @@ impl ChannelHandle {
         &self.channel.read_index
     }
 
-    /// Send a message on this channel.
+    // ========================================================================
+    // Low-Level Box Operations (single box, no state management)
+    // ========================================================================
+
+    /// Write a single box payload at a specific index (low-level).
+    ///
+    /// This is the low-level primitive for writing to a pigeonhole box.
+    /// It does NOT update the channel's write index - use this when you need
+    /// precise control over box indices.
+    ///
+    /// # Arguments
+    /// * `plaintext` - The payload to write. Must be at most
+    ///   `PigeonholeGeometry.max_plaintext_payload_length` bytes.
+    /// * `box_index` - The specific box index to write to.
+    ///
+    /// # Returns
+    /// The next box index after this write.
+    ///
+    /// # Errors
+    /// Returns an error if this is a read-only channel or the operation fails.
+    pub async fn write_box(&self, plaintext: &[u8], box_index: &[u8]) -> Result<Vec<u8>> {
+        let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
+            PigeonholeDbError::Other("Cannot write on a read-only channel".to_string())
+        })?;
+
+        let (message_ciphertext, envelope_descriptor, envelope_hash) = self
+            .client
+            .encrypt_write(plaintext, write_cap, box_index)
+            .await?;
+
+        self.client
+            .start_resending_encrypted_message(
+                None,
+                Some(write_cap),
+                None,
+                Some(0),
+                &envelope_descriptor,
+                &message_ciphertext,
+                &envelope_hash,
+            )
+            .await?;
+
+        let next_index = self.client.next_message_box_index(box_index).await?;
+        Ok(next_index)
+    }
+
+    /// Read a single box payload at a specific index (low-level).
+    ///
+    /// This is the low-level primitive for reading from a pigeonhole box.
+    /// It does NOT update the channel's read index - use this when you need
+    /// precise control over box indices.
+    ///
+    /// # Arguments
+    /// * `box_index` - The specific box index to read from.
+    ///
+    /// # Returns
+    /// A tuple of (plaintext, next_box_index).
+    ///
+    /// # Errors
+    /// Returns an error if the read operation fails.
+    pub async fn read_box(&self, box_index: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        let (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash) = self
+            .client
+            .encrypt_read(&self.channel.read_cap, box_index)
+            .await?;
+
+        let plaintext = self
+            .client
+            .start_resending_encrypted_message(
+                Some(&self.channel.read_cap),
+                None,
+                Some(&next_message_index),
+                Some(0),
+                &envelope_descriptor,
+                &message_ciphertext,
+                &envelope_hash,
+            )
+            .await?;
+
+        let next_index = self.client.next_message_box_index(box_index).await?;
+        Ok((plaintext, next_index))
+    }
+
+    // ========================================================================
+    // High-Level Send/Receive (with state management)
+    // ========================================================================
+
+    /// Send a message on this channel (high-level).
     ///
     /// This method:
     /// 1. Encrypts the message using the current write index
@@ -221,34 +308,23 @@ impl ChannelHandle {
     /// # Plaintext Size Constraint
     ///
     /// The `plaintext` must not exceed `PigeonholeGeometry.max_plaintext_payload_length` bytes.
-    /// The daemon internally adds a 4-byte big-endian length prefix before padding and
-    /// encryption. If the plaintext exceeds the maximum size, the operation will fail
-    /// with an error.
-    ///
-    /// To send larger payloads, use the copy stream API which chunks the data across
-    /// multiple boxes.
+    /// For larger payloads, use the copy stream API via `CopyStreamBuilder`.
     ///
     /// # Arguments
-    /// * `plaintext` - The message to send. Must be at most
-    ///   `PigeonholeGeometry.max_plaintext_payload_length` bytes.
+    /// * `plaintext` - The message to send.
     ///
     /// # Errors
-    /// Returns an error if:
-    /// - This is a read-only channel (imported, no write capability)
-    /// - The plaintext exceeds the maximum payload size
-    /// - The underlying send operation fails
+    /// Returns an error if this is a read-only channel or the operation fails.
     pub async fn send(&mut self, plaintext: &[u8]) -> Result<()> {
         let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
             PigeonholeDbError::Other("Cannot send on a read-only channel".to_string())
         })?;
 
-        // Encrypt the message
         let (message_ciphertext, envelope_descriptor, envelope_hash) = self
             .client
             .encrypt_write(plaintext, write_cap, &self.channel.write_index)
             .await?;
 
-        // Store as pending message
         let pending = self.db.create_pending_message(
             self.channel.id,
             plaintext,
@@ -258,17 +334,15 @@ impl ChannelHandle {
             &self.channel.write_index,
         )?;
 
-        // Update status to sending
         self.db.update_pending_message_status(pending.id, "sending")?;
 
-        // Send via ARQ
         let result = self
             .client
             .start_resending_encrypted_message(
-                None,                      // read_cap (None for writes)
-                Some(write_cap),           // write_cap
-                None,                      // next_message_index (not needed for writes)
-                Some(0),                   // reply_index
+                None,
+                Some(write_cap),
+                None,
+                Some(0),
                 &envelope_descriptor,
                 &message_ciphertext,
                 &envelope_hash,
@@ -277,7 +351,6 @@ impl ChannelHandle {
 
         match result {
             Ok(_) => {
-                // Success - update write index and remove pending message
                 let next_index = self.client.next_message_box_index(&self.channel.write_index).await?;
                 self.db.update_write_index(self.channel.id, &next_index)?;
                 self.db.delete_pending_message(pending.id)?;
@@ -285,57 +358,47 @@ impl ChannelHandle {
                 Ok(())
             }
             Err(e) => {
-                // Failed - update pending message status
                 self.db.update_pending_message_status(pending.id, "failed")?;
                 Err(e.into())
             }
         }
     }
 
-    /// Receive the next message from this channel.
+    /// Receive the next message from this channel (high-level).
     ///
-    /// This method:
-    /// 1. Encrypts a read request for the current read index
-    /// 2. Sends it via ARQ
-    /// 3. Stores the received message in the database
-    /// 4. Updates the read index
-    /// 5. Returns the plaintext
+    /// This method reads from the current read index, stores the message,
+    /// and advances the read index.
     ///
     /// # Returns
-    /// The decrypted message plaintext (at most `PigeonholeGeometry.max_plaintext_payload_length`
-    /// bytes). The length prefix and padding are automatically removed by the daemon.
+    /// The decrypted message plaintext.
     ///
     /// # Errors
-    /// Returns an error if the read operation fails or times out.
+    /// Returns an error if the read operation fails.
     pub async fn receive(&mut self) -> Result<Vec<u8>> {
-        // Encrypt read request
         let (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash) = self
             .client
             .encrypt_read(&self.channel.read_cap, &self.channel.read_index)
             .await?;
 
-        // Send via ARQ and get plaintext
         let plaintext = self
             .client
             .start_resending_encrypted_message(
-                Some(&self.channel.read_cap), // read_cap
-                None,                          // write_cap (None for reads)
-                Some(&next_message_index),     // next_message_index
-                Some(0),                       // reply_index
+                Some(&self.channel.read_cap),
+                None,
+                Some(&next_message_index),
+                Some(0),
                 &envelope_descriptor,
                 &message_ciphertext,
                 &envelope_hash,
             )
             .await?;
 
-        // Store received message
         self.db.create_received_message(
             self.channel.id,
             &plaintext,
             &self.channel.read_index,
         )?;
 
-        // Update read index
         let next_index = self.client.next_message_box_index(&self.channel.read_index).await?;
         self.db.update_read_index(self.channel.id, &next_index)?;
         self.channel.read_index = next_index;
@@ -468,80 +531,29 @@ impl ChannelHandle {
     }
 
     // ========================================================================
-    // Copy Operations
+    // Copy Stream Operations
     // ========================================================================
 
-    /// Send a large payload using the Copy command.
+    /// Create a new CopyStreamBuilder for streaming large payloads.
     ///
-    /// This method handles payloads larger than a single box can hold by:
-    /// 1. Creating a temporary channel for the copy stream
-    /// 2. Chunking the payload and writing each chunk to the temp channel
-    /// 3. Sending a Copy command to have the courier copy from temp to destination
+    /// Use this for payloads of any size. The builder allows you to add
+    /// payloads incrementally (streaming from disk, network, etc.) without
+    /// loading everything into memory at once.
     ///
-    /// The destination is specified by write capability and starting index.
+    /// # Example
+    /// ```ignore
+    /// let mut builder = channel.copy_stream_builder().await?;
     ///
-    /// # Arguments
-    /// * `payload` - The payload to send (can be larger than max_plaintext_payload_length).
-    /// * `dest_write_cap` - Write capability for the destination channel.
-    /// * `dest_start_index` - Starting index in the destination channel.
+    /// // Stream data in chunks (e.g., reading from a file)
+    /// while let Some(chunk) = file.read_chunk() {
+    ///     builder.add_payload(&chunk, dest_write_cap, dest_start_index, false).await?;
+    /// }
     ///
-    /// # Returns
-    /// The number of boxes written to the destination.
-    pub async fn send_large_payload(
-        &self,
-        payload: &[u8],
-        dest_write_cap: &[u8],
-        dest_start_index: &[u8],
-    ) -> Result<usize> {
-        // Create a temporary channel for the copy stream
-        let mut seed = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut seed);
-        let (temp_write_cap, _temp_read_cap, temp_first_index) =
-            self.client.new_keypair(&seed).await?;
-
-        // Create stream ID
-        let stream_id = ThinClient::new_stream_id();
-
-        // Create courier envelopes from the payload
-        let chunks = self.client.create_courier_envelopes_from_payload(
-            &stream_id,
-            payload,
-            dest_write_cap,
-            dest_start_index,
-            true, // is_last
-        ).await?;
-
-        let chunk_count = chunks.len();
-
-        // Write each chunk to the temporary channel
-        let mut temp_index = temp_first_index;
-        for chunk in chunks {
-            let (ciphertext, env_desc, env_hash) = self
-                .client
-                .encrypt_write(&chunk, &temp_write_cap, &temp_index)
-                .await?;
-
-            self.client
-                .start_resending_encrypted_message(
-                    None,
-                    Some(&temp_write_cap),
-                    None,
-                    Some(0),
-                    &env_desc,
-                    &ciphertext,
-                    &env_hash,
-                )
-                .await?;
-
-            temp_index = self.client.next_message_box_index(&temp_index).await?;
-        }
-
-        // Send the Copy command
-        self.client
-            .start_resending_copy_command(&temp_write_cap, None, None)
-            .await?;
-
-        Ok(chunk_count)
+    /// // Finalize and execute the copy
+    /// builder.finish().await?;
+    /// ```
+    pub async fn copy_stream_builder(&self) -> Result<CopyStreamBuilder> {
+        CopyStreamBuilder::new(self.client.clone()).await
     }
 
     /// Execute a Copy command using this channel's write capability as the source.
@@ -570,6 +582,249 @@ impl ChannelHandle {
             .await?;
 
         Ok(())
+    }
+
+    /// Cancel a Copy command in progress.
+    ///
+    /// This stops the automatic repeat request (ARQ) for a previously started
+    /// copy command.
+    ///
+    /// # Arguments
+    /// * `write_cap_hash` - 32-byte hash of the WriteCap used in execute_copy.
+    ///
+    /// # Errors
+    /// Returns an error if the operation fails.
+    pub async fn cancel_copy(&self, write_cap_hash: &[u8; 32]) -> Result<()> {
+        self.client
+            .cancel_resending_copy_command(write_cap_hash)
+            .await?;
+
+        Ok(())
+    }
+}
+
+/// Builder for creating copy streams that can handle arbitrarily large payloads.
+///
+/// This builder uses the daemon's internal buffer (correlated by stream ID) to
+/// efficiently pack data into the temporary channel. You can call `add_payload`
+/// multiple times with chunks of data, and the daemon handles the packing.
+///
+/// # Memory Efficiency
+/// Unlike passing large buffers, this approach:
+/// - Uses stream ID correlation to maintain state in the daemon
+/// - Allows streaming data from disk/network without loading everything into memory
+/// - Packs multiple payloads efficiently into copy stream boxes
+///
+/// # Example
+/// ```ignore
+/// let mut builder = channel.copy_stream_builder().await?;
+///
+/// // Add multiple payloads to different destinations
+/// builder.add_payload(payload1, dest1_write_cap, dest1_index, false).await?;
+/// builder.add_payload(payload2, dest2_write_cap, dest2_index, false).await?;
+///
+/// // Finalize and send the copy command
+/// let boxes_written = builder.finish().await?;
+/// ```
+pub struct CopyStreamBuilder {
+    client: Arc<ThinClient>,
+    stream_id: [u8; 16],
+    temp_write_cap: Vec<u8>,
+    temp_index: Vec<u8>,
+    total_boxes: usize,
+}
+
+impl CopyStreamBuilder {
+    /// Create a new CopyStreamBuilder.
+    async fn new(client: Arc<ThinClient>) -> Result<Self> {
+        let mut seed = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut seed);
+        let (temp_write_cap, _temp_read_cap, temp_first_index) =
+            client.new_keypair(&seed).await?;
+
+        Ok(Self {
+            client,
+            stream_id: ThinClient::new_stream_id(),
+            temp_write_cap,
+            temp_index: temp_first_index,
+            total_boxes: 0,
+        })
+    }
+
+    /// Add a payload to the copy stream.
+    ///
+    /// This can be called multiple times to stream data incrementally.
+    /// Each call creates courier envelopes and writes them to the temporary
+    /// channel immediately.
+    ///
+    /// # ⚠️ Data Loss Warning
+    ///
+    /// When `is_last=false`, the daemon buffers the last partial box's payload
+    /// internally so that subsequent writes can be packed efficiently. **If the
+    /// stream is not completed his buffered data will be lost**.
+    ///
+    /// Always ensure you call `finish()` or eventually pass `is_last=true` to
+    /// flush the buffer and complete the stream safely.
+    ///
+    /// # Arguments
+    /// * `payload` - The payload chunk to add (max 10MB per call).
+    /// * `dest_write_cap` - Write capability for the destination.
+    /// * `dest_start_index` - Starting index in the destination.
+    /// * `is_last` - True if this is the final payload for this destination.
+    ///
+    /// # Returns
+    /// The number of boxes written for this payload.
+    pub async fn add_payload(
+        &mut self,
+        payload: &[u8],
+        dest_write_cap: &[u8],
+        dest_start_index: &[u8],
+        is_last: bool,
+    ) -> Result<usize> {
+        let result = self.client.create_courier_envelopes_from_payload(
+            &self.stream_id,
+            payload,
+            dest_write_cap,
+            dest_start_index,
+            is_last,
+        ).await?;
+
+        let chunk_count = result.envelopes.len();
+
+        for chunk in result.envelopes {
+            let (ciphertext, env_desc, env_hash) = self
+                .client
+                .encrypt_write(&chunk, &self.temp_write_cap, &self.temp_index)
+                .await?;
+
+            self.client
+                .start_resending_encrypted_message(
+                    None,
+                    Some(&self.temp_write_cap),
+                    None,
+                    Some(0),
+                    &env_desc,
+                    &ciphertext,
+                    &env_hash,
+                )
+                .await?;
+
+            self.temp_index = self.client.next_message_box_index(&self.temp_index).await?;
+        }
+
+        self.total_boxes += chunk_count;
+        Ok(chunk_count)
+    }
+
+    /// Add multiple payloads to different destinations efficiently.
+    ///
+    /// This packs all payloads together, which is more space-efficient than
+    /// calling `add_payload` multiple times because envelopes from different
+    /// destinations are packed together without wasting space.
+    ///
+    /// # ⚠️ Data Loss Warning
+    ///
+    /// When `is_last=false`, the daemon buffers the last partial box's payload
+    /// internally so that subsequent writes can be packed efficiently. **If the
+    /// stream is not completed this buffered data will be lost**.
+    ///
+    /// Always ensure you call `finish()` or eventually pass `is_last=true` to
+    /// flush the buffer and complete the stream safely.
+    ///
+    /// # Arguments
+    /// * `destinations` - List of (payload, dest_write_cap, dest_start_index) tuples.
+    /// * `is_last` - True if this is the final set of payloads.
+    ///
+    /// # Returns
+    /// The number of boxes written.
+    pub async fn add_multi_payload(
+        &mut self,
+        destinations: Vec<(&[u8], &[u8], &[u8])>,
+        is_last: bool,
+    ) -> Result<usize> {
+        if destinations.is_empty() {
+            return Ok(0);
+        }
+
+        let result = self.client.create_courier_envelopes_from_multi_payload(
+            &self.stream_id,
+            destinations,
+            is_last,
+        ).await?;
+
+        let chunk_count = result.envelopes.len();
+
+        for chunk in result.envelopes {
+            let (ciphertext, env_desc, env_hash) = self
+                .client
+                .encrypt_write(&chunk, &self.temp_write_cap, &self.temp_index)
+                .await?;
+
+            self.client
+                .start_resending_encrypted_message(
+                    None,
+                    Some(&self.temp_write_cap),
+                    None,
+                    Some(0),
+                    &env_desc,
+                    &ciphertext,
+                    &env_hash,
+                )
+                .await?;
+
+            self.temp_index = self.client.next_message_box_index(&self.temp_index).await?;
+        }
+
+        self.total_boxes += chunk_count;
+        Ok(chunk_count)
+    }
+
+    /// Finalize the copy stream and execute the Copy command.
+    ///
+    /// This sends the Copy command to the courier, which will read the
+    /// temporary channel and execute all the write operations atomically.
+    ///
+    /// # Returns
+    /// The total number of boxes written to the temporary channel.
+    pub async fn finish(self) -> Result<usize> {
+        self.client
+            .start_resending_copy_command(&self.temp_write_cap, None, None)
+            .await?;
+
+        Ok(self.total_boxes)
+    }
+
+    /// Finalize with a specific courier.
+    ///
+    /// # Arguments
+    /// * `courier_identity_hash` - Identity hash of the courier to use.
+    /// * `courier_queue_id` - Queue ID for the courier.
+    pub async fn finish_with_courier(
+        self,
+        courier_identity_hash: &[u8],
+        courier_queue_id: &[u8],
+    ) -> Result<usize> {
+        self.client
+            .start_resending_copy_command(
+                &self.temp_write_cap,
+                Some(courier_identity_hash),
+                Some(courier_queue_id),
+            )
+            .await?;
+
+        Ok(self.total_boxes)
+    }
+
+    /// Get the temporary channel's write capability.
+    ///
+    /// This can be used to cancel the copy operation if needed.
+    pub fn temp_write_cap(&self) -> &[u8] {
+        &self.temp_write_cap
+    }
+
+    /// Get the stream ID for this copy stream.
+    pub fn stream_id(&self) -> &[u8; 16] {
+        &self.stream_id
     }
 }
 
