@@ -13,10 +13,21 @@
 //! module wraps that API with automatic state persistence, making it
 //! much easier to build applications.
 //!
+//! # Features
+//!
+//! - **Automatic index management**: Write and read indices are automatically
+//!   persisted and incremented after each operation.
+//! - **Channel persistence**: Channels (with their capabilities) are stored in
+//!   SQLite and can be recovered after application restart.
+//! - **Tombstone support**: Delete messages by overwriting them with zeros.
+//! - **Copy command support**: Send large payloads that span multiple boxes
+//!   using the Copy command with automatic chunking.
+//! - **Message history**: Received messages are stored for later retrieval.
+//!
 //! # Example
 //!
 //! ```rust,ignore
-//! use katzenpost_thin_client::pigeonhole_db::{PigeonholeClient, Database};
+//! use katzenpost_thin_client::persistent::{PigeonholeClient, Database};
 //!
 //! // Open database and create client
 //! let db = Database::open("pigeonhole.db")?;
@@ -36,7 +47,21 @@
 //! let read_cap = ReadCapability::from_bytes(&read_cap_bytes)?;
 //! let mut their_channel = pigeonhole.import_channel("from-alice", &read_cap)?;
 //! let message = their_channel.receive().await?;
+//!
+//! // Tombstone (delete) the last written message
+//! channel.tombstone_current(&geometry).await?;
+//!
+//! // Send a large payload using the Copy command
+//! let large_data = vec![0u8; 100_000];
+//! channel.send_large_payload(&large_data, dest_write_cap, dest_start_index).await?;
 //! ```
+//!
+//! # Plaintext Size Constraints
+//!
+//! Single messages sent via [`ChannelHandle::send`] must not exceed
+//! `PigeonholeGeometry.max_plaintext_payload_length` bytes. For larger payloads,
+//! use [`ChannelHandle::send_large_payload`] which automatically chunks the data
+//! and uses the Copy command.
 //!
 //! # Database Schema
 //!

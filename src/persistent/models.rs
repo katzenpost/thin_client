@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (C) 2026 David Stainton
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Database models for the pigeonhole_db module.
+//! Database models for the persistent pigeonhole module.
 
 use serde::{Deserialize, Serialize};
 

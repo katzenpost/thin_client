@@ -8,6 +8,8 @@ use std::sync::Arc;
 use rand::RngCore;
 
 use crate::core::ThinClient;
+use crate::pigeonhole::TombstoneRangeResult;
+use crate::PigeonholeGeometry;
 use super::db::Database;
 use super::error::{PigeonholeDbError, Result};
 use super::models::{Channel as ChannelModel, ReadCapability, ReceivedMessage};
@@ -162,6 +164,51 @@ impl ChannelHandle {
         }
     }
 
+    /// Get the write capability for this channel.
+    ///
+    /// Returns the write capability if this is an owned channel, or `None` if
+    /// this is an imported read-only channel.
+    ///
+    /// The write capability is needed for operations like:
+    /// - The Copy command, which copies data from a temporary channel to a destination
+    /// - Resuming write operations after a restart
+    /// - Advanced ARQ scenarios
+    ///
+    /// # Security Note
+    /// The write capability grants full write access to the channel. Only share
+    /// it with trusted parties or use it in secure contexts like the Copy command.
+    pub fn write_cap(&self) -> Option<&[u8]> {
+        self.channel.write_cap.as_deref()
+    }
+
+    /// Get the read capability bytes for this channel.
+    ///
+    /// This returns the raw read capability bytes, which can be used for
+    /// low-level operations or when you need the capability without the
+    /// additional metadata included in [`share_read_capability`].
+    pub fn read_cap(&self) -> &[u8] {
+        &self.channel.read_cap
+    }
+
+    /// Get the current write index for this channel.
+    ///
+    /// This is the next message box index that will be used when sending.
+    /// Returns `None` if this is a read-only channel.
+    pub fn write_index(&self) -> Option<&[u8]> {
+        if self.channel.is_owned {
+            Some(&self.channel.write_index)
+        } else {
+            None
+        }
+    }
+
+    /// Get the current read index for this channel.
+    ///
+    /// This is the next message box index that will be read from.
+    pub fn read_index(&self) -> &[u8] {
+        &self.channel.read_index
+    }
+
     /// Send a message on this channel.
     ///
     /// This method:
@@ -309,6 +356,220 @@ impl ChannelHandle {
     /// Mark a message as read.
     pub fn mark_message_read(&self, message_id: i64) -> Result<()> {
         self.db.mark_message_read(message_id)
+    }
+
+    // ========================================================================
+    // Tombstone Operations
+    // ========================================================================
+
+    /// Tombstone (overwrite with zeros) the current write position.
+    ///
+    /// This writes an all-zeros payload to the current write index, effectively
+    /// deleting the message at that position. The write index is then advanced.
+    ///
+    /// # Arguments
+    /// * `geometry` - Pigeonhole geometry defining the payload size.
+    ///
+    /// # Errors
+    /// Returns an error if this is a read-only channel or the operation fails.
+    pub async fn tombstone_current(&mut self, geometry: &PigeonholeGeometry) -> Result<()> {
+        let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
+            PigeonholeDbError::Other("Cannot tombstone on a read-only channel".to_string())
+        })?;
+
+        // Create and send the tombstone
+        let (ciphertext, env_desc, env_hash) = self
+            .client
+            .tombstone_box(geometry, write_cap, &self.channel.write_index)
+            .await?;
+
+        let mut hash_arr = [0u8; 32];
+        hash_arr.copy_from_slice(&env_hash);
+
+        self.client
+            .start_resending_encrypted_message(
+                None,
+                Some(write_cap),
+                None,
+                None, // No reply expected for tombstone
+                &env_desc,
+                &ciphertext,
+                &hash_arr,
+            )
+            .await?;
+
+        // Update write index
+        let next_index = self.client.next_message_box_index(&self.channel.write_index).await?;
+        self.db.update_write_index(self.channel.id, &next_index)?;
+        self.channel.write_index = next_index;
+
+        Ok(())
+    }
+
+    /// Tombstone a range of boxes starting from the current write position.
+    ///
+    /// This creates tombstones for up to `count` boxes and sends them all.
+    /// The write index is advanced past all tombstoned boxes.
+    ///
+    /// # Arguments
+    /// * `geometry` - Pigeonhole geometry defining the payload size.
+    /// * `count` - Maximum number of boxes to tombstone.
+    ///
+    /// # Returns
+    /// The number of boxes successfully tombstoned.
+    ///
+    /// # Errors
+    /// Returns an error if this is a read-only channel.
+    pub async fn tombstone_range(&mut self, geometry: &PigeonholeGeometry, count: u32) -> Result<u32> {
+        let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
+            PigeonholeDbError::Other("Cannot tombstone on a read-only channel".to_string())
+        })?;
+
+        let result: TombstoneRangeResult = self
+            .client
+            .tombstone_range(geometry, write_cap, &self.channel.write_index, count)
+            .await;
+
+        let mut sent_count = 0u32;
+
+        // Send all the tombstone envelopes
+        for envelope in &result.envelopes {
+            let mut hash_arr = [0u8; 32];
+            hash_arr.copy_from_slice(&envelope.envelope_hash);
+
+            match self.client.start_resending_encrypted_message(
+                None,
+                Some(write_cap),
+                None,
+                None,
+                &envelope.envelope_descriptor,
+                &envelope.message_ciphertext,
+                &hash_arr,
+            ).await {
+                Ok(_) => sent_count += 1,
+                Err(e) => {
+                    // Update write index to where we got to
+                    if sent_count > 0 {
+                        self.db.update_write_index(self.channel.id, &envelope.box_index)?;
+                        self.channel.write_index = envelope.box_index.clone();
+                    }
+                    return Err(e.into());
+                }
+            }
+        }
+
+        // Update write index to the final position
+        if sent_count > 0 {
+            self.db.update_write_index(self.channel.id, &result.next)?;
+            self.channel.write_index = result.next;
+        }
+
+        Ok(sent_count)
+    }
+
+    // ========================================================================
+    // Copy Operations
+    // ========================================================================
+
+    /// Send a large payload using the Copy command.
+    ///
+    /// This method handles payloads larger than a single box can hold by:
+    /// 1. Creating a temporary channel for the copy stream
+    /// 2. Chunking the payload and writing each chunk to the temp channel
+    /// 3. Sending a Copy command to have the courier copy from temp to destination
+    ///
+    /// The destination is specified by write capability and starting index.
+    ///
+    /// # Arguments
+    /// * `payload` - The payload to send (can be larger than max_plaintext_payload_length).
+    /// * `dest_write_cap` - Write capability for the destination channel.
+    /// * `dest_start_index` - Starting index in the destination channel.
+    ///
+    /// # Returns
+    /// The number of boxes written to the destination.
+    pub async fn send_large_payload(
+        &self,
+        payload: &[u8],
+        dest_write_cap: &[u8],
+        dest_start_index: &[u8],
+    ) -> Result<usize> {
+        // Create a temporary channel for the copy stream
+        let mut seed = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut seed);
+        let (temp_write_cap, _temp_read_cap, temp_first_index) =
+            self.client.new_keypair(&seed).await?;
+
+        // Create stream ID
+        let stream_id = ThinClient::new_stream_id();
+
+        // Create courier envelopes from the payload
+        let chunks = self.client.create_courier_envelopes_from_payload(
+            &stream_id,
+            payload,
+            dest_write_cap,
+            dest_start_index,
+            true, // is_last
+        ).await?;
+
+        let chunk_count = chunks.len();
+
+        // Write each chunk to the temporary channel
+        let mut temp_index = temp_first_index;
+        for chunk in chunks {
+            let (ciphertext, env_desc, env_hash) = self
+                .client
+                .encrypt_write(&chunk, &temp_write_cap, &temp_index)
+                .await?;
+
+            self.client
+                .start_resending_encrypted_message(
+                    None,
+                    Some(&temp_write_cap),
+                    None,
+                    Some(0),
+                    &env_desc,
+                    &ciphertext,
+                    &env_hash,
+                )
+                .await?;
+
+            temp_index = self.client.next_message_box_index(&temp_index).await?;
+        }
+
+        // Send the Copy command
+        self.client
+            .start_resending_copy_command(&temp_write_cap, None, None)
+            .await?;
+
+        Ok(chunk_count)
+    }
+
+    /// Execute a Copy command using this channel's write capability as the source.
+    ///
+    /// This is useful when this channel has been used as a temporary copy stream
+    /// and you want to trigger the courier to copy from it to the destination(s)
+    /// encoded in the stream.
+    ///
+    /// # Arguments
+    /// * `courier_identity_hash` - Optional specific courier to use.
+    /// * `courier_queue_id` - Optional queue ID for the specific courier.
+    ///
+    /// # Errors
+    /// Returns an error if this is a read-only channel or the operation fails.
+    pub async fn execute_copy(
+        &self,
+        courier_identity_hash: Option<&[u8]>,
+        courier_queue_id: Option<&[u8]>,
+    ) -> Result<()> {
+        let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
+            PigeonholeDbError::Other("Cannot execute copy on a read-only channel".to_string())
+        })?;
+
+        self.client
+            .start_resending_copy_command(write_cap, courier_identity_hash, courier_queue_id)
+            .await?;
+
+        Ok(())
     }
 }
 

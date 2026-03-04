@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (C) 2026 David Stainton
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Error types for the pigeonhole_db module.
+//! Error types for the persistent pigeonhole module.
 
 use std::fmt;
 
-/// Errors that can occur in the pigeonhole_db module.
+/// Errors that can occur in the persistent pigeonhole module.
 #[derive(Debug)]
 pub enum PigeonholeDbError {
     /// Database error from rusqlite.
@@ -72,6 +72,6 @@ impl From<std::io::Error> for PigeonholeDbError {
     }
 }
 
-/// Result type for pigeonhole_db operations.
+/// Result type for persistent pigeonhole operations.
 pub type Result<T> = std::result::Result<T, PigeonholeDbError>;
 
