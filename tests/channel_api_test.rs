@@ -13,7 +13,7 @@
 //! 7. start_resending_copy_command - Send copy command via ARQ
 //! 8. cancel_resending_copy_command - Cancel copy command ARQ
 //! 9. create_courier_envelopes_from_payload - Chunk payload into courier envelopes
-//! 10. create_courier_envelopes_from_payloads - Chunk multiple payloads efficiently
+//! 10. create_courier_envelopes_from_multi_payload - Chunk multiple payloads efficiently
 //!
 //! Helper functions and tests:
 //! - tombstone_box - Overwrite a box with zeros
@@ -194,7 +194,7 @@ async fn test_create_courier_envelopes_from_payload() {
     // Step 4: Create copy stream chunks from the payload
     println!("\n--- Step 4: Creating copy stream chunks ---");
     let stream_id = ThinClient::new_stream_id();
-    let copy_stream_chunks = alice_client.create_courier_envelopes_from_payload(
+    let copy_stream_result = alice_client.create_courier_envelopes_from_payload(
         &stream_id,
         &large_payload,
         &dest_write_cap,
@@ -202,13 +202,13 @@ async fn test_create_courier_envelopes_from_payload() {
         true // is_last
     ).await.expect("Failed to create courier envelopes from payload");
 
-    assert!(!copy_stream_chunks.is_empty(), "Should have at least one chunk");
-    println!("✓ Alice created {} copy stream chunks", copy_stream_chunks.len());
+    assert!(!copy_stream_result.envelopes.is_empty(), "Should have at least one chunk");
+    println!("✓ Alice created {} copy stream chunks", copy_stream_result.envelopes.len());
 
     // Step 5: Write all copy stream chunks to the temporary channel
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
     let mut temp_index = temp_first_index.clone();
-    for (i, chunk) in copy_stream_chunks.iter().enumerate() {
+    for (i, chunk) in copy_stream_result.envelopes.iter().enumerate() {
         let (ciphertext, env_desc, env_hash) = alice_client
             .encrypt_write(chunk, &temp_write_cap, &temp_index).await
             .expect("Failed to encrypt chunk");
@@ -269,8 +269,8 @@ async fn test_create_courier_envelopes_from_payload() {
 }
 
 #[tokio::test]
-async fn test_create_courier_envelopes_from_payloads_multi_channel() {
-    println!("\n=== Test: create_courier_envelopes_from_payloads (efficient multi-channel) ===");
+async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
+    println!("\n=== Test: create_courier_envelopes_from_multi_payload (efficient multi-channel) ===");
 
     let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
     let bob_client = setup_thin_client().await.expect("Failed to setup Bob client");
@@ -309,19 +309,19 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
         (payload2.as_slice(), chan2_write_cap.as_slice(), chan2_first_index.as_slice()),
     ];
 
-    let all_chunks = alice_client.create_courier_envelopes_from_payloads(
+    let result = alice_client.create_courier_envelopes_from_multi_payload(
         &stream_id,
         destinations,
         true // is_last
-    ).await.expect("Failed to create courier envelopes from payloads");
+    ).await.expect("Failed to create courier envelopes from multi payload");
 
-    assert!(!all_chunks.is_empty(), "Should have at least one chunk");
-    println!("✓ Created {} copy stream chunks for both destinations", all_chunks.len());
+    assert!(!result.envelopes.is_empty(), "Should have at least one chunk");
+    println!("✓ Created {} copy stream chunks for both destinations", result.envelopes.len());
 
     // Step 5: Write all chunks to temporary channel
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
     let mut temp_index = temp_first_index.clone();
-    for (i, chunk) in all_chunks.iter().enumerate() {
+    for (i, chunk) in result.envelopes.iter().enumerate() {
         let (ciphertext, env_desc, env_hash) = alice_client
             .encrypt_write(chunk, &temp_write_cap, &temp_index).await
             .expect("Failed to encrypt chunk");
@@ -394,7 +394,7 @@ async fn test_create_courier_envelopes_from_payloads_multi_channel() {
     println!("✓ Bob received from Channel 2: {:?}", String::from_utf8_lossy(&bob2_plaintext));
     assert_eq!(bob2_plaintext, payload2, "Channel 2 payload mismatch");
 
-    println!("✅ create_courier_envelopes_from_payloads multi-channel test passed!");
+    println!("✅ create_courier_envelopes_from_multi_payload multi-channel test passed!");
 }
 
 #[tokio::test]
