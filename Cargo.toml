@@ -26,3 +26,4 @@ tokio = { version = "1", features = ["full"] }
 generic-array = "0.14.0"
 typenum = "1.16"
 toml = "0.8"
+rusqlite = { version = "0.38.0", features = ["bundled"] }

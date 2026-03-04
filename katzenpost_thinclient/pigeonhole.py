@@ -10,6 +10,7 @@ These methods use WriteCap/ReadCap keypairs and provide direct
 control over the Pigeonhole protocol.
 """
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -17,6 +18,7 @@ from .core import (
     THIN_CLIENT_SUCCESS,
     thin_client_error_to_string,
     PigeonholeGeometry,
+    STREAM_ID_LENGTH,
 )
 
 
@@ -46,6 +48,21 @@ class EncryptWriteResult:
 
 
 # New Pigeonhole API methods - these will be attached to ThinClient class
+
+
+def stream_id(self) -> bytes:
+    """
+    Generate a new 16-byte stream ID for copy stream operations.
+
+    Stream IDs are used to identify encoder instances for multi-call
+    envelope encoding streams. All calls for the same stream must use
+    the same stream ID.
+
+    Returns:
+        bytes: Random 16-byte stream identifier.
+    """
+    return os.urandom(STREAM_ID_LENGTH)
+
 
 async def new_keypair(self, seed: bytes) -> KeypairResult:
     """
@@ -161,17 +178,27 @@ async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_in
     courier service to store a message in a pigeonhole box. The returned
     ciphertext should be sent via start_resending_encrypted_message.
 
+    Plaintext Size Constraint:
+        The plaintext must not exceed PigeonholeGeometry.max_plaintext_payload_length
+        bytes. The daemon internally adds a 4-byte big-endian length prefix before
+        padding and encryption, so the actual wire format is:
+        [4-byte length][plaintext][zero padding].
+
+        If the plaintext exceeds the maximum size, the daemon will return
+        ThinClientErrorInvalidRequest.
+
     Args:
-        plaintext: The plaintext message to encrypt.
+        plaintext: The plaintext message to encrypt. Must be at most
+            PigeonholeGeometry.max_plaintext_payload_length bytes.
         write_cap: Write capability that grants access to the channel.
-        message_box_index: Starting write position for the channel.
+        message_box_index: The message box index for this write operation.
 
     Returns:
         EncryptWriteResult: Contains message_ciphertext, envelope_descriptor,
             and envelope_hash.
 
     Raises:
-        Exception: If the encryption fails.
+        Exception: If the encryption fails (including if plaintext is too large).
 
     Example:
         >>> plaintext = b"Hello, Bob!"
@@ -246,7 +273,10 @@ async def start_resending_encrypted_message(
         envelope_hash: Hash of the courier envelope.
 
     Returns:
-        bytes: Fully decrypted plaintext from the reply (for reads) or empty (for writes).
+        bytes: For read operations, the decrypted plaintext message (at most
+            PigeonholeGeometry.max_plaintext_payload_length bytes). The length
+            prefix and padding are automatically removed by the daemon.
+            For write operations, returns an empty bytes object on success.
 
     Raises:
         Exception: If the operation fails. Check error_code for specific errors.

@@ -383,14 +383,24 @@ impl ThinClient {
     /// This method prepares an encrypted write request that can be sent to the
     /// courier service to store a message in a pigeonhole box.
     ///
+    /// # Plaintext Size Constraint
+    ///
+    /// The `plaintext` must not exceed `PigeonholeGeometry.max_plaintext_payload_length` bytes.
+    /// The daemon internally adds a 4-byte big-endian length prefix before padding and
+    /// encryption, so the actual wire format is `[4-byte length][plaintext][zero padding]`.
+    ///
+    /// If the plaintext exceeds the maximum size, the daemon will return
+    /// `ThinClientErrorInvalidRequest`.
+    ///
     /// # Arguments
-    /// * `plaintext` - The plaintext message to encrypt
-    /// * `write_cap` - Write capability that grants access to the channel
-    /// * `message_box_index` - Starting write position for the channel
+    /// * `plaintext` - The plaintext message to encrypt. Must be at most
+    ///   `PigeonholeGeometry.max_plaintext_payload_length` bytes.
+    /// * `write_cap` - Write capability that grants access to the channel.
+    /// * `message_box_index` - The message box index for this write operation.
     ///
     /// # Returns
     /// * `Ok((message_ciphertext, envelope_descriptor, envelope_hash))` on success
-    /// * `Err(ThinClientError)` on failure
+    /// * `Err(ThinClientError)` on failure (including if plaintext is too large)
     pub async fn encrypt_write(
         &self,
         plaintext: &[u8],
@@ -447,7 +457,9 @@ impl ThinClient {
     /// * `envelope_hash` - Envelope hash from encrypt_read/encrypt_write
     ///
     /// # Returns
-    /// * `Ok(plaintext)` - The plaintext reply received
+    /// * `Ok(plaintext)` - For read operations, the decrypted plaintext message
+    ///   (at most `PigeonholeGeometry.max_plaintext_payload_length` bytes).
+    ///   For write operations, returns an empty vector on success.
     /// * `Err(ThinClientError)` on failure
     pub async fn start_resending_encrypted_message(
         &self,

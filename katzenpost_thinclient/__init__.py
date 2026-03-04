@@ -112,6 +112,7 @@ from .legacy import (
 
 # Import new pigeonhole API methods and result types
 from .pigeonhole import (
+    stream_id,
     new_keypair,
     encrypt_read,
     encrypt_write,
@@ -141,6 +142,7 @@ ThinClient._send_channel_query_and_wait_for_message_id = _send_channel_query_and
 ThinClient.close_channel = close_channel
 
 # Attach new pigeonhole API methods to ThinClient
+ThinClient.stream_id = stream_id
 ThinClient.new_keypair = new_keypair
 ThinClient.encrypt_read = encrypt_read
 ThinClient.encrypt_write = encrypt_write

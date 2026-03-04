@@ -991,24 +991,24 @@ async def test_tombstoning():
 
         # Create keypair
         seed = os.urandom(32)
-        write_cap, read_cap, first_index = await alice_client.new_keypair(seed)
+        keypair = await alice_client.new_keypair(seed)
         print("✓ Created keypair")
 
         # Step 1: Alice writes a message
         print("\n--- Step 1: Alice writes a message ---")
         message = b"Secret message that will be tombstoned"
-        ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
-            message, write_cap, first_index
+        write_result = await alice_client.encrypt_write(
+            message, keypair.write_cap, keypair.first_message_index
         )
 
         await alice_client.start_resending_encrypted_message(
             read_cap=None,
-            write_cap=write_cap,
+            write_cap=keypair.write_cap,
             next_message_index=None,
             reply_index=0,
-            envelope_descriptor=env_desc,
-            message_ciphertext=ciphertext,
-            envelope_hash=env_hash
+            envelope_descriptor=write_result.envelope_descriptor,
+            message_ciphertext=write_result.message_ciphertext,
+            envelope_hash=write_result.envelope_hash
         )
         print("✓ Alice wrote message")
 
@@ -1018,34 +1018,34 @@ async def test_tombstoning():
 
         # Step 2: Bob reads and verifies
         print("\n--- Step 2: Bob reads and verifies ---")
-        bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash = await bob_client.encrypt_read(
-            read_cap, first_index
+        read_result = await bob_client.encrypt_read(
+            keypair.read_cap, keypair.first_message_index
         )
         bob_plaintext = await bob_client.start_resending_encrypted_message(
-            read_cap=read_cap,
+            read_cap=keypair.read_cap,
             write_cap=None,
-            next_message_index=bob_next_index,
+            next_message_index=read_result.next_message_index,
             reply_index=0,
-            envelope_descriptor=bob_env_desc,
-            message_ciphertext=bob_ciphertext,
-            envelope_hash=bob_env_hash
+            envelope_descriptor=read_result.envelope_descriptor,
+            message_ciphertext=read_result.message_ciphertext,
+            envelope_hash=read_result.envelope_hash
         )
         assert bob_plaintext == message, f"Message mismatch: expected {message}, got {bob_plaintext}"
         print(f"✓ Bob read message: {bob_plaintext.decode()}")
 
         # Step 3: Alice tombstones the box
         print("\n--- Step 3: Alice tombstones the box ---")
-        tomb_ciphertext, tomb_env_desc, tomb_env_hash = await alice_client.tombstone_box(
-            geometry, write_cap, first_index
+        tomb_result = await alice_client.tombstone_box(
+            geometry, keypair.write_cap, keypair.first_message_index
         )
         await alice_client.start_resending_encrypted_message(
             read_cap=None,
-            write_cap=write_cap,
+            write_cap=keypair.write_cap,
             next_message_index=None,
             reply_index=None,
-            envelope_descriptor=tomb_env_desc,
-            message_ciphertext=tomb_ciphertext,
-            envelope_hash=tomb_env_hash
+            envelope_descriptor=tomb_result.envelope_descriptor,
+            message_ciphertext=tomb_result.message_ciphertext,
+            envelope_hash=tomb_result.envelope_hash
         )
         print("✓ Alice tombstoned the box")
 
@@ -1056,17 +1056,17 @@ async def test_tombstoning():
 
         # Step 4: Bob reads again and verifies tombstone
         print("\n--- Step 4: Bob reads again and verifies tombstone ---")
-        bob_ciphertext2, bob_next_index2, bob_env_desc2, bob_env_hash2 = await bob_client.encrypt_read(
-            read_cap, first_index
+        read_result2 = await bob_client.encrypt_read(
+            keypair.read_cap, keypair.first_message_index
         )
         bob_plaintext2 = await bob_client.start_resending_encrypted_message(
-            read_cap=read_cap,
+            read_cap=keypair.read_cap,
             write_cap=None,
-            next_message_index=bob_next_index2,
+            next_message_index=read_result2.next_message_index,
             reply_index=0,
-            envelope_descriptor=bob_env_desc2,
-            message_ciphertext=bob_ciphertext2,
-            envelope_hash=bob_env_hash2
+            envelope_descriptor=read_result2.envelope_descriptor,
+            message_ciphertext=read_result2.message_ciphertext,
+            envelope_hash=read_result2.envelope_hash
         )
 
         assert is_tombstone_plaintext(geometry, bob_plaintext2), "Expected tombstone plaintext (all zeros)"
@@ -1106,27 +1106,27 @@ async def test_tombstone_range():
 
         # Create keypair
         seed = os.urandom(32)
-        write_cap, read_cap, first_index = await alice_client.new_keypair(seed)
+        keypair = await alice_client.new_keypair(seed)
         print("✓ Created keypair")
 
         # Write 3 messages to sequential boxes
         num_messages = 3
-        current_index = first_index
+        current_index = keypair.first_message_index
 
         print(f"\n--- Writing {num_messages} messages ---")
         for i in range(num_messages):
             message = f"Message {i+1} to be tombstoned".encode()
-            ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
-                message, write_cap, current_index
+            write_result = await alice_client.encrypt_write(
+                message, keypair.write_cap, current_index
             )
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
-                write_cap=write_cap,
+                write_cap=keypair.write_cap,
                 next_message_index=None,
                 reply_index=0,
-                envelope_descriptor=env_desc,
-                message_ciphertext=ciphertext,
-                envelope_hash=env_hash
+                envelope_descriptor=write_result.envelope_descriptor,
+                message_ciphertext=write_result.message_ciphertext,
+                envelope_hash=write_result.envelope_hash
             )
             print(f"✓ Wrote message {i+1}")
 
@@ -1139,7 +1139,7 @@ async def test_tombstone_range():
 
         # Tombstone the range - creates envelopes without sending
         print(f"\n--- Creating tombstones for {num_messages} boxes ---")
-        result = await alice_client.tombstone_range(geometry, write_cap, first_index, num_messages)
+        result = await alice_client.tombstone_range(geometry, keypair.write_cap, keypair.first_message_index, num_messages)
 
         assert 'envelopes' in result, "Result should contain 'envelopes' list"
         assert len(result['envelopes']) == num_messages, f"Expected {num_messages} envelopes, got {len(result['envelopes'])}"
@@ -1151,7 +1151,7 @@ async def test_tombstone_range():
         for i, envelope in enumerate(result['envelopes']):
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
-                write_cap=write_cap,
+                write_cap=keypair.write_cap,
                 next_message_index=None,
                 reply_index=None,
                 envelope_descriptor=envelope['envelope_descriptor'],

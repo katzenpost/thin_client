@@ -31,6 +31,7 @@
 pub mod error;
 pub mod core;
 pub mod pigeonhole;
+pub mod pigeonhole_db;
 pub mod helpers;
 
 // ========================================================================
