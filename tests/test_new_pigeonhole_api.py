@@ -71,16 +71,16 @@ async def test_new_keypair_basic():
         print(f"Generated seed: {len(seed)} bytes")
 
         # Create keypair
-        write_cap, read_cap, first_message_index = await client.new_keypair(seed)
-        
-        print(f"✓ WriteCap size: {len(write_cap)} bytes")
-        print(f"✓ ReadCap size: {len(read_cap)} bytes")
-        print(f"✓ FirstMessageIndex size: {len(first_message_index)} bytes")
+        keypair = await client.new_keypair(seed)
+
+        print(f"✓ WriteCap size: {len(keypair.write_cap)} bytes")
+        print(f"✓ ReadCap size: {len(keypair.read_cap)} bytes")
+        print(f"✓ FirstMessageIndex size: {len(keypair.first_message_index)} bytes")
 
         # Verify the returned values are not empty
-        assert len(write_cap) > 0, "WriteCap should not be empty"
-        assert len(read_cap) > 0, "ReadCap should not be empty"
-        assert len(first_message_index) > 0, "FirstMessageIndex should not be empty"
+        assert len(keypair.write_cap) > 0, "WriteCap should not be empty"
+        assert len(keypair.read_cap) > 0, "ReadCap should not be empty"
+        assert len(keypair.first_message_index) > 0, "FirstMessageIndex should not be empty"
 
         print("✅ new_keypair test completed successfully")
 
@@ -112,7 +112,7 @@ async def test_alice_sends_bob_complete_workflow():
         # Step 1: Alice creates WriteCap and derives ReadCap for Bob
         print("\n--- Step 1: Alice creates keypair ---")
         alice_seed = os.urandom(32)
-        alice_write_cap, bob_read_cap, alice_first_index = await alice_client.new_keypair(alice_seed)
+        alice_keypair = await alice_client.new_keypair(alice_seed)
         print(f"✓ Alice created WriteCap and derived ReadCap for Bob")
 
         # Step 2: Alice encrypts a message for Bob
@@ -120,10 +120,10 @@ async def test_alice_sends_bob_complete_workflow():
         alice_message = b"Bob, Beware they are jamming GPS."
         print(f"Alice's message: {alice_message.decode()}")
 
-        alice_ciphertext, alice_env_desc, alice_env_hash = await alice_client.encrypt_write(
-            alice_message, alice_write_cap, alice_first_index
+        alice_result = await alice_client.encrypt_write(
+            alice_message, alice_keypair.write_cap, alice_keypair.first_message_index
         )
-        print(f"✓ Alice encrypted message (ciphertext: {len(alice_ciphertext)} bytes)")
+        print(f"✓ Alice encrypted message (ciphertext: {len(alice_result.message_ciphertext)} bytes)")
 
         # Step 3: Alice sends the encrypted message via start_resending_encrypted_message
         print("\n--- Step 3: Alice sends encrypted message to courier/replicas ---")
@@ -131,12 +131,12 @@ async def test_alice_sends_bob_complete_workflow():
 
         alice_plaintext = await alice_client.start_resending_encrypted_message(
             read_cap=None,  # None for write operations
-            write_cap=alice_write_cap,
+            write_cap=alice_keypair.write_cap,
             next_message_index=None,  # Not needed for writes
             reply_index=reply_index,
-            envelope_descriptor=alice_env_desc,
-            message_ciphertext=alice_ciphertext,
-            envelope_hash=alice_env_hash
+            envelope_descriptor=alice_result.envelope_descriptor,
+            message_ciphertext=alice_result.message_ciphertext,
+            envelope_hash=alice_result.envelope_hash
         )
 
         # For write operations, plaintext should be empty (ACK only)
@@ -148,21 +148,21 @@ async def test_alice_sends_bob_complete_workflow():
 
         # Step 4: Bob encrypts a read request
         print("\n--- Step 4: Bob encrypts read request ---")
-        bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash = await bob_client.encrypt_read(
-            bob_read_cap, alice_first_index
+        bob_result = await bob_client.encrypt_read(
+            alice_keypair.read_cap, alice_keypair.first_message_index
         )
-        print(f"✓ Bob encrypted read request (ciphertext: {len(bob_ciphertext)} bytes)")
+        print(f"✓ Bob encrypted read request (ciphertext: {len(bob_result.message_ciphertext)} bytes)")
 
         # Step 5: Bob sends the read request and receives Alice's encrypted message
         print("\n--- Step 5: Bob sends read request and receives encrypted message ---")
         bob_plaintext = await bob_client.start_resending_encrypted_message(
-            read_cap=bob_read_cap,
+            read_cap=alice_keypair.read_cap,
             write_cap=None,  # None for read operations
-            next_message_index=bob_next_index,
+            next_message_index=bob_result.next_message_index,
             reply_index=reply_index,
-            envelope_descriptor=bob_env_desc,
-            message_ciphertext=bob_ciphertext,
-            envelope_hash=bob_env_hash
+            envelope_descriptor=bob_result.envelope_descriptor,
+            message_ciphertext=bob_result.message_ciphertext,
+            envelope_hash=bob_result.envelope_hash
         )
 
         # Step 6: Verify Bob received Alice's message
@@ -195,20 +195,20 @@ async def test_cancel_resending_encrypted_message():
 
         # Generate keypair and encrypt a message
         seed = os.urandom(32)
-        write_cap, read_cap, first_message_index = await client.new_keypair(seed)
+        keypair = await client.new_keypair(seed)
 
         plaintext = b"This message will be cancelled"
-        ciphertext, env_desc, env_hash = await client.encrypt_write(
-            plaintext, write_cap, first_message_index
+        result = await client.encrypt_write(
+            plaintext, keypair.write_cap, keypair.first_message_index
         )
 
         print(f"✓ Encrypted message for cancellation test")
-        print(f"EnvelopeHash: {env_hash.hex()}")
+        print(f"EnvelopeHash: {result.envelope_hash.hex()}")
 
         # Cancel the message (before sending it)
         # Note: In practice, you would start_resending first, then cancel
         # But for this test, we just verify the cancel API works
-        await client.cancel_resending_encrypted_message(env_hash)
+        await client.cancel_resending_encrypted_message(result.envelope_hash)
 
         print("✅ cancel_resending_encrypted_message completed successfully")
 
@@ -239,15 +239,15 @@ async def test_cancel_causes_start_resending_to_return_error():
 
         # Generate keypair and encrypt a message
         seed = os.urandom(32)
-        write_cap, read_cap, first_message_index = await client.new_keypair(seed)
+        keypair = await client.new_keypair(seed)
 
         plaintext = b"This message will be cancelled while sending"
-        ciphertext, env_desc, env_hash = await client.encrypt_write(
-            plaintext, write_cap, first_message_index
+        result = await client.encrypt_write(
+            plaintext, keypair.write_cap, keypair.first_message_index
         )
 
         print(f"✓ Encrypted message")
-        print(f"EnvelopeHash: {env_hash.hex()}")
+        print(f"EnvelopeHash: {result.envelope_hash.hex()}")
 
         # Track whether the start_resending returned with the expected error
         start_resending_error = None
@@ -259,12 +259,12 @@ async def test_cancel_causes_start_resending_to_return_error():
             try:
                 await client.start_resending_encrypted_message(
                     read_cap=None,
-                    write_cap=write_cap,
+                    write_cap=keypair.write_cap,
                     next_message_index=None,
                     reply_index=0,
-                    envelope_descriptor=env_desc,
-                    message_ciphertext=ciphertext,
-                    envelope_hash=env_hash
+                    envelope_descriptor=result.envelope_descriptor,
+                    message_ciphertext=result.message_ciphertext,
+                    envelope_hash=result.envelope_hash
                 )
                 # If we get here without error, that's unexpected
                 start_resending_error = "No error raised"
@@ -284,7 +284,7 @@ async def test_cancel_causes_start_resending_to_return_error():
 
         # Cancel the resending
         print("--- Calling cancel_resending_encrypted_message ---")
-        await client.cancel_resending_encrypted_message(env_hash)
+        await client.cancel_resending_encrypted_message(result.envelope_hash)
         print("✓ Cancel call completed")
 
         # Wait for the start_resending task to complete (with timeout)
@@ -328,11 +328,11 @@ async def test_cancel_causes_start_resending_copy_command_to_return_error():
 
         # Create temporary channel
         temp_seed = os.urandom(32)
-        temp_write_cap, _, temp_first_index = await client.new_keypair(temp_seed)
+        temp_keypair = await client.new_keypair(temp_seed)
         print("✓ Created temporary copy stream WriteCap")
 
         # Compute write_cap_hash for cancel
-        write_cap_hash = blake2b(temp_write_cap, digest_size=32).digest()
+        write_cap_hash = blake2b(temp_keypair.write_cap, digest_size=32).digest()
         print(f"WriteCapHash: {write_cap_hash.hex()}")
 
         # Track whether the start_resending returned with the expected error
@@ -343,7 +343,7 @@ async def test_cancel_causes_start_resending_copy_command_to_return_error():
             """Task that calls start_resending_copy_command and captures any error."""
             nonlocal start_resending_error
             try:
-                await client.start_resending_copy_command(temp_write_cap)
+                await client.start_resending_copy_command(temp_keypair.write_cap)
                 # If we get here without error, that's unexpected
                 start_resending_error = "No error raised"
             except Exception as e:
@@ -408,7 +408,7 @@ async def test_multiple_messages_sequence():
 
         # Alice creates keypair
         alice_seed = os.urandom(32)
-        alice_write_cap, bob_read_cap, first_index = await alice_client.new_keypair(alice_seed)
+        alice_keypair = await alice_client.new_keypair(alice_seed)
         print(f"✓ Alice created keypair")
 
         num_messages = 3
@@ -420,7 +420,7 @@ async def test_multiple_messages_sequence():
 
         # Alice sends multiple messages, each to a different index
         # We increment the index for each message using the BACAP HKDF logic
-        current_index = first_index
+        current_index = alice_keypair.first_message_index
         indices_used = [current_index]  # Track all indices for reading later
 
         for i, message in enumerate(messages):
@@ -428,18 +428,18 @@ async def test_multiple_messages_sequence():
             print(f"Message: {message.decode()}")
 
             # Encrypt and send to current index
-            ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
-                message, alice_write_cap, current_index
+            write_result = await alice_client.encrypt_write(
+                message, alice_keypair.write_cap, current_index
             )
 
             alice_plaintext = await alice_client.start_resending_encrypted_message(
                 read_cap=None,
-                write_cap=alice_write_cap,
+                write_cap=alice_keypair.write_cap,
                 next_message_index=None,
                 reply_index=0,
-                envelope_descriptor=env_desc,
-                message_ciphertext=ciphertext,
-                envelope_hash=env_hash
+                envelope_descriptor=write_result.envelope_descriptor,
+                message_ciphertext=write_result.message_ciphertext,
+                envelope_hash=write_result.envelope_hash
             )
 
             print(f"✓ Message {i+1} sent to index successfully")
@@ -455,22 +455,22 @@ async def test_multiple_messages_sequence():
         # Bob reads all messages from their respective indices
         print("\n--- Bob reads all messages ---")
         received_messages = []
-        bob_current_index = first_index
+        bob_current_index = alice_keypair.first_message_index
 
         for i in range(num_messages):
             print(f"\nReading message {i+1}/{num_messages}...")
-            bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash = await bob_client.encrypt_read(
-                bob_read_cap, bob_current_index
+            read_result = await bob_client.encrypt_read(
+                alice_keypair.read_cap, bob_current_index
             )
 
             bob_plaintext = await bob_client.start_resending_encrypted_message(
-                read_cap=bob_read_cap,
+                read_cap=alice_keypair.read_cap,
                 write_cap=None,
-                next_message_index=bob_next_index,
+                next_message_index=read_result.next_message_index,
                 reply_index=0,
-                envelope_descriptor=bob_env_desc,
-                message_ciphertext=bob_ciphertext,
-                envelope_hash=bob_env_hash
+                envelope_descriptor=read_result.envelope_descriptor,
+                message_ciphertext=read_result.message_ciphertext,
+                envelope_hash=read_result.envelope_hash
             )
 
             print(f"Bob received: {bob_plaintext.decode() if bob_plaintext else '(empty)'}")
@@ -517,13 +517,13 @@ async def test_create_courier_envelopes_from_payload():
         # Step 1: Alice creates destination WriteCap for the final payload
         print("\n--- Step 1: Alice creates destination WriteCap ---")
         dest_seed = os.urandom(32)
-        dest_write_cap, bob_read_cap, dest_first_index = await alice_client.new_keypair(dest_seed)
+        dest_keypair = await alice_client.new_keypair(dest_seed)
         print("✓ Alice created destination WriteCap and derived ReadCap for Bob")
 
         # Step 2: Alice creates temporary copy stream
         print("\n--- Step 2: Alice creates temporary copy stream ---")
         temp_seed = os.urandom(32)
-        temp_write_cap, _, temp_first_index = await alice_client.new_keypair(temp_seed)
+        temp_keypair = await alice_client.new_keypair(temp_seed)
         print("✓ Alice created temporary copy stream WriteCap")
 
         # Step 3: Create a large payload that will be chunked
@@ -538,9 +538,9 @@ async def test_create_courier_envelopes_from_payload():
         # Step 4: Create copy stream chunks from the large payload
         print("\n--- Step 4: Creating copy stream chunks from large payload ---")
         query_id = alice_client.new_query_id()
-        stream_id = alice_client.new_stream_id()
+        stream_id = alice_client.stream_id()
         copy_stream_chunks = await alice_client.create_courier_envelopes_from_payload(
-            query_id, stream_id, large_payload, dest_write_cap, dest_first_index, True  # is_last
+            query_id, stream_id, large_payload, dest_keypair.write_cap, dest_keypair.first_message_index, True  # is_last
         )
         assert copy_stream_chunks, "create_courier_envelopes_from_payload returned empty chunks"
         num_chunks = len(copy_stream_chunks)
@@ -548,26 +548,26 @@ async def test_create_courier_envelopes_from_payload():
 
         # Step 5: Write all copy stream chunks to the temporary copy stream
         print("\n--- Step 5: Writing copy stream chunks to temporary channel ---")
-        temp_index = temp_first_index
+        temp_index = temp_keypair.first_message_index
 
         for i, chunk in enumerate(copy_stream_chunks):
             print(f"--- Writing copy stream chunk {i+1}/{num_chunks} to temporary channel ---")
 
             # Encrypt the chunk for the copy stream
-            ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
-                chunk, temp_write_cap, temp_index
+            write_result = await alice_client.encrypt_write(
+                chunk, temp_keypair.write_cap, temp_index
             )
-            print(f"✓ Alice encrypted copy stream chunk {i+1} ({len(chunk)} bytes plaintext -> {len(ciphertext)} bytes ciphertext)")
+            print(f"✓ Alice encrypted copy stream chunk {i+1} ({len(chunk)} bytes plaintext -> {len(write_result.message_ciphertext)} bytes ciphertext)")
 
             # Send the encrypted chunk to the copy stream
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
-                write_cap=temp_write_cap,
+                write_cap=temp_keypair.write_cap,
                 next_message_index=None,
                 reply_index=0,
-                envelope_descriptor=env_desc,
-                message_ciphertext=ciphertext,
-                envelope_hash=env_hash
+                envelope_descriptor=write_result.envelope_descriptor,
+                message_ciphertext=write_result.message_ciphertext,
+                envelope_hash=write_result.envelope_hash
             )
             print(f"✓ Alice sent copy stream chunk {i+1} to temporary channel")
 
@@ -580,12 +580,12 @@ async def test_create_courier_envelopes_from_payload():
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
-        await alice_client.start_resending_copy_command(temp_write_cap)
+        await alice_client.start_resending_copy_command(temp_keypair.write_cap)
         print("✓ Alice copy command completed successfully via ARQ")
 
         # Step 7: Bob reads chunks until we have the full payload (based on length prefix)
         print("\n--- Step 7: Bob reads all chunks and reconstructs payload ---")
-        bob_index = dest_first_index
+        bob_index = dest_keypair.first_message_index
         reconstructed_payload = b""
         expected_length = 0
         chunk_num = 0
@@ -595,20 +595,20 @@ async def test_create_courier_envelopes_from_payload():
             print(f"--- Bob reading chunk {chunk_num} ---")
 
             # Bob encrypts read request
-            bob_ciphertext, bob_next_index, bob_env_desc, bob_env_hash = await bob_client.encrypt_read(
-                bob_read_cap, bob_index
+            read_result = await bob_client.encrypt_read(
+                dest_keypair.read_cap, bob_index
             )
             print(f"✓ Bob encrypted read request {chunk_num}")
 
             # Bob sends read request and receives chunk
             bob_plaintext = await bob_client.start_resending_encrypted_message(
-                read_cap=bob_read_cap,
+                read_cap=dest_keypair.read_cap,
                 write_cap=None,
-                next_message_index=bob_next_index,
+                next_message_index=read_result.next_message_index,
                 reply_index=0,
-                envelope_descriptor=bob_env_desc,
-                message_ciphertext=bob_ciphertext,
-                envelope_hash=bob_env_hash
+                envelope_descriptor=read_result.envelope_descriptor,
+                message_ciphertext=read_result.message_ciphertext,
+                envelope_hash=read_result.envelope_hash
             )
             assert bob_plaintext, f"Bob: Failed to receive chunk {chunk_num}"
             print(f"✓ Bob received and decrypted chunk {chunk_num} ({len(bob_plaintext)} bytes)")
