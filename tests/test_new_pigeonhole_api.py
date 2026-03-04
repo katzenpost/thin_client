@@ -666,18 +666,18 @@ async def test_copy_command_multi_channel():
 
         # Channel 1
         chan1_seed = os.urandom(32)
-        chan1_write_cap, chan1_read_cap, chan1_first_index = await alice_client.new_keypair(chan1_seed)
+        chan1_keypair = await alice_client.new_keypair(chan1_seed)
         print("✓ Alice created Channel 1 (WriteCap and ReadCap)")
 
         # Channel 2
         chan2_seed = os.urandom(32)
-        chan2_write_cap, chan2_read_cap, chan2_first_index = await alice_client.new_keypair(chan2_seed)
+        chan2_keypair = await alice_client.new_keypair(chan2_seed)
         print("✓ Alice created Channel 2 (WriteCap and ReadCap)")
 
         # Step 2: Alice creates temporary copy stream
         print("\n--- Step 2: Alice creates temporary copy stream ---")
         temp_seed = os.urandom(32)
-        temp_write_cap, _, temp_first_index = await alice_client.new_keypair(temp_seed)
+        temp_keypair = await alice_client.new_keypair(temp_seed)
         print("✓ Alice created temporary copy stream WriteCap")
 
         # Step 3: Create two payloads - one for each destination channel
@@ -690,18 +690,18 @@ async def test_copy_command_multi_channel():
         # Step 4: Create copy stream chunks using same streamID but different WriteCaps
         print("\n--- Step 4: Creating copy stream chunks for both channels ---")
         query_id = alice_client.new_query_id()
-        stream_id = alice_client.new_stream_id()
+        stream_id = alice_client.stream_id()
 
         # First call: payload1 -> channel 1 (is_last=False)
         chunks1 = await alice_client.create_courier_envelopes_from_payload(
-            query_id, stream_id, payload1, chan1_write_cap, chan1_first_index, False
+            query_id, stream_id, payload1, chan1_keypair.write_cap, chan1_keypair.first_message_index, False
         )
         assert chunks1, "create_courier_envelopes_from_payload returned empty chunks for channel 1"
         print(f"✓ Alice created {len(chunks1)} chunks for Channel 1")
 
         # Second call: payload2 -> channel 2 (is_last=True)
         chunks2 = await alice_client.create_courier_envelopes_from_payload(
-            query_id, stream_id, payload2, chan2_write_cap, chan2_first_index, True
+            query_id, stream_id, payload2, chan2_keypair.write_cap, chan2_keypair.first_message_index, True
         )
         assert chunks2, "create_courier_envelopes_from_payload returned empty chunks for channel 2"
         print(f"✓ Alice created {len(chunks2)} chunks for Channel 2")
@@ -712,26 +712,26 @@ async def test_copy_command_multi_channel():
 
         # Step 5: Write all copy stream chunks to the temporary channel
         print("\n--- Step 5: Writing all chunks to temporary channel ---")
-        temp_index = temp_first_index
+        temp_index = temp_keypair.first_message_index
 
         for i, chunk in enumerate(all_chunks):
             print(f"--- Writing chunk {i+1}/{len(all_chunks)} to temporary channel ---")
 
             # Encrypt the chunk for the copy stream
-            ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
-                chunk, temp_write_cap, temp_index
+            write_result = await alice_client.encrypt_write(
+                chunk, temp_keypair.write_cap, temp_index
             )
-            print(f"✓ Alice encrypted chunk {i+1} ({len(chunk)} bytes plaintext -> {len(ciphertext)} bytes ciphertext)")
+            print(f"✓ Alice encrypted chunk {i+1} ({len(chunk)} bytes plaintext -> {len(write_result.message_ciphertext)} bytes ciphertext)")
 
             # Send the encrypted chunk to the copy stream
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
-                write_cap=temp_write_cap,
+                write_cap=temp_keypair.write_cap,
                 next_message_index=None,
                 reply_index=0,
-                envelope_descriptor=env_desc,
-                message_ciphertext=ciphertext,
-                envelope_hash=env_hash
+                envelope_descriptor=write_result.envelope_descriptor,
+                message_ciphertext=write_result.message_ciphertext,
+                envelope_hash=write_result.envelope_hash
             )
             print(f"✓ Alice sent chunk {i+1} to temporary channel")
 
@@ -744,7 +744,7 @@ async def test_copy_command_multi_channel():
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
-        await alice_client.start_resending_copy_command(temp_write_cap)
+        await alice_client.start_resending_copy_command(temp_keypair.write_cap)
         print("✓ Alice copy command completed successfully via ARQ")
 
         # Step 7: Bob reads from both channels and verifies payloads
@@ -752,19 +752,19 @@ async def test_copy_command_multi_channel():
 
         # Read from Channel 1
         print("--- Bob reading from Channel 1 ---")
-        bob1_ciphertext, bob1_next_index, bob1_env_desc, bob1_env_hash = await bob_client.encrypt_read(
-            chan1_read_cap, chan1_first_index
+        bob1_read_result = await bob_client.encrypt_read(
+            chan1_keypair.read_cap, chan1_keypair.first_message_index
         )
-        assert bob1_ciphertext, "Bob: EncryptRead returned empty ciphertext for Channel 1"
+        assert bob1_read_result.message_ciphertext, "Bob: EncryptRead returned empty ciphertext for Channel 1"
 
         bob1_plaintext = await bob_client.start_resending_encrypted_message(
-            read_cap=chan1_read_cap,
+            read_cap=chan1_keypair.read_cap,
             write_cap=None,
-            next_message_index=bob1_next_index,
+            next_message_index=bob1_read_result.next_message_index,
             reply_index=0,
-            envelope_descriptor=bob1_env_desc,
-            message_ciphertext=bob1_ciphertext,
-            envelope_hash=bob1_env_hash
+            envelope_descriptor=bob1_read_result.envelope_descriptor,
+            message_ciphertext=bob1_read_result.message_ciphertext,
+            envelope_hash=bob1_read_result.envelope_hash
         )
         assert bob1_plaintext, "Bob: Failed to receive data from Channel 1"
         print(f"✓ Bob received from Channel 1: {bob1_plaintext.decode()} ({len(bob1_plaintext)} bytes)")
@@ -775,19 +775,19 @@ async def test_copy_command_multi_channel():
 
         # Read from Channel 2
         print("--- Bob reading from Channel 2 ---")
-        bob2_ciphertext, bob2_next_index, bob2_env_desc, bob2_env_hash = await bob_client.encrypt_read(
-            chan2_read_cap, chan2_first_index
+        bob2_read_result = await bob_client.encrypt_read(
+            chan2_keypair.read_cap, chan2_keypair.first_message_index
         )
-        assert bob2_ciphertext, "Bob: EncryptRead returned empty ciphertext for Channel 2"
+        assert bob2_read_result.message_ciphertext, "Bob: EncryptRead returned empty ciphertext for Channel 2"
 
         bob2_plaintext = await bob_client.start_resending_encrypted_message(
-            read_cap=chan2_read_cap,
+            read_cap=chan2_keypair.read_cap,
             write_cap=None,
-            next_message_index=bob2_next_index,
+            next_message_index=bob2_read_result.next_message_index,
             reply_index=0,
-            envelope_descriptor=bob2_env_desc,
-            message_ciphertext=bob2_ciphertext,
-            envelope_hash=bob2_env_hash
+            envelope_descriptor=bob2_read_result.envelope_descriptor,
+            message_ciphertext=bob2_read_result.message_ciphertext,
+            envelope_hash=bob2_read_result.envelope_hash
         )
         assert bob2_plaintext, "Bob: Failed to receive data from Channel 2"
         print(f"✓ Bob received from Channel 2: {bob2_plaintext.decode()} ({len(bob2_plaintext)} bytes)")
@@ -828,18 +828,18 @@ async def test_copy_command_multi_channel_efficient():
 
         # Channel 1
         chan1_seed = os.urandom(32)
-        chan1_write_cap, chan1_read_cap, chan1_first_index = await alice_client.new_keypair(chan1_seed)
+        chan1_keypair = await alice_client.new_keypair(chan1_seed)
         print("✓ Alice created Channel 1 (WriteCap and ReadCap)")
 
         # Channel 2
         chan2_seed = os.urandom(32)
-        chan2_write_cap, chan2_read_cap, chan2_first_index = await alice_client.new_keypair(chan2_seed)
+        chan2_keypair = await alice_client.new_keypair(chan2_seed)
         print("✓ Alice created Channel 2 (WriteCap and ReadCap)")
 
         # Step 2: Alice creates temporary copy stream
         print("\n--- Step 2: Alice creates temporary copy stream ---")
         temp_seed = os.urandom(32)
-        temp_write_cap, _, temp_first_index = await alice_client.new_keypair(temp_seed)
+        temp_keypair = await alice_client.new_keypair(temp_seed)
         print("✓ Alice created temporary copy stream WriteCap")
 
         # Step 3: Create two payloads - one for each destination channel
@@ -851,19 +851,19 @@ async def test_copy_command_multi_channel_efficient():
 
         # Step 4: Create copy stream chunks using efficient multi-destination API
         print("\n--- Step 4: Creating copy stream chunks using efficient multi-destination API ---")
-        stream_id = alice_client.new_stream_id()
+        stream_id = alice_client.stream_id()
 
         # Create destinations list with both payloads
         destinations = [
             {
                 "payload": payload1,
-                "write_cap": chan1_write_cap,
-                "start_index": chan1_first_index,
+                "write_cap": chan1_keypair.write_cap,
+                "start_index": chan1_keypair.first_message_index,
             },
             {
                 "payload": payload2,
-                "write_cap": chan2_write_cap,
-                "start_index": chan2_first_index,
+                "write_cap": chan2_keypair.write_cap,
+                "start_index": chan2_keypair.first_message_index,
             },
         ]
 
@@ -876,26 +876,26 @@ async def test_copy_command_multi_channel_efficient():
 
         # Step 5: Write all copy stream chunks to the temporary channel
         print("\n--- Step 5: Writing all chunks to temporary channel ---")
-        temp_index = temp_first_index
+        temp_index = temp_keypair.first_message_index
 
         for i, chunk in enumerate(all_chunks):
             print(f"--- Writing chunk {i+1}/{len(all_chunks)} to temporary channel ---")
 
             # Encrypt the chunk for the copy stream
-            ciphertext, env_desc, env_hash = await alice_client.encrypt_write(
-                chunk, temp_write_cap, temp_index
+            write_result = await alice_client.encrypt_write(
+                chunk, temp_keypair.write_cap, temp_index
             )
-            print(f"✓ Alice encrypted chunk {i+1} ({len(chunk)} bytes plaintext -> {len(ciphertext)} bytes ciphertext)")
+            print(f"✓ Alice encrypted chunk {i+1} ({len(chunk)} bytes plaintext -> {len(write_result.message_ciphertext)} bytes ciphertext)")
 
             # Send the encrypted chunk to the copy stream
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
-                write_cap=temp_write_cap,
+                write_cap=temp_keypair.write_cap,
                 next_message_index=None,
                 reply_index=0,
-                envelope_descriptor=env_desc,
-                message_ciphertext=ciphertext,
-                envelope_hash=env_hash
+                envelope_descriptor=write_result.envelope_descriptor,
+                message_ciphertext=write_result.message_ciphertext,
+                envelope_hash=write_result.envelope_hash
             )
             print(f"✓ Alice sent chunk {i+1} to temporary channel")
 
@@ -908,7 +908,7 @@ async def test_copy_command_multi_channel_efficient():
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
-        await alice_client.start_resending_copy_command(temp_write_cap)
+        await alice_client.start_resending_copy_command(temp_keypair.write_cap)
         print("✓ Alice copy command completed successfully via ARQ")
 
         # Step 7: Bob reads from both channels and verifies payloads
@@ -916,18 +916,18 @@ async def test_copy_command_multi_channel_efficient():
 
         # Read from Channel 1
         print("--- Bob reading from Channel 1 ---")
-        bob1_ciphertext, bob1_next_index, bob1_env_desc, bob1_env_hash = await bob_client.encrypt_read(
-            chan1_read_cap, chan1_first_index
+        bob1_read_result = await bob_client.encrypt_read(
+            chan1_keypair.read_cap, chan1_keypair.first_message_index
         )
 
         bob1_plaintext = await bob_client.start_resending_encrypted_message(
-            read_cap=chan1_read_cap,
+            read_cap=chan1_keypair.read_cap,
             write_cap=None,
-            next_message_index=bob1_next_index,
+            next_message_index=bob1_read_result.next_message_index,
             reply_index=0,
-            envelope_descriptor=bob1_env_desc,
-            message_ciphertext=bob1_ciphertext,
-            envelope_hash=bob1_env_hash
+            envelope_descriptor=bob1_read_result.envelope_descriptor,
+            message_ciphertext=bob1_read_result.message_ciphertext,
+            envelope_hash=bob1_read_result.envelope_hash
         )
         assert bob1_plaintext, "Bob: Failed to receive data from Channel 1"
         print(f"✓ Bob received from Channel 1: {bob1_plaintext.decode()} ({len(bob1_plaintext)} bytes)")
@@ -936,18 +936,18 @@ async def test_copy_command_multi_channel_efficient():
 
         # Read from Channel 2
         print("--- Bob reading from Channel 2 ---")
-        bob2_ciphertext, bob2_next_index, bob2_env_desc, bob2_env_hash = await bob_client.encrypt_read(
-            chan2_read_cap, chan2_first_index
+        bob2_read_result = await bob_client.encrypt_read(
+            chan2_keypair.read_cap, chan2_keypair.first_message_index
         )
 
         bob2_plaintext = await bob_client.start_resending_encrypted_message(
-            read_cap=chan2_read_cap,
+            read_cap=chan2_keypair.read_cap,
             write_cap=None,
-            next_message_index=bob2_next_index,
+            next_message_index=bob2_read_result.next_message_index,
             reply_index=0,
-            envelope_descriptor=bob2_env_desc,
-            message_ciphertext=bob2_ciphertext,
-            envelope_hash=bob2_env_hash
+            envelope_descriptor=bob2_read_result.envelope_descriptor,
+            message_ciphertext=bob2_read_result.message_ciphertext,
+            envelope_hash=bob2_read_result.envelope_hash
         )
         assert bob2_plaintext, "Bob: Failed to receive data from Channel 2"
         print(f"✓ Bob received from Channel 2: {bob2_plaintext.decode()} ({len(bob2_plaintext)} bytes)")
