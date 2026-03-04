@@ -538,7 +538,7 @@ async def test_create_courier_envelopes_from_payload():
         # Step 4: Create copy stream chunks from the large payload
         print("\n--- Step 4: Creating copy stream chunks from large payload ---")
         query_id = alice_client.new_query_id()
-        stream_id = alice_client.stream_id()
+        stream_id = alice_client.new_stream_id()
         copy_stream_chunks = await alice_client.create_courier_envelopes_from_payload(
             query_id, stream_id, large_payload, dest_keypair.write_cap, dest_keypair.first_message_index, True  # is_last
         )
@@ -690,7 +690,7 @@ async def test_copy_command_multi_channel():
         # Step 4: Create copy stream chunks using same streamID but different WriteCaps
         print("\n--- Step 4: Creating copy stream chunks for both channels ---")
         query_id = alice_client.new_query_id()
-        stream_id = alice_client.stream_id()
+        stream_id = alice_client.new_stream_id()
 
         # First call: payload1 -> channel 1 (is_last=False)
         chunks1 = await alice_client.create_courier_envelopes_from_payload(
@@ -851,7 +851,7 @@ async def test_copy_command_multi_channel_efficient():
 
         # Step 4: Create copy stream chunks using efficient multi-destination API
         print("\n--- Step 4: Creating copy stream chunks using efficient multi-destination API ---")
-        stream_id = alice_client.stream_id()
+        stream_id = alice_client.new_stream_id()
 
         # Create destinations list with both payloads
         destinations = [
