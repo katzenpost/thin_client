@@ -739,7 +739,7 @@ impl ThinClient {
     /// # Returns
     /// * `Ok(Vec<Vec<u8>>)` - List of serialized CopyStreamElements
     /// * `Err(ThinClientError)` on failure
-    pub async fn create_courier_envelopes_from_payloads(
+    pub async fn create_courier_envelopes_from_multi_payload(
         &self,
         stream_id: &[u8; 16],
         destinations: Vec<(&[u8], &[u8], &[u8])>,
@@ -775,7 +775,7 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("create_courier_envelopes_from_payloads failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!("create_courier_envelopes_from_multi_payload failed with error code: {}", reply.error_code)));
         }
 
         Ok(reply.envelopes.into_iter().map(|b| b.into_vec()).collect())
