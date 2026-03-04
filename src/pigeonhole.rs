@@ -678,6 +678,16 @@ impl ThinClient {
     /// IsStart=true). The final call should have is_last=true (last element
     /// gets IsFinal=true).
     ///
+    /// # ⚠️ Data Loss Warning
+    ///
+    /// When `is_last=false`, the daemon buffers the last partial box's payload
+    /// internally so that subsequent writes can be packed efficiently. **If the
+    /// stream is not completed** (client crash, network failure, or simply failing
+    /// to call with `is_last=true`), **this buffered data will be lost**.
+    ///
+    /// Always ensure that you eventually call this method with `is_last=true` to
+    /// flush the buffer and complete the stream safely.
+    ///
     /// # Arguments
     /// * `stream_id` - 16-byte identifier for the encoder instance
     /// * `payload` - The data to be encoded into courier envelopes
@@ -730,6 +740,16 @@ impl ThinClient {
     /// This is more space-efficient than calling create_courier_envelopes_from_payload
     /// multiple times because envelopes from different destinations are packed
     /// together in the copy stream without wasting space.
+    ///
+    /// # ⚠️ Data Loss Warning
+    ///
+    /// When `is_last=false`, the daemon buffers the last partial box's payload
+    /// internally so that subsequent writes can be packed efficiently. **If the
+    /// stream is not completed** (client crash, network failure, or simply failing
+    /// to call with `is_last=true`), **this buffered data will be lost**.
+    ///
+    /// Always ensure that you eventually call this method with `is_last=true` to
+    /// flush the buffer and complete the stream safely.
     ///
     /// # Arguments
     /// * `stream_id` - 16-byte identifier for the encoder instance
