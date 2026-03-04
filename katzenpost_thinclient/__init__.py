@@ -123,12 +123,15 @@ from .pigeonhole import (
     cancel_resending_copy_command,
     create_courier_envelopes_from_payload,
     create_courier_envelopes_from_payloads,
+    set_stream_buffer,
     tombstone_box,
     tombstone_range,
     # Result dataclasses
     KeypairResult,
     EncryptReadResult,
     EncryptWriteResult,
+    StreamBufferState,
+    CreateEnvelopesResult,
 )
 
 
@@ -153,6 +156,7 @@ ThinClient.start_resending_copy_command = start_resending_copy_command
 ThinClient.cancel_resending_copy_command = cancel_resending_copy_command
 ThinClient.create_courier_envelopes_from_payload = create_courier_envelopes_from_payload
 ThinClient.create_courier_envelopes_from_payloads = create_courier_envelopes_from_payloads
+ThinClient.set_stream_buffer = set_stream_buffer
 ThinClient.tombstone_box = tombstone_box
 ThinClient.tombstone_range = tombstone_range
 
@@ -174,6 +178,8 @@ __all__ = [
     'KeypairResult',
     'EncryptReadResult',
     'EncryptWriteResult',
+    'StreamBufferState',
+    'CreateEnvelopesResult',
     # Utility functions
     'find_services',
     'pretty_print_obj',

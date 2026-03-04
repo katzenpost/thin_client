@@ -243,12 +243,18 @@ struct CreateCourierEnvelopesFromPayloadRequest {
     is_last: bool,
 }
 
-/// Reply containing the created courier envelopes.
+/// Reply containing the created courier envelopes and buffer state.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CreateCourierEnvelopesFromPayloadReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
     envelopes: Vec<serde_bytes::ByteBuf>,
+    /// Buffer contains any data buffered by the encoder that hasn't been output yet.
+    #[serde(with = "serde_bytes", default)]
+    buffer: Vec<u8>,
+    /// Whether the first chunk has been output yet.
+    #[serde(default)]
+    is_first_chunk: bool,
     error_code: u8,
 }
 
@@ -274,13 +280,59 @@ struct CreateCourierEnvelopesFromPayloadsRequest {
     is_last: bool,
 }
 
-/// Reply containing the created courier envelopes from multiple payloads.
+/// Reply containing the created courier envelopes from multiple payloads and buffer state.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CreateCourierEnvelopesFromPayloadsReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
     envelopes: Vec<serde_bytes::ByteBuf>,
+    /// Buffer contains any data buffered by the encoder that hasn't been output yet.
+    #[serde(with = "serde_bytes", default)]
+    buffer: Vec<u8>,
+    /// Whether the first chunk has been output yet.
+    #[serde(default)]
+    is_first_chunk: bool,
     error_code: u8,
+}
+
+/// Request to set/restore the buffered state for a stream (for crash recovery).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SetStreamBufferRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    stream_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    buffer: Vec<u8>,
+    is_first_chunk: bool,
+}
+
+/// Reply confirming the buffer state has been restored.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SetStreamBufferReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    error_code: u8,
+}
+
+/// The state of a stream's buffer, used for crash recovery.
+/// Returned by `create_courier_envelopes_from_payload` and `create_courier_envelopes_from_multi_payload`.
+#[derive(Debug, Clone)]
+pub struct StreamBufferState {
+    /// The buffered data that hasn't been output yet.
+    pub buffer: Vec<u8>,
+    /// Whether the first chunk has been output yet.
+    /// If true, the next chunk will get the IsStart flag.
+    pub is_first_chunk: bool,
+}
+
+/// Result of creating courier envelopes, including the envelopes and buffer state for crash recovery.
+#[derive(Debug, Clone)]
+pub struct CreateEnvelopesResult {
+    /// The serialized CopyStreamElements to send to the network.
+    pub envelopes: Vec<Vec<u8>>,
+    /// The current buffer state. Persist this for crash recovery.
+    pub buffer_state: StreamBufferState,
 }
 
 // ========================================================================
@@ -678,15 +730,13 @@ impl ThinClient {
     /// IsStart=true). The final call should have is_last=true (last element
     /// gets IsFinal=true).
     ///
-    /// # ⚠️ Data Loss Warning
+    /// # Crash Recovery
     ///
     /// When `is_last=false`, the daemon buffers the last partial box's payload
-    /// internally so that subsequent writes can be packed efficiently. **If the
-    /// stream is not completed** (client crash, network failure, or simply failing
-    /// to call with `is_last=true`), **this buffered data will be lost**.
-    ///
-    /// Always ensure that you eventually call this method with `is_last=true` to
-    /// flush the buffer and complete the stream safely.
+    /// internally so that subsequent writes can be packed efficiently. The
+    /// `buffer_state` in the result contains this buffered data which you should
+    /// persist for crash recovery. On restart, use `set_stream_buffer` to restore
+    /// the state before continuing the stream.
     ///
     /// # Arguments
     /// * `stream_id` - 16-byte identifier for the encoder instance
@@ -696,7 +746,7 @@ impl ThinClient {
     /// * `is_last` - Whether this is the last payload in the sequence
     ///
     /// # Returns
-    /// * `Ok(Vec<Vec<u8>>)` - List of serialized CopyStreamElements
+    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes and buffer state for crash recovery
     /// * `Err(ThinClientError)` on failure
     pub async fn create_courier_envelopes_from_payload(
         &self,
@@ -705,7 +755,7 @@ impl ThinClient {
         dest_write_cap: &[u8],
         dest_start_index: &[u8],
         is_last: bool
-    ) -> Result<Vec<Vec<u8>>, ThinClientError> {
+    ) -> Result<CreateEnvelopesResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = CreateCourierEnvelopesFromPayloadRequest {
@@ -732,7 +782,13 @@ impl ThinClient {
             return Err(ThinClientError::Other(format!("create_courier_envelopes_from_payload failed with error code: {}", reply.error_code)));
         }
 
-        Ok(reply.envelopes.into_iter().map(|b| b.into_vec()).collect())
+        Ok(CreateEnvelopesResult {
+            envelopes: reply.envelopes.into_iter().map(|b| b.into_vec()).collect(),
+            buffer_state: StreamBufferState {
+                buffer: reply.buffer,
+                is_first_chunk: reply.is_first_chunk,
+            },
+        })
     }
 
     /// Creates CourierEnvelopes from multiple payloads going to different destinations.
@@ -741,15 +797,13 @@ impl ThinClient {
     /// multiple times because envelopes from different destinations are packed
     /// together in the copy stream without wasting space.
     ///
-    /// # ⚠️ Data Loss Warning
+    /// # Crash Recovery
     ///
     /// When `is_last=false`, the daemon buffers the last partial box's payload
-    /// internally so that subsequent writes can be packed efficiently. **If the
-    /// stream is not completed** (client crash, network failure, or simply failing
-    /// to call with `is_last=true`), **this buffered data will be lost**.
-    ///
-    /// Always ensure that you eventually call this method with `is_last=true` to
-    /// flush the buffer and complete the stream safely.
+    /// internally so that subsequent writes can be packed efficiently. The
+    /// `buffer_state` in the result contains this buffered data which you should
+    /// persist for crash recovery. On restart, use `set_stream_buffer` to restore
+    /// the state before continuing the stream.
     ///
     /// # Arguments
     /// * `stream_id` - 16-byte identifier for the encoder instance
@@ -757,14 +811,14 @@ impl ThinClient {
     /// * `is_last` - Whether this is the last set of payloads in the sequence
     ///
     /// # Returns
-    /// * `Ok(Vec<Vec<u8>>)` - List of serialized CopyStreamElements
+    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes and buffer state for crash recovery
     /// * `Err(ThinClientError)` on failure
     pub async fn create_courier_envelopes_from_multi_payload(
         &self,
         stream_id: &[u8; 16],
         destinations: Vec<(&[u8], &[u8], &[u8])>,
         is_last: bool
-    ) -> Result<Vec<Vec<u8>>, ThinClientError> {
+    ) -> Result<CreateEnvelopesResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let destinations_inner: Vec<EnvelopeDestination> = destinations
@@ -798,7 +852,13 @@ impl ThinClient {
             return Err(ThinClientError::Other(format!("create_courier_envelopes_from_multi_payload failed with error code: {}", reply.error_code)));
         }
 
-        Ok(reply.envelopes.into_iter().map(|b| b.into_vec()).collect())
+        Ok(CreateEnvelopesResult {
+            envelopes: reply.envelopes.into_iter().map(|b| b.into_vec()).collect(),
+            buffer_state: StreamBufferState {
+                buffer: reply.buffer,
+                is_first_chunk: reply.is_first_chunk,
+            },
+        })
     }
 
     /// Generates a new random 16-byte stream ID.
@@ -806,6 +866,71 @@ impl ThinClient {
         let mut stream_id = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut stream_id);
         stream_id
+    }
+
+    /// Restores the buffered state for a given stream ID.
+    ///
+    /// This is useful for crash recovery: after restart, call this method with the
+    /// buffer state that was returned by `create_courier_envelopes_from_payload` or
+    /// `create_courier_envelopes_from_multi_payload` before the crash/shutdown.
+    ///
+    /// Note: This will create a new encoder if one doesn't exist for this stream_id,
+    /// or replace the buffer contents if one already exists.
+    ///
+    /// # Arguments
+    /// * `stream_id` - 16-byte identifier for the encoder instance
+    /// * `buffer` - The buffered data to restore (from `CreateEnvelopesResult.buffer_state.buffer`)
+    /// * `is_first_chunk` - Whether the first chunk has been output yet (from `CreateEnvelopesResult.buffer_state.is_first_chunk`)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ThinClientError)` on failure
+    ///
+    /// # Example
+    /// ```ignore
+    /// // During streaming, save the buffer state from each call
+    /// let result = client.create_courier_envelopes_from_payload(&stream_id, data, ..., false).await?;
+    /// save_to_disk(&stream_id, &result.buffer_state.buffer, result.buffer_state.is_first_chunk)?;
+    ///
+    /// // On restart, restore the stream state
+    /// let (buffer, is_first_chunk) = load_from_disk(&stream_id)?;
+    /// client.set_stream_buffer(&stream_id, buffer, is_first_chunk).await?;
+    /// // Now continue streaming from where we left off
+    /// client.create_courier_envelopes_from_payload(&stream_id, more_data, ..., true).await?;
+    /// ```
+    pub async fn set_stream_buffer(
+        &self,
+        stream_id: &[u8; 16],
+        buffer: Vec<u8>,
+        is_first_chunk: bool,
+    ) -> Result<(), ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let request_inner = SetStreamBufferRequest {
+            query_id: query_id.clone(),
+            stream_id: stream_id.to_vec(),
+            buffer,
+            is_first_chunk,
+        };
+
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("set_stream_buffer".to_string()), request_value);
+
+        let reply_map = self.send_and_wait(&query_id, request).await?;
+
+        let reply: SetStreamBufferReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        if reply.error_code != 0 {
+            return Err(ThinClientError::Other(format!(
+                "set_stream_buffer failed with error code: {}", reply.error_code
+            )));
+        }
+
+        Ok(())
     }
 
     /// Create an encrypted tombstone for a single pigeonhole box.

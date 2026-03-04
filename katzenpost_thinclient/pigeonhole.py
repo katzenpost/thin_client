@@ -509,7 +509,7 @@ async def create_courier_envelopes_from_payload(
     dest_write_cap: bytes,
     dest_start_index: bytes,
     is_last: bool
-) -> "List[bytes]":
+) -> "CreateEnvelopesResult":
     """
     Creates multiple CourierEnvelopes from a payload of any size.
 
@@ -521,6 +521,10 @@ async def create_courier_envelopes_from_payload(
     incrementally. The first call creates a new encoder (first element gets
     IsStart=true). The final call should have is_last=True (last element
     gets IsFinal=true).
+
+    The buffer_state in the result contains the current encoder buffer which
+    you should persist for crash recovery. On restart, use `set_stream_buffer`
+    to restore the state before continuing the stream.
 
     Args:
         query_id: 16-byte query identifier for correlating requests and replies.
@@ -534,7 +538,7 @@ async def create_courier_envelopes_from_payload(
                 encoder instance will be removed.
 
     Returns:
-        List[bytes]: List of serialized CopyStreamElements, one per chunk.
+        CreateEnvelopesResult: Contains envelopes and buffer state for crash recovery.
 
     Raises:
         Exception: If the envelope creation fails.
@@ -542,9 +546,11 @@ async def create_courier_envelopes_from_payload(
     Example:
         >>> query_id = client.new_query_id()
         >>> stream_id = client.new_stream_id()
-        >>> envelopes = await client.create_courier_envelopes_from_payload(
-        ...     query_id, stream_id, payload, dest_write_cap, dest_start_index, is_last=True)
-        >>> for env in envelopes:
+        >>> result = await client.create_courier_envelopes_from_payload(
+        ...     query_id, stream_id, payload, dest_write_cap, dest_start_index, is_last=False)
+        >>> # Persist buffer state for crash recovery
+        >>> save_to_disk(stream_id, result.buffer_state.buffer, result.buffer_state.is_first_chunk)
+        >>> for env in result.envelopes:
         ...     # Write each envelope to the copy stream
         ...     pass
     """
@@ -570,7 +576,13 @@ async def create_courier_envelopes_from_payload(
         error_msg = thin_client_error_to_string(reply['error_code'])
         raise Exception(f"create_courier_envelopes_from_payload failed: {error_msg}")
 
-    return reply.get("envelopes", [])
+    return CreateEnvelopesResult(
+        envelopes=reply.get("envelopes", []),
+        buffer_state=StreamBufferState(
+            buffer=reply.get("buffer", b""),
+            is_first_chunk=reply.get("is_first_chunk", True)
+        )
+    )
 
 
 async def create_courier_envelopes_from_payloads(
@@ -578,7 +590,7 @@ async def create_courier_envelopes_from_payloads(
     stream_id: bytes,
     destinations: "List[Dict[str, Any]]",
     is_last: bool
-) -> "List[bytes]":
+) -> "CreateEnvelopesResult":
     """
     Creates CourierEnvelopes from multiple payloads going to different destinations.
 
@@ -590,6 +602,10 @@ async def create_courier_envelopes_from_payloads(
     incrementally. The first call creates a new encoder (first element gets
     IsStart=true). The final call should have is_last=True (last element
     gets IsFinal=true).
+
+    The buffer_state in the result contains the current encoder buffer which
+    you should persist for crash recovery. On restart, use `set_stream_buffer`
+    to restore the state before continuing the stream.
 
     Args:
         stream_id: 16-byte identifier for the encoder instance. All calls for
@@ -603,8 +619,7 @@ async def create_courier_envelopes_from_payloads(
                 and the encoder instance will be removed.
 
     Returns:
-        List[bytes]: List of serialized CopyStreamElements containing all
-                    courier envelopes from all destinations packed efficiently.
+        CreateEnvelopesResult: Contains envelopes and buffer state for crash recovery.
 
     Raises:
         Exception: If the envelope creation fails.
@@ -615,8 +630,10 @@ async def create_courier_envelopes_from_payloads(
         ...     {"payload": data1, "write_cap": cap1, "start_index": idx1},
         ...     {"payload": data2, "write_cap": cap2, "start_index": idx2},
         ... ]
-        >>> envelopes = await client.create_courier_envelopes_from_payloads(
-        ...     stream_id, destinations, is_last=True)
+        >>> result = await client.create_courier_envelopes_from_payloads(
+        ...     stream_id, destinations, is_last=False)
+        >>> # Persist buffer state for crash recovery
+        >>> save_to_disk(stream_id, result.buffer_state.buffer, result.buffer_state.is_first_chunk)
     """
     query_id = self.new_query_id()
 
@@ -639,7 +656,97 @@ async def create_courier_envelopes_from_payloads(
         error_msg = thin_client_error_to_string(reply['error_code'])
         raise Exception(f"create_courier_envelopes_from_payloads failed: {error_msg}")
 
-    return reply.get("envelopes", [])
+    return CreateEnvelopesResult(
+        envelopes=reply.get("envelopes", []),
+        buffer_state=StreamBufferState(
+            buffer=reply.get("buffer", b""),
+            is_first_chunk=reply.get("is_first_chunk", True)
+        )
+    )
+
+
+@dataclass
+class StreamBufferState:
+    """State of a stream's buffer, used for crash recovery."""
+    buffer: bytes
+    """The buffered data that hasn't been output yet."""
+    is_first_chunk: bool
+    """Whether the first chunk has been output yet. If True, the next chunk gets IsStart flag."""
+
+
+@dataclass
+class CreateEnvelopesResult:
+    """Result of creating courier envelopes, including envelopes and buffer state for crash recovery."""
+    envelopes: "List[bytes]"
+    """The serialized CopyStreamElements to send to the network."""
+    buffer_state: StreamBufferState
+    """The current buffer state. Persist this for crash recovery."""
+
+
+async def set_stream_buffer(
+    self,
+    stream_id: bytes,
+    buffer: bytes,
+    is_first_chunk: bool
+) -> None:
+    """
+    Restores the buffered state for a given stream ID.
+
+    This is useful for crash recovery: after restart, call this method with the
+    buffer state that was returned by `create_courier_envelopes_from_payload` or
+    `create_courier_envelopes_from_payloads` before the crash/shutdown.
+
+    Note: This will create a new encoder if one doesn't exist for this stream_id,
+    or replace the buffer contents if one already exists.
+
+    Args:
+        stream_id: 16-byte identifier for the encoder instance.
+        buffer: The buffered data to restore (from CreateEnvelopesResult.buffer_state.buffer).
+        is_first_chunk: Whether the first chunk has been output yet (from CreateEnvelopesResult.buffer_state.is_first_chunk).
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: If stream_id is not exactly 16 bytes.
+        Exception: If the operation fails.
+
+    Example:
+        >>> # During streaming, save the buffer state from each call
+        >>> result = await client.create_courier_envelopes_from_payload(
+        ...     query_id, stream_id, data, ..., is_last=False)
+        >>> save_to_disk(stream_id, result.buffer_state.buffer, result.buffer_state.is_first_chunk)
+        >>>
+        >>> # On restart, restore the stream state
+        >>> buffer, is_first_chunk = load_from_disk(stream_id)
+        >>> await client.set_stream_buffer(stream_id, buffer, is_first_chunk)
+        >>> # Now continue streaming from where we left off
+        >>> await client.create_courier_envelopes_from_payload(
+        ...     query_id, stream_id, more_data, ..., is_last=True)
+    """
+    if len(stream_id) != STREAM_ID_LENGTH:
+        raise ValueError(f"stream_id must be exactly {STREAM_ID_LENGTH} bytes")
+
+    query_id = self.new_query_id()
+
+    request = {
+        "set_stream_buffer": {
+            "query_id": query_id,
+            "stream_id": stream_id,
+            "buffer": buffer,
+            "is_first_chunk": is_first_chunk
+        }
+    }
+
+    try:
+        reply = await self._send_and_wait(query_id=query_id, request=request)
+    except Exception as e:
+        self.logger.error(f"Error setting stream buffer: {e}")
+        raise
+
+    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply['error_code'])
+        raise Exception(f"set_stream_buffer failed: {error_msg}")
 
 
 async def tombstone_box(
