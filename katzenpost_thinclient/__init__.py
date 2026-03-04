@@ -110,7 +110,7 @@ from .legacy import (
     close_channel,
 )
 
-# Import new pigeonhole API methods
+# Import new pigeonhole API methods and result types
 from .pigeonhole import (
     new_keypair,
     encrypt_read,
@@ -124,6 +124,10 @@ from .pigeonhole import (
     create_courier_envelopes_from_payloads,
     tombstone_box,
     tombstone_range,
+    # Result dataclasses
+    KeypairResult,
+    EncryptReadResult,
+    EncryptWriteResult,
 )
 
 
@@ -164,6 +168,10 @@ __all__ = [
     # Legacy channel reply classes
     'WriteChannelReply',
     'ReadChannelReply',
+    # Pigeonhole result dataclasses
+    'KeypairResult',
+    'EncryptReadResult',
+    'EncryptWriteResult',
     # Utility functions
     'find_services',
     'pretty_print_obj',

@@ -10,7 +10,8 @@ These methods use WriteCap/ReadCap keypairs and provide direct
 control over the Pigeonhole protocol.
 """
 
-from typing import Tuple, Any, Dict, List
+from dataclasses import dataclass
+from typing import Any, Dict, List
 
 from .core import (
     THIN_CLIENT_SUCCESS,
@@ -19,9 +20,34 @@ from .core import (
 )
 
 
+@dataclass
+class KeypairResult:
+    """Result from new_keypair containing the generated capabilities."""
+    write_cap: bytes
+    read_cap: bytes
+    first_message_index: bytes
+
+
+@dataclass
+class EncryptReadResult:
+    """Result from encrypt_read containing the encrypted read request."""
+    message_ciphertext: bytes
+    next_message_index: bytes
+    envelope_descriptor: bytes
+    envelope_hash: bytes
+
+
+@dataclass
+class EncryptWriteResult:
+    """Result from encrypt_write containing the encrypted write request."""
+    message_ciphertext: bytes
+    envelope_descriptor: bytes
+    envelope_hash: bytes
+
+
 # New Pigeonhole API methods - these will be attached to ThinClient class
 
-async def new_keypair(self, seed: bytes) -> "Tuple[bytes, bytes, bytes]":
+async def new_keypair(self, seed: bytes) -> KeypairResult:
     """
     Creates a new keypair for use with the Pigeonhole protocol.
 
@@ -34,10 +60,7 @@ async def new_keypair(self, seed: bytes) -> "Tuple[bytes, bytes, bytes]":
         seed: 32-byte seed used to derive the keypair.
 
     Returns:
-        tuple: (write_cap, read_cap, first_message_index) where:
-            - write_cap is the write capability for sending messages
-            - read_cap is the read capability that can be shared with recipients
-            - first_message_index is the first message index to use when writing
+        KeypairResult: Contains write_cap, read_cap, and first_message_index.
 
     Raises:
         Exception: If the keypair creation fails.
@@ -46,9 +69,9 @@ async def new_keypair(self, seed: bytes) -> "Tuple[bytes, bytes, bytes]":
     Example:
         >>> import os
         >>> seed = os.urandom(32)
-        >>> write_cap, read_cap, first_index = await client.new_keypair(seed)
-        >>> # Share read_cap with Bob so he can read messages
-        >>> # Store write_cap for sending messages
+        >>> result = await client.new_keypair(seed)
+        >>> # Share result.read_cap with Bob so he can read messages
+        >>> # Store result.write_cap for sending messages
     """
     if len(seed) != 32:
         raise ValueError("seed must be exactly 32 bytes")
@@ -72,10 +95,14 @@ async def new_keypair(self, seed: bytes) -> "Tuple[bytes, bytes, bytes]":
         error_msg = thin_client_error_to_string(reply['error_code'])
         raise Exception(f"new_keypair failed: {error_msg}")
 
-    return reply["write_cap"], reply["read_cap"], reply["first_message_index"]
+    return KeypairResult(
+        write_cap=reply["write_cap"],
+        read_cap=reply["read_cap"],
+        first_message_index=reply["first_message_index"]
+    )
 
 
-async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> "Tuple[bytes, bytes, bytes, bytes]":
+async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> EncryptReadResult:
     """
     Encrypts a read operation for a given read capability.
 
@@ -88,19 +115,15 @@ async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> "Tupl
         message_box_index: Starting read position for the channel.
 
     Returns:
-        tuple: (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash) where:
-            - message_ciphertext is the encrypted message to send to courier
-            - next_message_index is the next message index for subsequent reads
-            - envelope_descriptor is for decrypting the reply
-            - envelope_hash is the hash of the courier envelope
+        EncryptReadResult: Contains message_ciphertext, next_message_index,
+            envelope_descriptor, and envelope_hash.
 
     Raises:
         Exception: If the encryption fails.
 
     Example:
-        >>> ciphertext, next_index, env_desc, env_hash = await client.encrypt_read(
-        ...     read_cap, message_box_index)
-        >>> # Send ciphertext via start_resending_encrypted_message
+        >>> result = await client.encrypt_read(read_cap, message_box_index)
+        >>> # Send result.message_ciphertext via start_resending_encrypted_message
     """
     query_id = self.new_query_id()
 
@@ -122,15 +145,15 @@ async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> "Tupl
         error_msg = thin_client_error_to_string(reply['error_code'])
         raise Exception(f"encrypt_read failed: {error_msg}")
 
-    return (
-        reply["message_ciphertext"],
-        reply["next_message_index"],
-        reply["envelope_descriptor"],
-        reply["envelope_hash"]
+    return EncryptReadResult(
+        message_ciphertext=reply["message_ciphertext"],
+        next_message_index=reply["next_message_index"],
+        envelope_descriptor=reply["envelope_descriptor"],
+        envelope_hash=reply["envelope_hash"]
     )
 
 
-async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_index: bytes) -> "Tuple[bytes, bytes, bytes]":
+async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_index: bytes) -> EncryptWriteResult:
     """
     Encrypts a write operation for a given write capability.
 
@@ -144,19 +167,16 @@ async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_in
         message_box_index: Starting write position for the channel.
 
     Returns:
-        tuple: (message_ciphertext, envelope_descriptor, envelope_hash) where:
-            - message_ciphertext is the encrypted message to send to courier
-            - envelope_descriptor is for decrypting the reply
-            - envelope_hash is the hash of the courier envelope
+        EncryptWriteResult: Contains message_ciphertext, envelope_descriptor,
+            and envelope_hash.
 
     Raises:
         Exception: If the encryption fails.
 
     Example:
         >>> plaintext = b"Hello, Bob!"
-        >>> ciphertext, env_desc, env_hash = await client.encrypt_write(
-        ...     plaintext, write_cap, message_box_index)
-        >>> # Send ciphertext via start_resending_encrypted_message
+        >>> result = await client.encrypt_write(plaintext, write_cap, message_box_index)
+        >>> # Send result.message_ciphertext via start_resending_encrypted_message
     """
     query_id = self.new_query_id()
 
@@ -179,10 +199,10 @@ async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_in
         error_msg = thin_client_error_to_string(reply['error_code'])
         raise Exception(f"encrypt_write failed: {error_msg}")
 
-    return (
-        reply["message_ciphertext"],
-        reply["envelope_descriptor"],
-        reply["envelope_hash"]
+    return EncryptWriteResult(
+        message_ciphertext=reply["message_ciphertext"],
+        envelope_descriptor=reply["envelope_descriptor"],
+        envelope_hash=reply["envelope_hash"]
     )
 
 
@@ -597,7 +617,7 @@ async def tombstone_box(
     geometry: "PigeonholeGeometry",
     write_cap: bytes,
     box_index: bytes
-) -> "Tuple[bytes, bytes, bytes]":
+) -> EncryptWriteResult:
     """
     Create an encrypted tombstone for a single pigeonhole box.
 
@@ -611,10 +631,8 @@ async def tombstone_box(
         box_index: Index of the box to tombstone.
 
     Returns:
-        Tuple[bytes, bytes, bytes]: A tuple containing:
-            - message_ciphertext: The encrypted tombstone payload.
-            - envelope_descriptor: The envelope descriptor.
-            - envelope_hash: The envelope hash for cancellation.
+        EncryptWriteResult: Contains message_ciphertext, envelope_descriptor,
+            and envelope_hash.
 
     Raises:
         ValueError: If any argument is None or geometry is invalid.
@@ -622,8 +640,10 @@ async def tombstone_box(
 
     Example:
         >>> geometry = PigeonholeGeometry(max_plaintext_payload_length=1024, nike_name="x25519")
-        >>> ciphertext, env_desc, env_hash = await client.tombstone_box(geometry, write_cap, box_index)
-        >>> await client.start_resending_encrypted_message(None, write_cap, None, None, env_desc, ciphertext, env_hash)
+        >>> result = await client.tombstone_box(geometry, write_cap, box_index)
+        >>> await client.start_resending_encrypted_message(
+        ...     None, write_cap, None, None,
+        ...     result.envelope_descriptor, result.message_ciphertext, result.envelope_hash)
     """
     if geometry is None:
         raise ValueError("geometry cannot be None")
@@ -637,11 +657,7 @@ async def tombstone_box(
     tomb = bytes(geometry.max_plaintext_payload_length)
 
     # Encrypt the tombstone for the target box
-    message_ciphertext, envelope_descriptor, envelope_hash = await self.encrypt_write(
-        tomb, write_cap, box_index
-    )
-
-    return message_ciphertext, envelope_descriptor, envelope_hash
+    return await self.encrypt_write(tomb, write_cap, box_index)
 
 
 async def tombstone_range(
@@ -705,13 +721,11 @@ async def tombstone_range(
 
     while len(envelopes) < max_count:
         try:
-            message_ciphertext, envelope_descriptor, envelope_hash = await self.tombstone_box(
-                geometry, write_cap, cur
-            )
+            result = await self.tombstone_box(geometry, write_cap, cur)
             envelopes.append({
-                "message_ciphertext": message_ciphertext,
-                "envelope_descriptor": envelope_descriptor,
-                "envelope_hash": envelope_hash,
+                "message_ciphertext": result.message_ciphertext,
+                "envelope_descriptor": result.envelope_descriptor,
+                "envelope_hash": result.envelope_hash,
                 "box_index": cur,
             })
         except Exception as e:
