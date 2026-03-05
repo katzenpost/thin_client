@@ -543,6 +543,7 @@ class ThinClient:
         self.pending_read_channels : Dict[bytes,asyncio.Event] = {}  # message_id -> asyncio.Event
         self.read_channel_responses : Dict[bytes,bytes] = {}  # message_id -> payload
         self._is_connected : bool = False  # Track connection state
+        self._stopping : bool = False  # Track shutdown state to suppress expected errors
 
         # Mutexes to serialize socket send/recv operations:
         self._send_lock = asyncio.Lock()
@@ -646,6 +647,14 @@ class ThinClient:
         def handle_loop_err(task):
             try:
                 result = task.result()
+            except asyncio.CancelledError:
+                # Task was cancelled during shutdown - expected behavior
+                pass
+            except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                # Connection errors during shutdown are expected
+                if not self._stopping:
+                    import traceback
+                    traceback.print_exc()
             except Exception:
                 import traceback
                 traceback.print_exc()
@@ -675,6 +684,7 @@ class ThinClient:
         Gracefully shut down the client and close its socket.
         """
         self.logger.debug("closing connection to daemon")
+        self._stopping = True  # Set flag to suppress expected BrokenPipeError
         self.socket.close()
         self.task.cancel()
 
@@ -739,9 +749,17 @@ class ThinClient:
             try:
                 response = await self.recv(loop)
             except asyncio.CancelledError:
-                # Handle cancellation of the read loop
-                self.logger.error(f"worker_loop cancelled")
+                # Handle cancellation of the read loop - expected during shutdown
+                self.logger.debug("worker_loop cancelled")
                 break
+            except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                # Connection errors during shutdown are expected
+                if self._stopping:
+                    self.logger.debug(f"Connection closed during shutdown: {e}")
+                    break
+                else:
+                    self.logger.error(f"Unexpected connection error: {e}")
+                    raise
             except Exception as e:
                 self.logger.error(f"Error reading from socket: {e}")
                 raise

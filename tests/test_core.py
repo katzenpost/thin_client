@@ -173,3 +173,156 @@ def test_error_codes_completeness():
     assert thin_client_error_to_string(THIN_CLIENT_ERROR_START_RESENDING_CANCELLED) == "Start resending cancelled"
 
     print("✅ All error codes 0-24 are defined with proper error strings")
+
+
+class TestGracefulShutdown:
+    """
+    Unit tests for graceful shutdown behavior.
+
+    These tests verify that BrokenPipeError and other connection errors
+    are handled gracefully during shutdown without printing tracebacks.
+    """
+
+    def test_stopping_flag_initially_false(self):
+        """Test that _stopping flag is False after initialization."""
+        from .conftest import get_config_path
+
+        config_path = get_config_path()
+        cfg = Config(config_path)
+        client = ThinClient(cfg)
+
+        assert client._stopping is False, "_stopping should be False initially"
+
+        # Cleanup - close socket without starting
+        client.socket.close()
+        print("✅ _stopping flag is False on initialization")
+
+    def test_stop_sets_stopping_flag(self):
+        """Test that stop() sets _stopping flag to True before closing."""
+        from .conftest import get_config_path
+        import socket as sock_module
+
+        config_path = get_config_path()
+        cfg = Config(config_path)
+        client = ThinClient(cfg)
+
+        # Create a mock task to avoid AttributeError
+        class MockTask:
+            def cancel(self):
+                pass
+        client.task = MockTask()
+
+        assert client._stopping is False, "_stopping should be False before stop()"
+
+        client.stop()
+
+        assert client._stopping is True, "_stopping should be True after stop()"
+        print("✅ stop() sets _stopping flag correctly")
+
+    @pytest.mark.asyncio
+    async def test_worker_loop_handles_broken_pipe_during_shutdown(self):
+        """Test that worker_loop handles BrokenPipeError gracefully when stopping."""
+        from .conftest import get_config_path
+        from unittest.mock import AsyncMock, patch
+
+        config_path = get_config_path()
+        cfg = Config(config_path)
+        client = ThinClient(cfg)
+
+        # Set stopping flag to True (simulating shutdown in progress)
+        client._stopping = True
+
+        # Mock recv to raise BrokenPipeError
+        async def mock_recv_broken_pipe(loop):
+            raise BrokenPipeError("Connection closed")
+
+        client.recv = mock_recv_broken_pipe
+
+        loop = asyncio.get_running_loop()
+
+        # worker_loop should exit gracefully without raising
+        # when _stopping is True and BrokenPipeError occurs
+        await client.worker_loop(loop)
+
+        # If we get here, the test passed - worker_loop handled the error gracefully
+        client.socket.close()
+        print("✅ worker_loop handles BrokenPipeError gracefully during shutdown")
+
+    @pytest.mark.asyncio
+    async def test_worker_loop_raises_broken_pipe_when_not_stopping(self):
+        """Test that worker_loop raises BrokenPipeError when not in shutdown."""
+        from .conftest import get_config_path
+
+        config_path = get_config_path()
+        cfg = Config(config_path)
+        client = ThinClient(cfg)
+
+        # Ensure stopping flag is False (not in shutdown)
+        client._stopping = False
+
+        # Mock recv to raise BrokenPipeError
+        async def mock_recv_broken_pipe(loop):
+            raise BrokenPipeError("Connection closed")
+
+        client.recv = mock_recv_broken_pipe
+
+        loop = asyncio.get_running_loop()
+
+        # worker_loop should raise BrokenPipeError when _stopping is False
+        with pytest.raises(BrokenPipeError):
+            await client.worker_loop(loop)
+
+        client.socket.close()
+        print("✅ worker_loop raises BrokenPipeError when not stopping")
+
+    @pytest.mark.asyncio
+    async def test_worker_loop_handles_connection_reset_during_shutdown(self):
+        """Test that worker_loop handles ConnectionResetError gracefully when stopping."""
+        from .conftest import get_config_path
+
+        config_path = get_config_path()
+        cfg = Config(config_path)
+        client = ThinClient(cfg)
+
+        # Set stopping flag to True
+        client._stopping = True
+
+        # Mock recv to raise ConnectionResetError
+        async def mock_recv_conn_reset(loop):
+            raise ConnectionResetError("Connection reset by peer")
+
+        client.recv = mock_recv_conn_reset
+
+        loop = asyncio.get_running_loop()
+
+        # Should exit gracefully
+        await client.worker_loop(loop)
+
+        client.socket.close()
+        print("✅ worker_loop handles ConnectionResetError gracefully during shutdown")
+
+    @pytest.mark.asyncio
+    async def test_worker_loop_handles_os_error_during_shutdown(self):
+        """Test that worker_loop handles OSError gracefully when stopping."""
+        from .conftest import get_config_path
+
+        config_path = get_config_path()
+        cfg = Config(config_path)
+        client = ThinClient(cfg)
+
+        # Set stopping flag to True
+        client._stopping = True
+
+        # Mock recv to raise OSError (e.g., bad file descriptor)
+        async def mock_recv_os_error(loop):
+            raise OSError("Bad file descriptor")
+
+        client.recv = mock_recv_os_error
+
+        loop = asyncio.get_running_loop()
+
+        # Should exit gracefully
+        await client.worker_loop(loop)
+
+        client.socket.close()
+        print("✅ worker_loop handles OSError gracefully during shutdown")
