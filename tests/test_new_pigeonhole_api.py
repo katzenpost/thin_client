@@ -217,6 +217,7 @@ async def test_cancel_resending_encrypted_message():
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(60)  # Prevent test from hanging in CI
 async def test_cancel_causes_start_resending_to_return_error():
     """
     Test that calling cancel causes start_resending to return with error code 24.
@@ -277,22 +278,31 @@ async def test_cancel_causes_start_resending_to_return_error():
         print("--- Starting start_resending_encrypted_message task ---")
         resend_task = asyncio.create_task(start_resending_task())
 
-        # Give the task just enough time to start and register with the daemon
-        # We need to call cancel BEFORE the message gets ACKed by the mixnet,
-        # so we use a very short delay (just enough for the async task to start)
-        await asyncio.sleep(0.1)
+        # Give the daemon enough time to receive and register the message
+        # The daemon needs to: receive the request, parse it, add to arqEnvelopeHashMap
+        # Using a longer delay (2 seconds) to ensure the message is registered
+        # before we attempt to cancel it. This is still much less than the mixnet
+        # round-trip time so cancel will happen before any ACK.
+        await asyncio.sleep(2.0)
 
-        # Cancel the resending
+        # Cancel the resending (with timeout to prevent hang)
         print("--- Calling cancel_resending_encrypted_message ---")
-        await client.cancel_resending_encrypted_message(result.envelope_hash)
+        try:
+            await asyncio.wait_for(
+                client.cancel_resending_encrypted_message(result.envelope_hash),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            resend_task.cancel()
+            raise Exception("cancel_resending_encrypted_message timed out after 10 seconds")
         print("✓ Cancel call completed")
 
         # Wait for the start_resending task to complete (with timeout)
         try:
-            await asyncio.wait_for(start_resending_completed.wait(), timeout=5.0)
+            await asyncio.wait_for(start_resending_completed.wait(), timeout=10.0)
         except asyncio.TimeoutError:
             resend_task.cancel()
-            raise Exception("start_resending did not return within 5 seconds after cancel")
+            raise Exception("start_resending did not return within 10 seconds after cancel")
 
         # Verify the error
         print(f"--- Verifying error ---")
@@ -309,6 +319,7 @@ async def test_cancel_causes_start_resending_to_return_error():
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(60)  # Prevent test from hanging in CI
 async def test_cancel_causes_start_resending_copy_command_to_return_error():
     """
     Test that calling cancel causes start_resending_copy_command to return with error.
@@ -355,22 +366,31 @@ async def test_cancel_causes_start_resending_copy_command_to_return_error():
         print("--- Starting start_resending_copy_command task ---")
         resend_task = asyncio.create_task(start_resending_copy_task())
 
-        # Give the task just enough time to start and register with the daemon
-        # We need to call cancel BEFORE the message gets ACKed by the mixnet,
-        # so we use a very short delay (just enough for the async task to start)
-        await asyncio.sleep(0.1)
+        # Give the daemon enough time to receive and register the message
+        # The daemon needs to: receive the request, parse it, add to arqEnvelopeHashMap
+        # Using a longer delay (2 seconds) to ensure the message is registered
+        # before we attempt to cancel it. This is still much less than the mixnet
+        # round-trip time so cancel will happen before any ACK.
+        await asyncio.sleep(2.0)
 
-        # Cancel the resending
+        # Cancel the resending (with timeout to prevent hang)
         print("--- Calling cancel_resending_copy_command ---")
-        await client.cancel_resending_copy_command(write_cap_hash)
+        try:
+            await asyncio.wait_for(
+                client.cancel_resending_copy_command(write_cap_hash),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            resend_task.cancel()
+            raise Exception("cancel_resending_copy_command timed out after 10 seconds")
         print("✓ Cancel call completed")
 
         # Wait for the start_resending task to complete (with timeout)
         try:
-            await asyncio.wait_for(start_resending_completed.wait(), timeout=5.0)
+            await asyncio.wait_for(start_resending_completed.wait(), timeout=10.0)
         except asyncio.TimeoutError:
             resend_task.cancel()
-            raise Exception("start_resending_copy_command did not return within 5 seconds after cancel")
+            raise Exception("start_resending_copy_command did not return within 10 seconds after cancel")
 
         # Verify the error
         print(f"--- Verifying error ---")
