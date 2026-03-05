@@ -539,10 +539,11 @@ async def test_create_courier_envelopes_from_payload():
         print("\n--- Step 4: Creating copy stream chunks from large payload ---")
         query_id = alice_client.new_query_id()
         stream_id = alice_client.new_stream_id()
-        copy_stream_chunks = await alice_client.create_courier_envelopes_from_payload(
+        result = await alice_client.create_courier_envelopes_from_payload(
             query_id, stream_id, large_payload, dest_keypair.write_cap, dest_keypair.first_message_index, True  # is_last
         )
-        assert copy_stream_chunks, "create_courier_envelopes_from_payload returned empty chunks"
+        assert result.envelopes, "create_courier_envelopes_from_payload returned empty chunks"
+        copy_stream_chunks = result.envelopes
         num_chunks = len(copy_stream_chunks)
         print(f"✓ Alice created {num_chunks} copy stream chunks from {len(large_payload)} byte payload")
 
@@ -693,21 +694,21 @@ async def test_copy_command_multi_channel():
         stream_id = alice_client.new_stream_id()
 
         # First call: payload1 -> channel 1 (is_last=False)
-        chunks1 = await alice_client.create_courier_envelopes_from_payload(
+        result1 = await alice_client.create_courier_envelopes_from_payload(
             query_id, stream_id, payload1, chan1_keypair.write_cap, chan1_keypair.first_message_index, False
         )
-        assert chunks1, "create_courier_envelopes_from_payload returned empty chunks for channel 1"
-        print(f"✓ Alice created {len(chunks1)} chunks for Channel 1")
+        assert result1.envelopes, "create_courier_envelopes_from_payload returned empty chunks for channel 1"
+        print(f"✓ Alice created {len(result1.envelopes)} chunks for Channel 1")
 
         # Second call: payload2 -> channel 2 (is_last=True)
-        chunks2 = await alice_client.create_courier_envelopes_from_payload(
+        result2 = await alice_client.create_courier_envelopes_from_payload(
             query_id, stream_id, payload2, chan2_keypair.write_cap, chan2_keypair.first_message_index, True
         )
-        assert chunks2, "create_courier_envelopes_from_payload returned empty chunks for channel 2"
-        print(f"✓ Alice created {len(chunks2)} chunks for Channel 2")
+        assert result2.envelopes, "create_courier_envelopes_from_payload returned empty chunks for channel 2"
+        print(f"✓ Alice created {len(result2.envelopes)} chunks for Channel 2")
 
         # Combine all chunks
-        all_chunks = chunks1 + chunks2
+        all_chunks = result1.envelopes + result2.envelopes
         print(f"✓ Alice total chunks to write to temp channel: {len(all_chunks)}")
 
         # Step 5: Write all copy stream chunks to the temporary channel
@@ -868,10 +869,11 @@ async def test_copy_command_multi_channel_efficient():
         ]
 
         # Single call packs all envelopes efficiently
-        all_chunks = await alice_client.create_courier_envelopes_from_payloads(
+        result = await alice_client.create_courier_envelopes_from_payloads(
             stream_id, destinations, True  # is_last
         )
-        assert all_chunks, "create_courier_envelopes_from_payloads returned empty chunks"
+        assert result.envelopes, "create_courier_envelopes_from_payloads returned empty chunks"
+        all_chunks = result.envelopes
         print(f"✓ Alice created {len(all_chunks)} chunks for both channels (packed efficiently)")
 
         # Step 5: Write all copy stream chunks to the temporary channel
