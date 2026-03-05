@@ -808,11 +808,11 @@ async def test_copy_command_multi_channel():
 async def test_copy_command_multi_channel_efficient():
     """
     Test the space-efficient multi-channel copy command using
-    create_courier_envelopes_from_payloads which packs envelopes from different
+    create_courier_envelopes_from_multi_payload which packs envelopes from different
     destinations together without wasting space in the copy stream.
 
     This test verifies:
-    - The create_courier_envelopes_from_payloads API works correctly
+    - The create_courier_envelopes_from_multi_payload API works correctly
     - Multiple destination payloads are packed efficiently into the copy stream
     - The courier processes all envelopes and writes to the correct destinations
 
@@ -869,10 +869,10 @@ async def test_copy_command_multi_channel_efficient():
         ]
 
         # Single call packs all envelopes efficiently
-        result = await alice_client.create_courier_envelopes_from_payloads(
+        result = await alice_client.create_courier_envelopes_from_multi_payload(
             stream_id, destinations, True  # is_last
         )
-        assert result.envelopes, "create_courier_envelopes_from_payloads returned empty chunks"
+        assert result.envelopes, "create_courier_envelopes_from_multi_payload returned empty chunks"
         all_chunks = result.envelopes
         print(f"✓ Alice created {len(all_chunks)} chunks for both channels (packed efficiently)")
 

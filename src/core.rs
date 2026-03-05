@@ -490,7 +490,7 @@ impl ThinClient {
                         "start_resending_copy_command_reply",
                         "cancel_resending_copy_command_reply",
                         "create_courier_envelopes_from_payload_reply",
-                        "create_courier_envelopes_from_payloads_reply",
+                        "create_courier_envelopes_from_multi_payload_reply",
                     ];
 
                     for reply_type in reply_types {

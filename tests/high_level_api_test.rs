@@ -506,10 +506,9 @@ async fn test_stream_buffer_set_and_restore() {
 
     // Set a buffer state (simulating restoration from persisted state)
     let test_buffer = b"test buffer data for crash recovery".to_vec();
-    let is_first_chunk = false;
 
-    println!("Setting buffer: {} bytes, is_first_chunk={}", test_buffer.len(), is_first_chunk);
-    alice_thin.set_stream_buffer(&stream_id, test_buffer.clone(), is_first_chunk).await
+    println!("Setting buffer: {} bytes", test_buffer.len());
+    alice_thin.set_stream_buffer(&stream_id, test_buffer.clone()).await
         .expect("Failed to set stream buffer");
     println!("✓ Buffer set successfully - encoder created/updated in daemon");
 
@@ -544,12 +543,11 @@ async fn test_stream_buffer_returned_from_payload() {
     ).await.expect("Failed to create envelopes");
 
     println!("✓ Got {} envelopes", result.envelopes.len());
-    println!("✓ Buffer state: buffer_len={}, is_first_chunk={}",
-        result.buffer_state.buffer.len(), result.buffer_state.is_first_chunk);
+    println!("✓ Buffer: {} bytes", result.buffer.len());
 
-    // The buffer state should be available for persistence
+    // The buffer should be available for persistence
     // (actual buffer contents depend on payload size vs geometry)
-    println!("\n✅ Buffer state returned from payload test passed!");
+    println!("\n✅ Buffer returned from payload test passed!");
 }
 
 #[tokio::test]
@@ -582,15 +580,13 @@ async fn test_stream_buffer_recovery_workflow() {
         false,  // is_last=false, so buffer will be retained
     ).await.expect("Failed to create envelopes");
     println!("✓ First chunk written with is_last=false");
-    println!("  Envelopes: {}, Buffer: {} bytes, is_first_chunk: {}",
-        result.envelopes.len(), result.buffer_state.buffer.len(), result.buffer_state.is_first_chunk);
+    println!("  Envelopes: {}, Buffer: {} bytes",
+        result.envelopes.len(), result.buffer.len());
 
-    // Step 3: Save the buffer state (simulating checkpoint before crash)
-    println!("\n--- Step 3: Checkpoint - save buffer state ---");
-    let saved_buffer = result.buffer_state.buffer.clone();
-    let saved_is_first_chunk = result.buffer_state.is_first_chunk;
-    println!("✓ Saved state: buffer_len={}, is_first_chunk={}",
-        saved_buffer.len(), saved_is_first_chunk);
+    // Step 3: Save the buffer (simulating checkpoint before crash)
+    println!("\n--- Step 3: Checkpoint - save buffer ---");
+    let saved_buffer = result.buffer.clone();
+    println!("✓ Saved buffer: {} bytes", saved_buffer.len());
 
     // Step 4: Simulate restart by setting buffer on a "new" stream
     // In real crash recovery, this would be a new client instance
@@ -599,7 +595,6 @@ async fn test_stream_buffer_recovery_workflow() {
     alice_thin.set_stream_buffer(
         &new_stream_id,
         saved_buffer.clone(),
-        saved_is_first_chunk,
     ).await.expect("Failed to restore stream buffer");
     println!("✓ Buffer restored to new stream");
 
@@ -615,8 +610,8 @@ async fn test_stream_buffer_recovery_workflow() {
     ).await.expect("Failed to finalize stream");
 
     println!("✓ Stream finalized with {} envelopes", final_result.envelopes.len());
-    println!("✓ Final buffer state: buffer_len={} (should be 0 after flush)",
-        final_result.buffer_state.buffer.len());
+    println!("✓ Final buffer: {} bytes (should be 0 after flush)",
+        final_result.buffer.len());
 
     println!("\n✅ Stream buffer crash recovery workflow test passed!");
 }

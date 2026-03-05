@@ -122,7 +122,7 @@ from .pigeonhole import (
     start_resending_copy_command,
     cancel_resending_copy_command,
     create_courier_envelopes_from_payload,
-    create_courier_envelopes_from_payloads,
+    create_courier_envelopes_from_multi_payload,
     set_stream_buffer,
     tombstone_box,
     tombstone_range,
@@ -155,7 +155,7 @@ ThinClient.next_message_box_index = next_message_box_index
 ThinClient.start_resending_copy_command = start_resending_copy_command
 ThinClient.cancel_resending_copy_command = cancel_resending_copy_command
 ThinClient.create_courier_envelopes_from_payload = create_courier_envelopes_from_payload
-ThinClient.create_courier_envelopes_from_payloads = create_courier_envelopes_from_payloads
+ThinClient.create_courier_envelopes_from_multi_payload = create_courier_envelopes_from_multi_payload
 ThinClient.set_stream_buffer = set_stream_buffer
 ThinClient.tombstone_box = tombstone_box
 ThinClient.tombstone_range = tombstone_range
