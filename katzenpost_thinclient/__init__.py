@@ -130,7 +130,6 @@ from .pigeonhole import (
     KeypairResult,
     EncryptReadResult,
     EncryptWriteResult,
-    StreamBufferState,
     CreateEnvelopesResult,
 )
 
@@ -178,7 +177,6 @@ __all__ = [
     'KeypairResult',
     'EncryptReadResult',
     'EncryptWriteResult',
-    'StreamBufferState',
     'CreateEnvelopesResult',
     # Utility functions
     'find_services',
