@@ -10,10 +10,10 @@
 use std::collections::BTreeMap;
 use serde_cbor::Value;
 use rand::RngCore;
+use log::debug;
 
 use crate::error::ThinClientError;
 use crate::core::ThinClient;
-use crate::PigeonholeGeometry;
 
 // ========================================================================
 // Helper module for serializing Option<Vec<u8>> as CBOR byte strings
@@ -359,7 +359,7 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("new_keypair".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: NewKeypairReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -406,7 +406,7 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("encrypt_read".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: EncryptReadReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -475,7 +475,7 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("encrypt_write".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: EncryptWriteReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -518,6 +518,13 @@ impl ThinClient {
     ///   (at most `PigeonholeGeometry.max_plaintext_payload_length` bytes).
     ///   For write operations, returns an empty vector on success.
     /// * `Err(ThinClientError)` on failure
+    /// Sends an encrypted message via ARQ and blocks until completion.
+    ///
+    /// This method BLOCKS until a reply is received from the daemon.
+    /// The message will be resent periodically until either:
+    /// - A successful response is received (plaintext for reads, ACK for writes)
+    /// - An error response is received from the daemon
+    /// - The operation is cancelled via cancel_resending_encrypted_message
     pub async fn start_resending_encrypted_message(
         &self,
         read_cap: Option<&[u8]>,
@@ -547,10 +554,16 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("start_resending_encrypted_message".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        // Use direct response routing (like Python's _send_and_wait)
+        // This blocks until the daemon sends a reply with matching query_id
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
+        // Parse the reply
         let reply: StartResendingEncryptedMessageReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
+
+        debug!("start_resending_encrypted_message: received reply, error_code={}, plaintext_len={}",
+               reply.error_code, reply.plaintext.as_ref().map(|p| p.len()).unwrap_or(0));
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("start_resending_encrypted_message failed with error code: {}", reply.error_code)));
@@ -584,7 +597,7 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("cancel_resending_encrypted_message".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: CancelResendingEncryptedMessageReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -624,7 +637,7 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("next_message_box_index".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: NextMessageBoxIndexReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -676,7 +689,7 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("start_resending_copy_command".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: StartResendingCopyCommandReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -713,7 +726,7 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("cancel_resending_copy_command".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: CancelResendingCopyCommandReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -779,7 +792,7 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("create_courier_envelopes_from_payload".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: CreateCourierEnvelopesFromPayloadReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -846,7 +859,7 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("create_courier_envelopes_from_multi_payload".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: CreateCourierEnvelopesFromPayloadsReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -916,7 +929,7 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("set_stream_buffer".to_string()), request_value);
 
-        let reply_map = self.send_and_wait(&query_id, request).await?;
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: SetStreamBufferReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -944,20 +957,28 @@ impl ThinClient {
     /// # Returns
     /// * `Ok((ciphertext, envelope_descriptor, envelope_hash))` on success
     /// * `Err(ThinClientError)` on failure
+    /// Create a tombstone for a single pigeonhole box.
+    ///
+    /// This method creates a tombstone (empty payload with signature) for deleting
+    /// the specified box. The caller must send the returned values via
+    /// `start_resending_encrypted_message` to complete the tombstone operation.
+    ///
+    /// # Arguments
+    /// * `write_cap` - Write capability for the box
+    /// * `box_index` - Index of the box to tombstone
+    ///
+    /// # Returns
+    /// * `Ok((ciphertext, envelope_descriptor, envelope_hash))` on success
+    /// * `Err(ThinClientError)` on failure
     pub async fn tombstone_box(
         &self,
-        geometry: &PigeonholeGeometry,
         write_cap: &[u8],
         box_index: &[u8]
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
-        geometry.validate().map_err(|e| ThinClientError::Other(e.to_string()))?;
-
-        // Create zero-filled tombstone payload
-        let tomb = vec![0u8; geometry.max_plaintext_payload_length];
-
-        // Encrypt the tombstone for the target box
+        // Tombstones are created by sending an empty plaintext to encrypt_write
+        // The daemon will detect this and sign an empty payload instead of encrypting
         let (ciphertext, env_desc, env_hash) = self
-            .encrypt_write(&tomb, write_cap, box_index).await?;
+            .encrypt_write(&[], write_cap, box_index).await?;
 
         Ok((ciphertext, env_desc, env_hash.to_vec()))
     }
@@ -988,9 +1009,9 @@ pub struct TombstoneRangeResult {
 }
 
 impl ThinClient {
-    /// Create encrypted tombstones for a range of pigeonhole boxes.
+    /// Create tombstones for a range of pigeonhole boxes.
     ///
-    /// This method creates encrypted tombstones for up to max_count boxes,
+    /// This method creates tombstones for up to max_count boxes,
     /// starting from the specified box index and advancing through consecutive
     /// indices. The caller must send each envelope via start_resending_encrypted_message
     /// to complete the tombstone operations.
@@ -999,7 +1020,6 @@ impl ThinClient {
     /// containing the envelopes created so far and the next index.
     ///
     /// # Arguments
-    /// * `geometry` - Pigeonhole geometry defining payload size
     /// * `write_cap` - Write capability for the boxes
     /// * `start` - Starting MessageBoxIndex
     /// * `max_count` - Maximum number of boxes to tombstone
@@ -1008,7 +1028,6 @@ impl ThinClient {
     /// * `TombstoneRangeResult` containing the envelopes and next index
     pub async fn tombstone_range(
         &self,
-        geometry: &PigeonholeGeometry,
         write_cap: &[u8],
         start: &[u8],
         max_count: u32
@@ -1021,19 +1040,11 @@ impl ThinClient {
             };
         }
 
-        if let Err(e) = geometry.validate() {
-            return TombstoneRangeResult {
-                envelopes: Vec::new(),
-                next: start.to_vec(),
-                error: Some(e.to_string()),
-            };
-        }
-
         let mut cur = start.to_vec();
         let mut envelopes: Vec<TombstoneEnvelope> = Vec::with_capacity(max_count as usize);
 
         while (envelopes.len() as u32) < max_count {
-            match self.tombstone_box(geometry, write_cap, &cur).await {
+            match self.tombstone_box(write_cap, &cur).await {
                 Ok((ciphertext, env_desc, env_hash)) => {
                     envelopes.push(TombstoneEnvelope {
                         message_ciphertext: ciphertext,
