@@ -59,12 +59,13 @@ struct NewKeypairRequest {
 struct NewKeypairReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    write_cap: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    read_cap: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    first_message_index: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    write_cap: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    read_cap: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    first_message_index: Option<Vec<u8>>,
+    #[serde(default)]
     error_code: u8,
 }
 
@@ -84,14 +85,15 @@ struct EncryptReadRequest {
 struct EncryptReadReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    message_ciphertext: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    next_message_index: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    envelope_descriptor: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    envelope_hash: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    message_ciphertext: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    next_message_index: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    envelope_descriptor: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    envelope_hash: Option<Vec<u8>>,
+    #[serde(default)]
     error_code: u8,
 }
 
@@ -113,12 +115,13 @@ struct EncryptWriteRequest {
 struct EncryptWriteReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    message_ciphertext: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    envelope_descriptor: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    envelope_hash: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    message_ciphertext: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    envelope_descriptor: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    envelope_hash: Option<Vec<u8>>,
+    #[serde(default)]
     error_code: u8,
 }
 
@@ -184,8 +187,9 @@ struct NextMessageBoxIndexRequest {
 struct NextMessageBoxIndexReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    next_message_box_index: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    next_message_box_index: Option<Vec<u8>>,
+    #[serde(default)]
     error_code: u8,
 }
 
@@ -364,7 +368,11 @@ impl ThinClient {
             return Err(ThinClientError::Other(format!("new_keypair failed with error code: {}", reply.error_code)));
         }
 
-        Ok((reply.write_cap, reply.read_cap, reply.first_message_index))
+        let write_cap = reply.write_cap.ok_or_else(|| ThinClientError::Other("new_keypair: write_cap is None".to_string()))?;
+        let read_cap = reply.read_cap.ok_or_else(|| ThinClientError::Other("new_keypair: read_cap is None".to_string()))?;
+        let first_message_index = reply.first_message_index.ok_or_else(|| ThinClientError::Other("new_keypair: first_message_index is None".to_string()))?;
+
+        Ok((write_cap, read_cap, first_message_index))
     }
 
     /// Encrypts a read operation for a given read capability.
@@ -407,13 +415,18 @@ impl ThinClient {
             return Err(ThinClientError::Other(format!("encrypt_read failed with error code: {}", reply.error_code)));
         }
 
+        let message_ciphertext = reply.message_ciphertext.ok_or_else(|| ThinClientError::Other("encrypt_read: message_ciphertext is None".to_string()))?;
+        let next_message_index = reply.next_message_index.ok_or_else(|| ThinClientError::Other("encrypt_read: next_message_index is None".to_string()))?;
+        let envelope_descriptor = reply.envelope_descriptor.ok_or_else(|| ThinClientError::Other("encrypt_read: envelope_descriptor is None".to_string()))?;
+        let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_read: envelope_hash is None".to_string()))?;
+
         let mut envelope_hash = [0u8; 32];
-        envelope_hash.copy_from_slice(&reply.envelope_hash[..32]);
+        envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
 
         Ok((
-            reply.message_ciphertext,
-            reply.next_message_index,
-            reply.envelope_descriptor,
+            message_ciphertext,
+            next_message_index,
+            envelope_descriptor,
             envelope_hash
         ))
     }
@@ -471,12 +484,16 @@ impl ThinClient {
             return Err(ThinClientError::Other(format!("encrypt_write failed with error code: {}", reply.error_code)));
         }
 
+        let message_ciphertext = reply.message_ciphertext.ok_or_else(|| ThinClientError::Other("encrypt_write: message_ciphertext is None".to_string()))?;
+        let envelope_descriptor = reply.envelope_descriptor.ok_or_else(|| ThinClientError::Other("encrypt_write: envelope_descriptor is None".to_string()))?;
+        let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_write: envelope_hash is None".to_string()))?;
+
         let mut envelope_hash = [0u8; 32];
-        envelope_hash.copy_from_slice(&reply.envelope_hash[..32]);
+        envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
 
         Ok((
-            reply.message_ciphertext,
-            reply.envelope_descriptor,
+            message_ciphertext,
+            envelope_descriptor,
             envelope_hash
         ))
     }
@@ -616,7 +633,8 @@ impl ThinClient {
             return Err(ThinClientError::Other(format!("next_message_box_index failed with error code: {}", reply.error_code)));
         }
 
-        Ok(reply.next_message_box_index)
+        let next_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("next_message_box_index: next_message_box_index is None".to_string()))?;
+        Ok(next_index)
     }
 
     /// Starts resending a copy command to a courier via ARQ.
