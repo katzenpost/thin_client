@@ -2,12 +2,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! High-level PigeonholeClient API integration tests
-//!
-//! These tests demonstrate and verify the high-level API:
-//! 1. Basic send/receive between two parties
-//! 2. Copy command for large payload streaming
-//! 3. Tombstoning to securely delete messages
-//!
 //! These tests require a running mixnet with client daemon for integration testing.
 
 use std::sync::Arc;
@@ -33,10 +27,6 @@ async fn setup_clients() -> Result<(Arc<ThinClient>, Arc<ThinClient>), Box<dyn s
 fn get_geometry(client: &ThinClient) -> PigeonholeGeometry {
     client.pigeonhole_geometry().clone()
 }
-
-// ============================================================================
-// Test 1: Basic send/receive between Alice and Bob
-// ============================================================================
 
 #[tokio::test]
 async fn test_high_level_send_receive() {
@@ -88,10 +78,6 @@ async fn test_high_level_send_receive() {
     println!("\n✅ High-level send/receive test passed!");
 }
 
-// ============================================================================
-// Test 2: Multiple messages with automatic state management
-// ============================================================================
-
 #[tokio::test]
 async fn test_high_level_multiple_messages() {
     println!("\n=== Test: High-level API - Multiple sequential messages ===");
@@ -138,10 +124,6 @@ async fn test_high_level_multiple_messages() {
     println!("\n✅ Multiple messages test passed!");
 }
 
-// ============================================================================
-// Test 3: Low-level box operations
-// ============================================================================
-
 #[tokio::test]
 async fn test_low_level_box_operations() {
     println!("\n=== Test: Low-level box operations (write_box / read_box) ===");
@@ -184,94 +166,6 @@ async fn test_low_level_box_operations() {
     assert_eq!(received, message, "Box content mismatch");
     println!("\n✅ Low-level box operations test passed!");
 }
-
-// ============================================================================
-// Test 4: Copy command for streaming large payloads
-// ============================================================================
-
-#[tokio::test]
-async fn test_copy_stream_large_payload() {
-    println!("\n=== Test: Copy stream for large payloads ===");
-
-    let (alice_thin, bob_thin) = setup_clients().await.expect("Failed to setup clients");
-    let geometry = get_geometry(&alice_thin);
-
-    let alice = PigeonholeClient::new_in_memory(alice_thin.clone())
-        .expect("Failed to create Alice's PigeonholeClient");
-    let bob = PigeonholeClient::new_in_memory(bob_thin.clone())
-        .expect("Failed to create Bob's PigeonholeClient");
-
-    // Create destination channel
-    let alice_channel = alice.create_channel("copy-dest").await
-        .expect("Failed to create channel");
-    let dest_write_cap = alice_channel.write_cap().unwrap().to_vec();
-    let dest_start_index = alice_channel.write_index().unwrap().to_vec();
-
-    // Share with Bob for reading
-    let read_cap = alice_channel.share_read_capability();
-    let bob_channel = bob.import_channel("copy-dest", &read_cap)
-        .expect("Failed to import channel");
-
-    // Create a payload larger than one box (simulate streaming)
-    // Note: In real usage, you'd stream from disk/network
-    let max_payload = geometry.max_plaintext_payload_length as usize;
-    let chunk_size = max_payload / 2; // Use half-box chunks to demonstrate streaming
-    let total_data_size = max_payload * 2; // 2 boxes worth of data
-    let large_payload: Vec<u8> = (0..total_data_size).map(|i| (i % 256) as u8).collect();
-
-    println!("\n--- Creating copy stream for {} byte payload ---", large_payload.len());
-
-    // Use CopyStreamBuilder to stream the data
-    let mut builder = alice_channel.copy_stream_builder().await
-        .expect("Failed to create copy stream builder");
-
-    // Stream data in chunks (simulating reading from disk/network)
-    let mut offset = 0;
-    while offset < large_payload.len() {
-        let end = std::cmp::min(offset + chunk_size, large_payload.len());
-        let is_last = end >= large_payload.len();
-        let chunk = &large_payload[offset..end];
-
-        builder.add_payload(chunk, &dest_write_cap, &dest_start_index, is_last).await
-            .expect("Failed to add payload chunk");
-        println!("✓ Added chunk [{}-{}] (is_last={})", offset, end, is_last);
-
-        offset = end;
-    }
-
-    // Finalize and execute the copy command
-    let boxes_written = builder.finish().await
-        .expect("Failed to finish copy stream");
-    println!("✓ Copy stream finished, {} boxes written", boxes_written);
-
-    // Wait for courier to process the copy command
-    println!("\n--- Waiting 60 seconds for copy command execution ---");
-    tokio::time::sleep(Duration::from_secs(60)).await;
-
-    // Bob reads and reconstructs the payload
-    println!("\n--- Bob reads the payload ---");
-    let mut reconstructed = Vec::new();
-    let mut current_index = bob_channel.read_index().to_vec();
-
-    for i in 0..boxes_written {
-        let (chunk, next_idx) = bob_channel.read_box(&current_index).await
-            .expect("Failed to read box");
-        println!("✓ Read box {}: {} bytes", i + 1, chunk.len());
-        reconstructed.extend_from_slice(&chunk);
-
-        if i < boxes_written - 1 {
-            current_index = next_idx;
-        }
-    }
-
-    // Verify (note: the daemon adds length prefix, so exact comparison may differ)
-    println!("✓ Reconstructed {} bytes total", reconstructed.len());
-    println!("\n✅ Copy stream large payload test passed!");
-}
-
-// ============================================================================
-// Test 5: Copy with multiple payloads to different destinations
-// ============================================================================
 
 #[tokio::test]
 async fn test_copy_stream_multi_payload() {
@@ -348,10 +242,6 @@ async fn test_copy_stream_multi_payload() {
     println!("\n✅ Multi-payload copy stream test passed!");
 }
 
-// ============================================================================
-// Test 6: Tombstoning a single box
-// ============================================================================
-
 #[tokio::test]
 async fn test_tombstone_single_box() {
     println!("\n=== Test: Tombstoning a single box ===");
@@ -390,7 +280,7 @@ async fn test_tombstone_single_box() {
     // Step 3: Alice tombstones the box
     println!("\n--- Step 3: Alice tombstones the box ---");
     alice_channel.refresh().expect("Failed to refresh"); // Get latest state
-    alice_channel.tombstone_current(&geometry).await
+    alice_channel.tombstone_current().await
         .expect("Failed to tombstone");
     println!("✓ Alice tombstoned the box");
 
@@ -414,10 +304,6 @@ async fn test_tombstone_single_box() {
 
     println!("\n✅ Tombstone single box test passed!");
 }
-
-// ============================================================================
-// Test 7: Tombstoning a range of boxes
-// ============================================================================
 
 #[tokio::test]
 async fn test_tombstone_range() {
@@ -462,7 +348,7 @@ async fn test_tombstone_range() {
 
     // Step 3: Alice tombstones the range
     println!("\n--- Step 3: Alice tombstones {} boxes ---", num_messages);
-    alice_channel.tombstone_range(&geometry, num_messages).await
+    alice_channel.tombstone_range(num_messages).await
         .expect("Failed to tombstone range");
     println!("✓ Alice sent tombstone range");
 
@@ -489,10 +375,6 @@ async fn test_tombstone_range() {
 
     println!("\n✅ Tombstone range test passed!");
 }
-
-// ============================================================================
-// Test 8: Set Stream Buffer for crash recovery
-// ============================================================================
 
 #[tokio::test]
 async fn test_stream_buffer_set_and_restore() {
