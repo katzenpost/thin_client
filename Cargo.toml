@@ -27,3 +27,9 @@ generic-array = "0.14.0"
 typenum = "1.16"
 toml = "0.8"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
+clap = { version = "4.5", features = ["derive"] }
+base64 = "0.22"
+
+[[bin]]
+name = "copycat"
+path = "src/bin/copycat.rs"
