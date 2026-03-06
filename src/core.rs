@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_cbor::{from_slice, Value};
 
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::net::{TcpStream, UnixStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -83,6 +83,8 @@ pub struct ThinClient {
     event_sink: mpsc::UnboundedSender<BTreeMap<Value, Value>>,
     drain_add: mpsc::UnboundedSender<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
     drain_remove: mpsc::UnboundedSender<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
+    // Response routing like Python implementation - keyed by query_id
+    response_channels: Arc<Mutex<HashMap<Vec<u8>, oneshot::Sender<BTreeMap<Value, Value>>>>>,
 }
 
 
@@ -94,6 +96,9 @@ impl ThinClient {
         let (event_sink_tx, event_sink_rx) = mpsc::unbounded_channel();
         let (drain_add_tx, drain_add_rx) = mpsc::unbounded_channel();
         let (drain_remove_tx, drain_remove_rx) = mpsc::unbounded_channel();
+
+        // Shared response channels map
+        let response_channels = Arc::new(Mutex::new(HashMap::new()));
 
 	let client = match config.network.to_uppercase().as_str() {
             "TCP" => {
@@ -111,6 +116,7 @@ impl ThinClient {
                     event_sink: event_sink_tx.clone(),
                     drain_add: drain_add_tx.clone(),
                     drain_remove: drain_remove_tx.clone(),
+                    response_channels: response_channels.clone(),
 		})
             }
             "UNIX" => {
@@ -135,6 +141,7 @@ impl ThinClient {
                     event_sink: event_sink_tx,
                     drain_add: drain_add_tx,
                     drain_remove: drain_remove_tx,
+                    response_channels,
 		})
             }
 	    _ => {
@@ -225,8 +232,8 @@ impl ThinClient {
     }
 
     /// Returns our latest retrieved PKI document.
-    pub async fn pki_document(&self) -> BTreeMap<Value, Value> {
-        self.pki_doc.read().await.clone().expect("❌ PKI document is missing!")
+    pub async fn pki_document(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
+        self.pki_doc.read().await.clone().ok_or(ThinClientError::MissingPkiDocument)
     }
 
     /// Returns the pigeonhole geometry from the config.
@@ -320,7 +327,10 @@ impl ThinClient {
     }
 
     async fn handle_response(&self, response: BTreeMap<Value, Value>) {
-        assert!(!response.is_empty(), "❌ Received an empty response!");
+        if response.is_empty() {
+            error!("❌ Received an empty response, ignoring");
+            return;
+        }
 
         if let Some(Value::Map(event)) = response.get(&Value::Text("connection_status_event".to_string())) {
             debug!("🔄 Connection status event received.");
@@ -356,7 +366,26 @@ impl ThinClient {
             return;
         }
 
-        error!("❌ Unknown event type received: {:?}", response);
+        // Route replies to response_channels based on query_id (like Python implementation)
+        // This handles *_reply messages with query_id fields
+        for (key, value) in response.iter() {
+            if let Value::Text(reply_type) = key {
+                if reply_type.ends_with("_reply") {
+                    if let Value::Map(reply_map) = value {
+                        if let Some(Value::Bytes(query_id)) = reply_map.get(&Value::Text("query_id".to_string())) {
+                            let mut channels = self.response_channels.lock().await;
+                            if let Some(sender) = channels.remove(query_id) {
+                                debug!("Routing {} to waiting caller", reply_type);
+                                let _ = sender.send(reply_map.clone());
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        debug!("Unhandled response (no matching query_id listener): {:?}", response.keys().collect::<Vec<_>>());
     }
 
     async fn worker_loop(&self) {
@@ -453,6 +482,42 @@ impl ThinClient {
         Ok(())
     }
 
+    /// Send a CBOR request and wait for a reply with the matching query_id.
+    /// This uses direct response routing via query_id (like Python's _send_and_wait).
+    pub(crate) async fn send_and_wait_direct(&self, query_id: Vec<u8>, request: BTreeMap<Value, Value>) -> Result<BTreeMap<Value, Value>, ThinClientError> {
+        // Create oneshot channel for receiving the reply
+        let (tx, rx) = oneshot::channel();
+
+        // Register the channel BEFORE sending the request (like Python)
+        {
+            let mut channels = self.response_channels.lock().await;
+            channels.insert(query_id.clone(), tx);
+        }
+
+        // Send the request
+        if let Err(e) = self.send_cbor_request(request).await {
+            // Clean up on failure
+            let mut channels = self.response_channels.lock().await;
+            channels.remove(&query_id);
+            return Err(e);
+        }
+
+        debug!("send_and_wait_direct: request sent, waiting for reply with query_id {:?}", &query_id[..std::cmp::min(8, query_id.len())]);
+
+        // Wait for the reply (no timeout - block forever like Go/Python)
+        match rx.await {
+            Ok(reply) => {
+                debug!("send_and_wait_direct: received reply");
+                Ok(reply)
+            }
+            Err(_) => {
+                // Channel was dropped without sending - clean up
+                let mut channels = self.response_channels.lock().await;
+                channels.remove(&query_id);
+                Err(ThinClientError::Other("Response channel closed without reply".to_string()))
+            }
+        }
+    }
 
     /// Send a CBOR request and wait for a reply with the matching query_id
     pub(crate) async fn send_and_wait(&self, query_id: &[u8], request: BTreeMap<Value, Value>) -> Result<BTreeMap<Value, Value>, ThinClientError> {
