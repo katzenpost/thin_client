@@ -2,6 +2,56 @@
 
 This module provides a high-level API for pigeonhole messaging with automatic state persistence via SQLite.
 
+## API Summary
+
+```rust
+// PigeonholeClient
+PigeonholeClient::new(client, db) -> Self
+PigeonholeClient::new_in_memory(client) -> Result<Self>
+client.create_channel(name) -> Result<ChannelHandle>
+client.import_channel(name, &read_cap) -> Result<ChannelHandle>
+client.get_channel(name) -> Result<ChannelHandle>
+client.list_channels() -> Result<Vec<Channel>>
+client.delete_channel(name) -> Result<()>
+
+// ChannelHandle - State
+channel.name() -> &str
+channel.is_owned() -> bool
+channel.refresh() -> Result<()>
+channel.share_read_capability() -> ReadCapability
+channel.write_cap() -> Option<&[u8]>
+channel.read_cap() -> &[u8]
+channel.write_index() -> Option<&[u8]>
+channel.read_index() -> &[u8]
+
+// ChannelHandle - Messaging
+channel.send(&plaintext) -> Result<()>
+channel.receive() -> Result<Vec<u8>>
+channel.write_box(&plaintext, &index) -> Result<Vec<u8>>
+channel.read_box(&index) -> Result<(Vec<u8>, Vec<u8>)>
+channel.get_unread_messages() -> Result<Vec<ReceivedMessage>>
+channel.get_all_messages() -> Result<Vec<ReceivedMessage>>
+channel.mark_message_read(id) -> Result<()>
+
+// ChannelHandle - Tombstones
+channel.tombstone_current() -> Result<()>
+channel.tombstone_range(count) -> Result<u32>
+
+// ChannelHandle - Copy
+channel.copy_stream_builder() -> Result<CopyStreamBuilder>
+channel.execute_copy(courier_hash, queue_id) -> Result<()>
+channel.cancel_copy(&write_cap_hash) -> Result<()>
+
+// CopyStreamBuilder
+builder.add_payload(&data, &dest_cap, &dest_idx, is_last) -> Result<usize>
+builder.add_multi_payload(destinations, is_last) -> Result<usize>
+builder.finish() -> Result<usize>
+builder.finish_with_courier(&hash, &queue) -> Result<usize>
+builder.buffer() -> &[u8]
+builder.stream_id() -> &[u8; 16]
+builder.temp_write_cap() -> &[u8]
+```
+
 ## Overview
 
 The persistent API simplifies pigeonhole operations by:
