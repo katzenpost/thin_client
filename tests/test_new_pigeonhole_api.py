@@ -278,12 +278,11 @@ async def test_cancel_causes_start_resending_to_return_error():
         print("--- Starting start_resending_encrypted_message task ---")
         resend_task = asyncio.create_task(start_resending_task())
 
-        # Give the daemon enough time to receive and register the message
+        # Give the daemon just enough time to receive and register the message
         # The daemon needs to: receive the request, parse it, add to arqEnvelopeHashMap
-        # Using a longer delay (2 seconds) to ensure the message is registered
-        # before we attempt to cancel it. This is still much less than the mixnet
-        # round-trip time so cancel will happen before any ACK.
-        await asyncio.sleep(2.0)
+        # Using a short delay (0.1 seconds) - this is enough for local IPC but
+        # short enough that we cancel before any network ACK can arrive.
+        await asyncio.sleep(0.1)
 
         # Cancel the resending (with timeout to prevent hang)
         print("--- Calling cancel_resending_encrypted_message ---")
@@ -378,12 +377,11 @@ async def test_cancel_causes_start_resending_copy_command_to_return_error():
         print("--- Starting start_resending_copy_command task ---")
         resend_task = asyncio.create_task(start_resending_copy_task())
 
-        # Give the daemon enough time to receive and register the message
+        # Give the daemon just enough time to receive and register the message
         # The daemon needs to: receive the request, parse it, add to arqEnvelopeHashMap
-        # Using a longer delay (2 seconds) to ensure the message is registered
-        # before we attempt to cancel it. This is still much less than the mixnet
-        # round-trip time so cancel will happen before any ACK.
-        await asyncio.sleep(2.0)
+        # Using a short delay (0.1 seconds) - this is enough for local IPC but
+        # short enough that we cancel before any network ACK can arrive.
+        await asyncio.sleep(0.1)
 
         # Cancel the resending (with timeout to prevent hang)
         print("--- Calling cancel_resending_copy_command ---")
