@@ -645,16 +645,19 @@ class ThinClient:
         self.logger.debug("starting read loop")
         self.task = loop.create_task(self.worker_loop(loop))
         def handle_loop_err(task):
+            # Check stopping flag first - if we're shutting down, all errors are expected
+            if self._stopping:
+                return
             try:
                 result = task.result()
             except asyncio.CancelledError:
                 # Task was cancelled during shutdown - expected behavior
                 pass
             except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                # Connection errors during shutdown are expected
+                # Connection errors can occur due to race conditions during shutdown
+                # Double-check _stopping flag as it may have been set after the exception
                 if not self._stopping:
-                    import traceback
-                    traceback.print_exc()
+                    self.logger.error(f"Unexpected connection error in worker loop: {e}")
             except Exception:
                 import traceback
                 traceback.print_exc()
