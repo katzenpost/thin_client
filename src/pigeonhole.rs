@@ -248,10 +248,13 @@ struct CreateCourierEnvelopesFromPayloadRequest {
 struct CreateCourierEnvelopesFromPayloadReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
-    envelopes: Vec<serde_bytes::ByteBuf>,
+    /// Envelopes is None when the daemon returns an error.
+    envelopes: Option<Vec<serde_bytes::ByteBuf>>,
     /// Buffer contains any data buffered by the encoder that hasn't been output yet.
-    #[serde(with = "serde_bytes", default)]
-    buffer: Vec<u8>,
+    /// None when the daemon returns an error.
+    #[serde(default, with = "optional_bytes")]
+    buffer: Option<Vec<u8>>,
+    #[serde(default)]
     error_code: u8,
 }
 
@@ -282,10 +285,13 @@ struct CreateCourierEnvelopesFromPayloadsRequest {
 struct CreateCourierEnvelopesFromPayloadsReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
-    envelopes: Vec<serde_bytes::ByteBuf>,
+    /// Envelopes is None when the daemon returns an error.
+    envelopes: Option<Vec<serde_bytes::ByteBuf>>,
     /// Buffer contains any data buffered by the encoder that hasn't been output yet.
-    #[serde(with = "serde_bytes", default)]
-    buffer: Vec<u8>,
+    /// None when the daemon returns an error.
+    #[serde(default, with = "optional_bytes")]
+    buffer: Option<Vec<u8>>,
+    #[serde(default)]
     error_code: u8,
 }
 
@@ -765,8 +771,8 @@ impl ThinClient {
         }
 
         Ok(CreateEnvelopesResult {
-            envelopes: reply.envelopes.into_iter().map(|b| b.into_vec()).collect(),
-            buffer: reply.buffer,
+            envelopes: reply.envelopes.unwrap_or_default().into_iter().map(|b| b.into_vec()).collect(),
+            buffer: reply.buffer.unwrap_or_default(),
         })
     }
 
@@ -832,8 +838,8 @@ impl ThinClient {
         }
 
         Ok(CreateEnvelopesResult {
-            envelopes: reply.envelopes.into_iter().map(|b| b.into_vec()).collect(),
-            buffer: reply.buffer,
+            envelopes: reply.envelopes.unwrap_or_default().into_iter().map(|b| b.into_vec()).collect(),
+            buffer: reply.buffer.unwrap_or_default(),
         })
     }
 

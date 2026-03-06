@@ -491,6 +491,7 @@ impl ThinClient {
                         "cancel_resending_copy_command_reply",
                         "create_courier_envelopes_from_payload_reply",
                         "create_courier_envelopes_from_multi_payload_reply",
+                        "set_stream_buffer_reply",
                     ];
 
                     for reply_type in reply_types {
