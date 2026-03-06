@@ -16,9 +16,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::{Parser, Subcommand};
 use tokio::time::sleep;
 
-use katzenpost_thin_client::{Config, ThinClient};
+use katzenpost_thin_client::{Config, ThinClient, ThinClientError};
 use katzenpost_thin_client::persistent::{
-    PigeonholeClient, Database, ReadCapability,
+    PigeonholeClient, Database, ReadCapability, PigeonholeDbError,
 };
 
 /// Chunk size for streaming input data (10MB)
@@ -283,19 +283,37 @@ async fn run_receive(
 
         // Try to read the next box with retries
         for attempt in 0..MAX_RETRIES {
+            eprintln!("Attempting to read box {} (attempt {}/{})...", box_num, attempt + 1, MAX_RETRIES);
+
             match channel.receive().await {
                 Ok(data) if !data.is_empty() => {
                     plaintext = Some(data);
                     break;
                 }
-                Ok(_) | Err(_) => {
+                Ok(_) => {
+                    // Empty data received - this shouldn't normally happen
+                    eprintln!("Box {} returned empty data (attempt {}/{})", box_num, attempt + 1, MAX_RETRIES);
                     if attempt < MAX_RETRIES - 1 {
-                        // Exponential backoff, capped at ~32 seconds
                         let delay = BASE_DELAY_MS * (1 << attempt.min(6));
-                        eprintln!(
-                            "Box {} not ready (attempt {}/{}), retrying in {}ms...",
-                            box_num, attempt + 1, MAX_RETRIES, delay
-                        );
+                        eprintln!("Retrying in {}ms...", delay);
+                        sleep(Duration::from_millis(delay)).await;
+                    }
+                }
+                Err(PigeonholeDbError::ThinClient(ThinClientError::BoxNotFound)) => {
+                    // Box doesn't exist yet - retry with backoff
+                    eprintln!("Box {} not found (attempt {}/{})", box_num, attempt + 1, MAX_RETRIES);
+                    if attempt < MAX_RETRIES - 1 {
+                        let delay = BASE_DELAY_MS * (1 << attempt.min(6));
+                        eprintln!("Retrying in {}ms...", delay);
+                        sleep(Duration::from_millis(delay)).await;
+                    }
+                }
+                Err(e) => {
+                    // Other errors - log and retry
+                    eprintln!("Box {} error: {:?} (attempt {}/{})", box_num, e, attempt + 1, MAX_RETRIES);
+                    if attempt < MAX_RETRIES - 1 {
+                        let delay = BASE_DELAY_MS * (1 << attempt.min(6));
+                        eprintln!("Retrying in {}ms...", delay);
                         sleep(Duration::from_millis(delay)).await;
                     }
                 }

@@ -12,7 +12,7 @@ use serde_cbor::Value;
 use rand::RngCore;
 use log::debug;
 
-use crate::error::ThinClientError;
+use crate::error::{ThinClientError, error_code_to_error};
 use crate::core::ThinClient;
 
 // ========================================================================
@@ -566,7 +566,7 @@ impl ThinClient {
                reply.error_code, reply.plaintext.as_ref().map(|p| p.len()).unwrap_or(0));
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("start_resending_encrypted_message failed with error code: {}", reply.error_code)));
+            return Err(error_code_to_error(reply.error_code));
         }
 
         Ok(reply.plaintext.unwrap_or_default())
