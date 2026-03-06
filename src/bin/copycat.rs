@@ -307,6 +307,7 @@ async fn run_receive(
         })?;
 
         // Accumulate received data
+        let data_len = data.len();
         received_data.extend_from_slice(&data);
         box_num += 1;
 
@@ -320,6 +321,18 @@ async fn run_receive(
             ]);
             expected_len = Some(len);
             eprintln!("Expected payload length: {} bytes", len);
+        }
+
+        // Print progress
+        if let Some(len) = expected_len {
+            let total_expected = 4 + len as usize;
+            let percent = (received_data.len() as f64 / total_expected as f64 * 100.0).min(100.0);
+            eprintln!(
+                "Box {}: received {} bytes ({}/{} bytes, {:.1}%)",
+                box_num, data_len, received_data.len(), total_expected, percent
+            );
+        } else {
+            eprintln!("Box {}: received {} bytes (total so far: {} bytes)", box_num, data_len, received_data.len());
         }
 
         // Check if we have all the data (4-byte prefix + expected_len bytes)
