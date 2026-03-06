@@ -476,35 +476,54 @@ async fn test_tombstone_box() {
     ).await.expect("Failed to send tombstone");
     println!("✓ Alice tombstoned the box");
 
-    // Wait for tombstone propagation
-    println!("--- Waiting for tombstone propagation (60 seconds) ---");
-    tokio::time::sleep(Duration::from_secs(60)).await;
+    // Step 4: Poll for tombstone with retries
+    // Tombstone propagation through the mixnet can take variable time depending on
+    // network conditions. We poll every 15 seconds up to a maximum of 3 minutes.
+    println!("\n--- Step 4: Polling for tombstone (up to 3 minutes) ---");
 
-    // Step 4: Bob reads again and verifies tombstone
-    println!("\n--- Step 4: Bob reads again and verifies tombstone ---");
-    let (bob_ciphertext2, bob_next_index2, bob_env_desc2, bob_env_hash2) = bob_client
-        .encrypt_read(&read_cap, &first_index).await
-        .expect("Failed to encrypt read for tombstone");
+    let max_attempts = 12;  // 12 attempts * 15 seconds = 3 minutes max
+    let poll_interval = Duration::from_secs(15);
+    let mut tombstone_found = false;
+    let mut bob_plaintext2 = Vec::new();
 
-    let bob_plaintext2 = bob_client.start_resending_encrypted_message(
-        Some(&read_cap),
-        None,
-        Some(&bob_next_index2),
-        Some(0),
-        &bob_env_desc2,
-        &bob_ciphertext2,
-        &bob_env_hash2
-    ).await.expect("Failed to read tombstone");
+    for attempt in 1..=max_attempts {
+        println!("--- Attempt {}/{}: Reading box after {}s ---", attempt, max_attempts, (attempt - 1) * 15);
 
-    // Debug: print what we actually got
-    let expected_len = geometry.max_plaintext_payload_length;
-    let all_zeros = bob_plaintext2.iter().all(|&b| b == 0);
-    println!("DEBUG: plaintext2 len={}, expected={}, all_zeros={}", bob_plaintext2.len(), expected_len, all_zeros);
-    if !all_zeros && bob_plaintext2.len() < 100 {
-        println!("DEBUG: plaintext2 content: {:?}", String::from_utf8_lossy(&bob_plaintext2));
+        let (bob_ciphertext2, bob_next_index2, bob_env_desc2, bob_env_hash2) = bob_client
+            .encrypt_read(&read_cap, &first_index).await
+            .expect("Failed to encrypt read for tombstone");
+
+        bob_plaintext2 = bob_client.start_resending_encrypted_message(
+            Some(&read_cap),
+            None,
+            Some(&bob_next_index2),
+            Some(0),
+            &bob_env_desc2,
+            &bob_ciphertext2,
+            &bob_env_hash2
+        ).await.expect("Failed to read tombstone");
+
+        if is_tombstone_plaintext(&geometry, &bob_plaintext2) {
+            println!("✓ Tombstone detected on attempt {}", attempt);
+            tombstone_found = true;
+            break;
+        }
+
+        // Debug output for non-tombstone reads
+        let all_zeros = bob_plaintext2.iter().all(|&b| b == 0);
+        println!("  Not a tombstone yet: len={}, all_zeros={}", bob_plaintext2.len(), all_zeros);
+        if !all_zeros && bob_plaintext2.len() < 100 {
+            println!("  Content: {:?}", String::from_utf8_lossy(&bob_plaintext2));
+        }
+
+        if attempt < max_attempts {
+            tokio::time::sleep(poll_interval).await;
+        }
     }
 
-    assert!(is_tombstone_plaintext(&geometry, &bob_plaintext2), "Expected tombstone (all zeros)");
+    assert!(tombstone_found,
+        "Expected tombstone (all zeros of len {}) but got len={}",
+        geometry.max_plaintext_payload_length, bob_plaintext2.len());
     println!("✓ Bob verified tombstone (all zeros)");
 
     println!("✅ tombstone_box test passed!");
