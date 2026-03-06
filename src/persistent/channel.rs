@@ -9,7 +9,6 @@ use rand::RngCore;
 
 use crate::core::ThinClient;
 use crate::pigeonhole::TombstoneRangeResult;
-use crate::PigeonholeGeometry;
 use super::db::Database;
 use super::error::{PigeonholeDbError, Result};
 use super::models::{Channel as ChannelModel, ReadCapability, ReceivedMessage};
@@ -425,17 +424,14 @@ impl ChannelHandle {
     // Tombstone Operations
     // ========================================================================
 
-    /// Tombstone (overwrite with zeros) the current write position.
+    /// Tombstone (delete) the current write position.
     ///
-    /// This writes an all-zeros payload to the current write index, effectively
+    /// This writes an empty payload to the current write index, effectively
     /// deleting the message at that position. The write index is then advanced.
-    ///
-    /// # Arguments
-    /// * `geometry` - Pigeonhole geometry defining the payload size.
     ///
     /// # Errors
     /// Returns an error if this is a read-only channel or the operation fails.
-    pub async fn tombstone_current(&mut self, geometry: &PigeonholeGeometry) -> Result<()> {
+    pub async fn tombstone_current(&mut self) -> Result<()> {
         let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
             PigeonholeDbError::Other("Cannot tombstone on a read-only channel".to_string())
         })?;
@@ -443,7 +439,7 @@ impl ChannelHandle {
         // Create and send the tombstone
         let (ciphertext, env_desc, env_hash) = self
             .client
-            .tombstone_box(geometry, write_cap, &self.channel.write_index)
+            .tombstone_box(write_cap, &self.channel.write_index)
             .await?;
 
         let mut hash_arr = [0u8; 32];
@@ -475,7 +471,6 @@ impl ChannelHandle {
     /// The write index is advanced past all tombstoned boxes.
     ///
     /// # Arguments
-    /// * `geometry` - Pigeonhole geometry defining the payload size.
     /// * `count` - Maximum number of boxes to tombstone.
     ///
     /// # Returns
@@ -483,14 +478,14 @@ impl ChannelHandle {
     ///
     /// # Errors
     /// Returns an error if this is a read-only channel.
-    pub async fn tombstone_range(&mut self, geometry: &PigeonholeGeometry, count: u32) -> Result<u32> {
+    pub async fn tombstone_range(&mut self, count: u32) -> Result<u32> {
         let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
             PigeonholeDbError::Other("Cannot tombstone on a read-only channel".to_string())
         })?;
 
         let result: TombstoneRangeResult = self
             .client
-            .tombstone_range(geometry, write_cap, &self.channel.write_index, count)
+            .tombstone_range(write_cap, &self.channel.write_index, count)
             .await;
 
         let mut sent_count = 0u32;
@@ -615,6 +610,12 @@ impl ChannelHandle {
 /// - Allows streaming data from disk/network without loading everything into memory
 /// - Packs multiple payloads efficiently into copy stream boxes
 ///
+/// # Crash Recovery
+/// When `is_last=false` is passed to `add_payload` or `add_multi_payload`, partial
+/// data may be buffered by the daemon. The buffer is saved after each call and can
+/// be accessed via `buffer()`. To recover after a crash, persist the buffer and
+/// restore it via `ThinClient::set_stream_buffer` before continuing the stream.
+///
 /// # Example
 /// ```ignore
 /// let mut builder = channel.copy_stream_builder().await?;
@@ -632,6 +633,9 @@ pub struct CopyStreamBuilder {
     temp_write_cap: Vec<u8>,
     temp_index: Vec<u8>,
     total_boxes: usize,
+    /// Buffer containing data that hasn't been output yet.
+    /// This can be persisted for crash recovery.
+    buffer: Vec<u8>,
 }
 
 impl CopyStreamBuilder {
@@ -648,6 +652,7 @@ impl CopyStreamBuilder {
             temp_write_cap,
             temp_index: temp_first_index,
             total_boxes: 0,
+            buffer: Vec::new(),
         })
     }
 
@@ -656,15 +661,6 @@ impl CopyStreamBuilder {
     /// This can be called multiple times to stream data incrementally.
     /// Each call creates courier envelopes and writes them to the temporary
     /// channel immediately.
-    ///
-    /// # ⚠️ Data Loss Warning
-    ///
-    /// When `is_last=false`, the daemon buffers the last partial box's payload
-    /// internally so that subsequent writes can be packed efficiently. **If the
-    /// stream is not completed his buffered data will be lost**.
-    ///
-    /// Always ensure you call `finish()` or eventually pass `is_last=true` to
-    /// flush the buffer and complete the stream safely.
     ///
     /// # Arguments
     /// * `payload` - The payload chunk to add (max 10MB per call).
@@ -690,6 +686,9 @@ impl CopyStreamBuilder {
         ).await?;
 
         let chunk_count = result.envelopes.len();
+
+        // Save the buffer for crash recovery
+        self.buffer = result.buffer;
 
         for chunk in result.envelopes {
             let (ciphertext, env_desc, env_hash) = self
@@ -722,15 +721,6 @@ impl CopyStreamBuilder {
     /// calling `add_payload` multiple times because envelopes from different
     /// destinations are packed together without wasting space.
     ///
-    /// # ⚠️ Data Loss Warning
-    ///
-    /// When `is_last=false`, the daemon buffers the last partial box's payload
-    /// internally so that subsequent writes can be packed efficiently. **If the
-    /// stream is not completed this buffered data will be lost**.
-    ///
-    /// Always ensure you call `finish()` or eventually pass `is_last=true` to
-    /// flush the buffer and complete the stream safely.
-    ///
     /// # Arguments
     /// * `destinations` - List of (payload, dest_write_cap, dest_start_index) tuples.
     /// * `is_last` - True if this is the final set of payloads.
@@ -753,6 +743,9 @@ impl CopyStreamBuilder {
         ).await?;
 
         let chunk_count = result.envelopes.len();
+
+        // Save the buffer for crash recovery
+        self.buffer = result.buffer;
 
         for chunk in result.envelopes {
             let (ciphertext, env_desc, env_hash) = self
@@ -825,6 +818,15 @@ impl CopyStreamBuilder {
     /// Get the stream ID for this copy stream.
     pub fn stream_id(&self) -> &[u8; 16] {
         &self.stream_id
+    }
+
+    /// Get the current buffer contents for crash recovery.
+    ///
+    /// When `is_last=false` is passed to `add_payload` or `add_multi_payload`,
+    /// partial data may be buffered. This buffer can be persisted and restored
+    /// via `ThinClient::set_stream_buffer` on restart to continue the stream.
+    pub fn buffer(&self) -> &[u8] {
+        &self.buffer
     }
 }
 

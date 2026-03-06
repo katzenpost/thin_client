@@ -50,18 +50,12 @@
 //!
 //! // Tombstone (delete) the last written message
 //! channel.tombstone_current(&geometry).await?;
-//!
-//! // Send a large payload using the Copy command
-//! let large_data = vec![0u8; 100_000];
-//! channel.send_large_payload(&large_data, dest_write_cap, dest_start_index).await?;
 //! ```
 //!
 //! # Plaintext Size Constraints
 //!
 //! Single messages sent via [`ChannelHandle::send`] must not exceed
-//! `PigeonholeGeometry.max_plaintext_payload_length` bytes. For larger payloads,
-//! use [`ChannelHandle::send_large_payload`] which automatically chunks the data
-//! and uses the Copy command.
+//! `PigeonholeGeometry.max_plaintext_payload_length` bytes.
 //!
 //! # Database Schema
 //!
@@ -75,7 +69,7 @@ pub mod db;
 pub mod error;
 pub mod models;
 
-pub use channel::{ChannelHandle, PigeonholeClient};
+pub use channel::{ChannelHandle, CopyStreamBuilder, PigeonholeClient};
 pub use db::Database;
 pub use error::{PigeonholeDbError, Result};
 pub use models::{Channel, PendingMessage, ReadCapability, ReceivedMessage};
