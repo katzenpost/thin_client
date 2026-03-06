@@ -93,8 +93,6 @@ from .core import (
     find_services,
     pretty_print_obj,
     blake2_256_sum,
-    tombstone_plaintext,
-    is_tombstone_plaintext,
 )
 
 # Import legacy channel API classes and methods
@@ -182,8 +180,6 @@ __all__ = [
     'find_services',
     'pretty_print_obj',
     'blake2_256_sum',
-    'tombstone_plaintext',
-    'is_tombstone_plaintext',
     'thin_client_error_to_string',
     # Constants
     'SURB_ID_SIZE',

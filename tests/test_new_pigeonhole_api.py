@@ -1018,7 +1018,7 @@ async def test_tombstoning():
 
     This mirrors the Go test: TestTombstoning
     """
-    from katzenpost_thinclient import PigeonholeGeometry, is_tombstone_plaintext
+    from katzenpost_thinclient import PigeonholeGeometry
 
     alice_client = await setup_thin_client()
     bob_client = await setup_thin_client()
@@ -1080,7 +1080,7 @@ async def test_tombstoning():
         # Step 3: Alice tombstones the box
         print("\n--- Step 3: Alice tombstones the box ---")
         tomb_result = await alice_client.tombstone_box(
-            geometry, keypair.write_cap, keypair.first_message_index
+            keypair.write_cap, keypair.first_message_index
         )
         await alice_client.start_resending_encrypted_message(
             read_cap=None,
@@ -1094,9 +1094,8 @@ async def test_tombstoning():
         print("✓ Alice tombstoned the box")
 
         # Wait for tombstone propagation
-        # Tombstones need more time to propagate since they overwrite existing data
-        print("--- Waiting for tombstone propagation (60 seconds) ---")
-        await asyncio.sleep(60)
+        print("--- Waiting for tombstone propagation (30 seconds) ---")
+        await asyncio.sleep(30)
 
         # Step 4: Bob reads again and verifies tombstone
         print("\n--- Step 4: Bob reads again and verifies tombstone ---")
@@ -1113,8 +1112,8 @@ async def test_tombstoning():
             envelope_hash=read_result2.envelope_hash
         )
 
-        assert is_tombstone_plaintext(geometry, bob_plaintext2), "Expected tombstone plaintext (all zeros)"
-        print("✓ Bob verified tombstone (all zeros)")
+        assert len(bob_plaintext2) == 0, "Expected tombstone plaintext (empty)"
+        print("✓ Bob verified tombstone (empty payload)")
 
         print("\n✅ Tombstoning test passed!")
 
@@ -1183,7 +1182,7 @@ async def test_tombstone_range():
 
         # Tombstone the range - creates envelopes without sending
         print(f"\n--- Creating tombstones for {num_messages} boxes ---")
-        result = await alice_client.tombstone_range(geometry, keypair.write_cap, keypair.first_message_index, num_messages)
+        result = await alice_client.tombstone_range(keypair.write_cap, keypair.first_message_index, num_messages)
 
         assert 'envelopes' in result, "Result should contain 'envelopes' list"
         assert len(result['envelopes']) == num_messages, f"Expected {num_messages} envelopes, got {len(result['envelopes'])}"

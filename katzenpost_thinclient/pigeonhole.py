@@ -733,19 +733,17 @@ async def set_stream_buffer(
 
 async def tombstone_box(
     self,
-    geometry: "PigeonholeGeometry",
     write_cap: bytes,
     box_index: bytes
 ) -> EncryptWriteResult:
     """
-    Create an encrypted tombstone for a single pigeonhole box.
+    Create a tombstone for a single pigeonhole box.
 
-    This method creates an encrypted zero-filled payload for overwriting
+    This method creates a tombstone (empty payload with signature) for deleting
     the specified box. The caller must send the returned values via
     start_resending_encrypted_message to complete the tombstone operation.
 
     Args:
-        geometry: Pigeonhole geometry defining payload size.
         write_cap: Write capability for the box.
         box_index: Index of the box to tombstone.
 
@@ -754,42 +752,35 @@ async def tombstone_box(
             and envelope_hash.
 
     Raises:
-        ValueError: If any argument is None or geometry is invalid.
+        ValueError: If any argument is None.
         Exception: If the encrypt operation fails.
 
     Example:
-        >>> geometry = PigeonholeGeometry(max_plaintext_payload_length=1024, nike_name="x25519")
-        >>> result = await client.tombstone_box(geometry, write_cap, box_index)
+        >>> result = await client.tombstone_box(write_cap, box_index)
         >>> await client.start_resending_encrypted_message(
         ...     None, write_cap, None, None,
         ...     result.envelope_descriptor, result.message_ciphertext, result.envelope_hash)
     """
-    if geometry is None:
-        raise ValueError("geometry cannot be None")
-    geometry.validate()
     if write_cap is None:
         raise ValueError("write_cap cannot be None")
     if box_index is None:
         raise ValueError("box_index cannot be None")
 
-    # Create zero-filled tombstone payload
-    tomb = bytes(geometry.max_plaintext_payload_length)
-
-    # Encrypt the tombstone for the target box
-    return await self.encrypt_write(tomb, write_cap, box_index)
+    # Tombstones are created by sending an empty plaintext to encrypt_write
+    # The daemon will detect this and sign an empty payload instead of encrypting
+    return await self.encrypt_write(b'', write_cap, box_index)
 
 
 async def tombstone_range(
     self,
-    geometry: "PigeonholeGeometry",
     write_cap: bytes,
     start: bytes,
     max_count: int
 ) -> "Dict[str, Any]":
     """
-    Create encrypted tombstones for a range of pigeonhole boxes.
+    Create tombstones for a range of pigeonhole boxes.
 
-    This method creates encrypted tombstones for up to max_count boxes,
+    This method creates tombstones for up to max_count boxes,
     starting from the specified box index and advancing through consecutive
     indices. The caller must send each envelope via start_resending_encrypted_message
     to complete the tombstone operations.
@@ -798,7 +789,6 @@ async def tombstone_range(
     containing the envelopes created so far and the next index.
 
     Args:
-        geometry: Pigeonhole geometry defining payload size.
         write_cap: Write capability for the boxes.
         start: Starting MessageBoxIndex.
         max_count: Maximum number of boxes to tombstone.
@@ -806,18 +796,17 @@ async def tombstone_range(
     Returns:
         Dict[str, Any]: A dictionary with:
             - "envelopes" (List[Dict]): List of envelope dicts, each containing:
-                - "message_ciphertext": The encrypted tombstone payload.
+                - "message_ciphertext": The tombstone payload.
                 - "envelope_descriptor": The envelope descriptor.
                 - "envelope_hash": The envelope hash for cancellation.
                 - "box_index": The box index this envelope is for.
             - "next" (bytes): The next MessageBoxIndex after the last processed.
 
     Raises:
-        ValueError: If geometry, write_cap, or start is None, or if geometry is invalid.
+        ValueError: If write_cap or start is None.
 
     Example:
-        >>> geometry = PigeonholeGeometry(max_plaintext_payload_length=1024, nike_name="x25519")
-        >>> result = await client.tombstone_range(geometry, write_cap, start_index, 10)
+        >>> result = await client.tombstone_range(write_cap, start_index, 10)
         >>> for envelope in result["envelopes"]:
         ...     await client.start_resending_encrypted_message(
         ...         None, write_cap, None, None,
@@ -825,9 +814,6 @@ async def tombstone_range(
         ...         envelope["message_ciphertext"],
         ...         envelope["envelope_hash"])
     """
-    if geometry is None:
-        raise ValueError("geometry cannot be None")
-    geometry.validate()
     if write_cap is None:
         raise ValueError("write_cap cannot be None")
     if start is None:
@@ -840,7 +826,7 @@ async def tombstone_range(
 
     while len(envelopes) < max_count:
         try:
-            result = await self.tombstone_box(geometry, write_cap, cur)
+            result = await self.tombstone_box(write_cap, cur)
             envelopes.append({
                 "message_ciphertext": result.message_ciphertext,
                 "envelope_descriptor": result.envelope_descriptor,

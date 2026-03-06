@@ -245,47 +245,6 @@ class PigeonholeGeometry:
         )
 
 
-def tombstone_plaintext(geometry: PigeonholeGeometry) -> bytes:
-    """
-    Creates a tombstone plaintext (all zeros) for the given geometry.
-
-    A tombstone is used to overwrite/delete a pigeonhole box by filling it
-    with zeros.
-
-    Args:
-        geometry: Pigeonhole geometry defining the payload size.
-
-    Returns:
-        bytes: Zero-filled bytes of length max_plaintext_payload_length.
-
-    Raises:
-        ValueError: If the geometry is None or invalid.
-    """
-    if geometry is None:
-        raise ValueError("geometry cannot be None")
-    geometry.validate()
-    return bytes(geometry.max_plaintext_payload_length)
-
-
-def is_tombstone_plaintext(geometry: PigeonholeGeometry, plaintext: bytes) -> bool:
-    """
-    Checks if a plaintext is a tombstone (all zeros).
-
-    Args:
-        geometry: Pigeonhole geometry defining the expected payload size.
-        plaintext: The plaintext bytes to check.
-
-    Returns:
-        bool: True if the plaintext is the correct length and all zeros.
-    """
-    if geometry is None:
-        return False
-    if len(plaintext) != geometry.max_plaintext_payload_length:
-        return False
-    # Constant-time comparison to check if all bytes are zero
-    return all(b == 0 for b in plaintext)
-
-
 class ConfigFile:
     """
     ConfigFile represents everything loaded from a TOML file:
