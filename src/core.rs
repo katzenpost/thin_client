@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use std::time::Duration;
 
 use serde_cbor::{from_slice, Value};
 
