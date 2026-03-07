@@ -1320,6 +1320,25 @@ async def test_box_already_exists_error():
         )
         print("✓ Encrypted second message")
 
+        # First send gets ACK from courier (write is queued)
+        print("--- First send: expecting ACK from courier ---")
+        await client.start_resending_encrypted_message(
+            read_cap=None,
+            write_cap=keypair.write_cap,
+            next_message_index=None,
+            reply_index=None,
+            envelope_descriptor=write_result2.envelope_descriptor,
+            message_ciphertext=write_result2.message_ciphertext,
+            envelope_hash=write_result2.envelope_hash
+        )
+        print("✓ First send received ACK")
+
+        # Wait for replica to process and cache the error response
+        print("Waiting for replica to process write...")
+        await asyncio.sleep(3)
+
+        # Second send retrieves the cached error from courier
+        print("--- Second send: expecting cached error response ---")
         try:
             await client.start_resending_encrypted_message(
                 read_cap=None,
