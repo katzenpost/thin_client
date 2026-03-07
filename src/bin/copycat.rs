@@ -7,7 +7,8 @@
 //! - Read from stdin or a file and write to a copy stream (send mode)
 //! - Read from a channel and write to stdout (receive mode)
 
-use std::io::{self, Read, Write};
+use std::fs::File;
+use std::io::{self, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,8 +22,10 @@ use katzenpost_thin_client::persistent::{
     PigeonholeClient, ReadCapability, PigeonholeDbError,
 };
 
-/// Chunk size for streaming input data (10MB)
-const CHUNK_SIZE: usize = 10 * 1024 * 1024;
+/// Chunk size for streaming input data (4KB)
+/// Smaller chunks give more frequent progress updates and lower memory usage.
+/// Each chunk is processed by add_multi_payload which creates courier envelopes.
+const CHUNK_SIZE: usize = 4 * 1024;
 
 #[derive(Parser)]
 #[command(name = "copycat")]
@@ -176,57 +179,93 @@ async fn run_send(
         ).into());
     };
 
-    // Read input data
-    let input_data = if let Some(path) = input_file {
-        std::fs::read(&path)?
+    // Determine input source and total size
+    // For files: get size from metadata and stream in chunks (memory efficient)
+    // For stdin: must buffer to determine total size for length prefix
+    let (total_len, mut input_reader): (u64, Box<dyn Read>) = if let Some(ref path) = input_file {
+        let metadata = std::fs::metadata(path)?;
+        let file = File::open(path)?;
+        (metadata.len(), Box::new(BufReader::new(file)))
     } else {
+        // For stdin, we must read all data to know the length
+        eprintln!("Reading from stdin (buffering to determine length)...");
         let mut buf = Vec::new();
         io::stdin().read_to_end(&mut buf)?;
-        buf
+        let len = buf.len() as u64;
+        (len, Box::new(std::io::Cursor::new(buf)))
     };
 
-    // Prepend 4-byte big-endian length prefix
-    let total_len = input_data.len() as u32;
-    let mut prefixed_data = Vec::with_capacity(4 + input_data.len());
-    prefixed_data.extend_from_slice(&total_len.to_be_bytes());
-    prefixed_data.extend_from_slice(&input_data);
-
-    eprintln!("Sending {} bytes (with 4-byte length prefix)", input_data.len());
+    eprintln!("Sending {} bytes (with 4-byte length prefix)", total_len);
 
     // Initialize client
     let client = init_client(config).await?;
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
 
     // Create a temporary channel for copy stream operations
+    eprintln!("Creating temporary copy stream channel...");
     let channel = pigeonhole.create_channel("copycat-send").await?;
 
     // Create copy stream builder
+    eprintln!("Initializing copy stream builder...");
     let mut builder = channel.copy_stream_builder().await?;
 
-    // Stream prefixed data in chunks
-    let mut offset = 0;
+    // Calculate total size with 4-byte length prefix
+    let total_with_prefix = 4 + total_len as usize;
+    let total_chunks = (total_with_prefix + CHUNK_SIZE - 1) / CHUNK_SIZE;
+
+    eprintln!("Uploading {} bytes in {} chunk(s)...", total_with_prefix, total_chunks);
+
+    // Stream data in chunks
+    let mut bytes_sent: usize = 0;
     let mut chunk_num = 0;
+    let mut chunk_buf = vec![0u8; CHUNK_SIZE];
+    let mut first_chunk = true;
 
-    while offset < prefixed_data.len() {
-        let remaining = prefixed_data.len() - offset;
-        let current_chunk_size = remaining.min(CHUNK_SIZE);
+    loop {
+        // Build the current chunk
+        let mut payload = Vec::with_capacity(CHUNK_SIZE);
 
-        let payload = &prefixed_data[offset..offset + current_chunk_size];
-        let is_last = offset + current_chunk_size >= prefixed_data.len();
+        // First chunk includes the 4-byte length prefix
+        if first_chunk {
+            payload.extend_from_slice(&(total_len as u32).to_be_bytes());
+            first_chunk = false;
+        }
 
-        // Use add_multi_payload for more efficient packing
-        let destinations = vec![(payload, write_cap.as_slice(), start_index.as_slice())];
+        // Fill remaining space in chunk from input
+        let space_remaining = CHUNK_SIZE - payload.len();
+        let bytes_to_read = space_remaining.min(total_len as usize - (bytes_sent.saturating_sub(4).min(total_len as usize)));
+
+        if bytes_to_read > 0 {
+            let n = input_reader.read(&mut chunk_buf[..bytes_to_read])?;
+            if n > 0 {
+                payload.extend_from_slice(&chunk_buf[..n]);
+            }
+        }
+
+        if payload.is_empty() {
+            break;
+        }
+
+        bytes_sent += payload.len();
+        let is_last = bytes_sent >= total_with_prefix;
+
+        // Use add_multi_payload for efficient packing
+        let destinations = vec![(payload.as_slice(), write_cap.as_slice(), start_index.as_slice())];
         let envelopes_written = builder
             .add_multi_payload(destinations, is_last)
             .await?;
 
+        let progress_pct = (bytes_sent as f64 / total_with_prefix as f64 * 100.0).min(100.0);
         eprintln!(
-            "Processed chunk {} ({} bytes, {} envelopes)",
-            chunk_num, current_chunk_size, envelopes_written
+            "Chunk {}/{}: {} bytes, {} envelopes ({:.1}%)",
+            chunk_num + 1, total_chunks, payload.len(), envelopes_written, progress_pct
         );
 
         chunk_num += 1;
-        offset += current_chunk_size;
+
+        if is_last {
+            break;
+        }
     }
 
     // Execute the copy command
