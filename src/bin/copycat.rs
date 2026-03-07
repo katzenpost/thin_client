@@ -18,7 +18,7 @@ use tokio::time::sleep;
 
 use katzenpost_thin_client::{Config, ThinClient, ThinClientError};
 use katzenpost_thin_client::persistent::{
-    PigeonholeClient, Database, ReadCapability, PigeonholeDbError,
+    PigeonholeClient, ReadCapability, PigeonholeDbError,
 };
 
 /// Chunk size for streaming input data (10MB)
@@ -185,12 +185,7 @@ async fn run_send(
     let start_index = if let Some(idx_b64) = start_index_b64 {
         BASE64.decode(&idx_b64)?
     } else {
-        // Get first index from daemon for this write capability
-        let mut seed = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut seed);
-        let (_, _, first_idx) = client.new_keypair(&seed).await?;
-        // Actually we need to use the start index that matches the write_cap
-        // For now, just use the channel's write index which was generated fresh
+        // Use the channel's write index
         channel.write_index().ok_or("No write index")?.to_vec()
     };
 
