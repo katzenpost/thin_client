@@ -17,6 +17,7 @@ from typing import Any, Dict, List
 from .core import (
     THIN_CLIENT_SUCCESS,
     thin_client_error_to_string,
+    error_code_to_exception,
     PigeonholeGeometry,
     STREAM_ID_LENGTH,
 )
@@ -307,8 +308,16 @@ async def start_resending_encrypted_message(
         self.logger.error(f"Error starting resending encrypted message: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    error_code = reply.get('error_code', 0)
+    if error_code != THIN_CLIENT_SUCCESS:
+        # Use error_code_to_exception to map error codes to specific exceptions
+        # This matches Go's errorCodeToSentinel behavior for replica error codes (1-9)
+        # and thin client error codes (22-24)
+        exc = error_code_to_exception(error_code)
+        if exc:
+            raise exc
+        # Should not reach here, but fallback just in case
+        error_msg = thin_client_error_to_string(error_code)
         raise Exception(f"start_resending_encrypted_message failed: {error_msg}")
 
     return reply.get("plaintext", b"")

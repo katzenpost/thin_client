@@ -25,7 +25,22 @@ import hashlib
 
 from typing import Tuple, Any, Dict, List, Callable
 
+# Pigeonhole Replica Error Codes (matching Go pigeonhole/errors.go)
+# These are error codes returned by storage replicas, passed through by the daemon
+# for the StartResendingEncryptedMessage API.
+REPLICA_SUCCESS = 0
+REPLICA_ERROR_BOX_ID_NOT_FOUND = 1
+REPLICA_ERROR_INVALID_BOX_ID = 2
+REPLICA_ERROR_INVALID_SIGNATURE = 3
+REPLICA_ERROR_DATABASE_FAILURE = 4
+REPLICA_ERROR_INVALID_PAYLOAD = 5
+REPLICA_ERROR_STORAGE_FULL = 6
+REPLICA_ERROR_INTERNAL_ERROR = 7
+REPLICA_ERROR_INVALID_EPOCH = 8
+REPLICA_ERROR_REPLICATION_FAILED = 9
+
 # Thin Client Error Codes (matching Go implementation)
+# These are error codes for thin client operations (separate from replica errors)
 THIN_CLIENT_SUCCESS = 0
 THIN_CLIENT_ERROR_CONNECTION_LOST = 1
 THIN_CLIENT_ERROR_TIMEOUT = 2
@@ -82,6 +97,110 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_START_RESENDING_CANCELLED: "Start resending cancelled",
     }
     return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
+
+
+# Pigeonhole Replica Exceptions (matching Go sentinel errors in thin/thin.go)
+# These exceptions can be caught using isinstance() for specific error handling,
+# similar to how Go uses errors.Is() with sentinel errors.
+
+class ReplicaError(Exception):
+    """Base class for all replica errors."""
+    pass
+
+class BoxIDNotFoundError(ReplicaError):
+    """Box ID not found on the replica. Occurs when reading from a non-existent mailbox."""
+    pass
+
+class InvalidBoxIDError(ReplicaError):
+    """Invalid box ID format."""
+    pass
+
+class InvalidSignatureError(ReplicaError):
+    """Signature verification failed."""
+    pass
+
+class DatabaseFailureError(ReplicaError):
+    """Replica encountered a database error."""
+    pass
+
+class InvalidPayloadError(ReplicaError):
+    """Payload data is invalid."""
+    pass
+
+class StorageFullError(ReplicaError):
+    """Replica's storage capacity has been exceeded."""
+    pass
+
+class ReplicaInternalError(ReplicaError):
+    """Internal error on the replica."""
+    pass
+
+class InvalidEpochError(ReplicaError):
+    """Epoch is invalid or expired."""
+    pass
+
+class ReplicationFailedError(ReplicaError):
+    """Replication to other replicas failed."""
+    pass
+
+class MKEMDecryptionFailedError(Exception):
+    """MKEM envelope decryption failed with all replica keys."""
+    pass
+
+class BACAPDecryptionFailedError(Exception):
+    """BACAP payload decryption or signature verification failed."""
+    pass
+
+class StartResendingCancelledError(Exception):
+    """StartResendingEncryptedMessage operation was cancelled."""
+    pass
+
+
+def error_code_to_exception(error_code: int) -> Exception:
+    """
+    Maps error codes to exception instances for StartResendingEncryptedMessage.
+    This matches Go's errorCodeToSentinel function in thin/pigeonhole.go.
+
+    The daemon passes through pigeonhole replica error codes (1-9) for replica-level errors.
+    For other errors (thin client errors like decryption failures), specific exceptions are raised.
+    """
+    if error_code == REPLICA_SUCCESS:
+        return None
+
+    # Pigeonhole replica error codes (from pigeonhole/errors.go)
+    if error_code == REPLICA_ERROR_BOX_ID_NOT_FOUND:  # 1
+        return BoxIDNotFoundError("box ID not found")
+    elif error_code == REPLICA_ERROR_INVALID_BOX_ID:  # 2
+        return InvalidBoxIDError("invalid box ID")
+    elif error_code == REPLICA_ERROR_INVALID_SIGNATURE:  # 3
+        return InvalidSignatureError("invalid signature")
+    elif error_code == REPLICA_ERROR_DATABASE_FAILURE:  # 4
+        return DatabaseFailureError("database failure")
+    elif error_code == REPLICA_ERROR_INVALID_PAYLOAD:  # 5
+        return InvalidPayloadError("invalid payload")
+    elif error_code == REPLICA_ERROR_STORAGE_FULL:  # 6
+        return StorageFullError("storage full")
+    elif error_code == REPLICA_ERROR_INTERNAL_ERROR:  # 7
+        return ReplicaInternalError("replica internal error")
+    elif error_code == REPLICA_ERROR_INVALID_EPOCH:  # 8
+        return InvalidEpochError("invalid epoch")
+    elif error_code == REPLICA_ERROR_REPLICATION_FAILED:  # 9
+        return ReplicationFailedError("replication failed")
+
+    # Thin client decryption error codes
+    elif error_code == THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED:  # 22
+        return MKEMDecryptionFailedError("MKEM decryption failed")
+    elif error_code == THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED:  # 23
+        return BACAPDecryptionFailedError("BACAP decryption failed")
+
+    # Thin client operation error codes
+    elif error_code == THIN_CLIENT_ERROR_START_RESENDING_CANCELLED:  # 24
+        return StartResendingCancelledError("start resending cancelled")
+
+    # For other error codes, return a generic exception with the error string
+    else:
+        return Exception(thin_client_error_to_string(error_code))
+
 
 class ThinClientOfflineError(Exception):
     pass

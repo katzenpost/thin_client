@@ -1208,3 +1208,58 @@ async def test_tombstone_range():
     finally:
         alice_client.stop()
 
+
+@pytest.mark.asyncio
+async def test_box_id_not_found_error():
+    """
+    Test that we receive a BoxIDNotFoundError when reading from a box that doesn't exist.
+
+    This test verifies:
+    1. A new keypair is created (but no message is written)
+    2. Attempting to read from the non-existent box raises BoxIDNotFoundError
+    3. The error can be caught using isinstance() similar to Go's errors.Is()
+
+    This mirrors the Go test: TestBoxIDNotFoundError
+    """
+    from katzenpost_thinclient import BoxIDNotFoundError
+
+    client = await setup_thin_client()
+
+    try:
+        print("\n=== Test: BoxIDNotFoundError ===")
+
+        # Create a fresh keypair - but do NOT write anything to it
+        seed = os.urandom(32)
+        keypair = await client.new_keypair(seed)
+        print("✓ Created fresh keypair (no messages written)")
+
+        # Encrypt a read request for the non-existent box
+        read_result = await client.encrypt_read(
+            keypair.read_cap, keypair.first_message_index
+        )
+        print("✓ Encrypted read request for non-existent box")
+
+        # Attempt to read - this should raise BoxIDNotFoundError
+        print("--- Attempting to read from non-existent box ---")
+        try:
+            await client.start_resending_encrypted_message(
+                read_cap=keypair.read_cap,
+                write_cap=None,
+                next_message_index=read_result.next_message_index,
+                reply_index=0,
+                envelope_descriptor=read_result.envelope_descriptor,
+                message_ciphertext=read_result.message_ciphertext,
+                envelope_hash=read_result.envelope_hash
+            )
+            # If we get here, the test failed - we expected an error
+            raise AssertionError("Expected BoxIDNotFoundError but no exception was raised")
+        except BoxIDNotFoundError as e:
+            # This is the expected case
+            print(f"✓ Received expected BoxIDNotFoundError: {e}")
+            print("✅ BoxIDNotFoundError test passed!")
+        except Exception as e:
+            # Wrong type of exception
+            raise AssertionError(f"Expected BoxIDNotFoundError but got {type(e).__name__}: {e}")
+
+    finally:
+        client.stop()

@@ -49,7 +49,18 @@ asyncio.run(main())
 
 # Import core classes and functions
 from .core import (
-    # Error codes
+    # Replica error codes (from pigeonhole/errors.go)
+    REPLICA_SUCCESS,
+    REPLICA_ERROR_BOX_ID_NOT_FOUND,
+    REPLICA_ERROR_INVALID_BOX_ID,
+    REPLICA_ERROR_INVALID_SIGNATURE,
+    REPLICA_ERROR_DATABASE_FAILURE,
+    REPLICA_ERROR_INVALID_PAYLOAD,
+    REPLICA_ERROR_STORAGE_FULL,
+    REPLICA_ERROR_INTERNAL_ERROR,
+    REPLICA_ERROR_INVALID_EPOCH,
+    REPLICA_ERROR_REPLICATION_FAILED,
+    # Thin client error codes
     THIN_CLIENT_SUCCESS,
     THIN_CLIENT_ERROR_CONNECTION_LOST,
     THIN_CLIENT_ERROR_TIMEOUT,
@@ -76,7 +87,22 @@ from .core import (
     THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED,
     THIN_CLIENT_ERROR_START_RESENDING_CANCELLED,
     thin_client_error_to_string,
-    # Exceptions
+    error_code_to_exception,
+    # Replica exceptions (matching Go sentinel errors)
+    ReplicaError,
+    BoxIDNotFoundError,
+    InvalidBoxIDError,
+    InvalidSignatureError,
+    DatabaseFailureError,
+    InvalidPayloadError,
+    StorageFullError,
+    ReplicaInternalError,
+    InvalidEpochError,
+    ReplicationFailedError,
+    # Thin client exceptions
+    MKEMDecryptionFailedError,
+    BACAPDecryptionFailedError,
+    StartResendingCancelledError,
     ThinClientOfflineError,
     # Constants
     SURB_ID_SIZE,
@@ -181,11 +207,23 @@ __all__ = [
     'pretty_print_obj',
     'blake2_256_sum',
     'thin_client_error_to_string',
+    'error_code_to_exception',
     # Constants
     'SURB_ID_SIZE',
     'MESSAGE_ID_SIZE',
     'STREAM_ID_LENGTH',
-    # Error codes
+    # Replica error codes (from pigeonhole/errors.go)
+    'REPLICA_SUCCESS',
+    'REPLICA_ERROR_BOX_ID_NOT_FOUND',
+    'REPLICA_ERROR_INVALID_BOX_ID',
+    'REPLICA_ERROR_INVALID_SIGNATURE',
+    'REPLICA_ERROR_DATABASE_FAILURE',
+    'REPLICA_ERROR_INVALID_PAYLOAD',
+    'REPLICA_ERROR_STORAGE_FULL',
+    'REPLICA_ERROR_INTERNAL_ERROR',
+    'REPLICA_ERROR_INVALID_EPOCH',
+    'REPLICA_ERROR_REPLICATION_FAILED',
+    # Thin client error codes
     'THIN_CLIENT_SUCCESS',
     'THIN_CLIENT_ERROR_CONNECTION_LOST',
     'THIN_CLIENT_ERROR_TIMEOUT',
@@ -211,4 +249,19 @@ __all__ = [
     'THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED',
     'THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED',
     'THIN_CLIENT_ERROR_START_RESENDING_CANCELLED',
+    # Replica exceptions (matching Go sentinel errors)
+    'ReplicaError',
+    'BoxIDNotFoundError',
+    'InvalidBoxIDError',
+    'InvalidSignatureError',
+    'DatabaseFailureError',
+    'InvalidPayloadError',
+    'StorageFullError',
+    'ReplicaInternalError',
+    'InvalidEpochError',
+    'ReplicationFailedError',
+    # Thin client exceptions
+    'MKEMDecryptionFailedError',
+    'BACAPDecryptionFailedError',
+    'StartResendingCancelledError',
 ]
