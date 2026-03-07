@@ -582,3 +582,49 @@ async fn test_tombstone_range() {
 
     println!("✅ tombstone_range test passed! Created and sent {} tombstones successfully!", num_messages);
 }
+
+#[tokio::test]
+async fn test_box_id_not_found_error() {
+    println!("\n=== Test: BoxIDNotFoundError ===");
+    println!("This test verifies that reading from a non-existent box returns BoxNotFound error");
+
+    let client = setup_thin_client().await.expect("Failed to setup client");
+
+    // Create a fresh keypair - but do NOT write anything to it
+    let seed: [u8; 32] = rand::random();
+    let (_write_cap, read_cap, first_index) = client.new_keypair(&seed).await
+        .expect("Failed to create keypair");
+    println!("✓ Created fresh keypair (no messages written)");
+
+    // Encrypt a read request for the non-existent box
+    let (ciphertext, next_index, env_desc, env_hash) = client
+        .encrypt_read(&read_cap, &first_index).await
+        .expect("Failed to encrypt read");
+    println!("✓ Encrypted read request for non-existent box");
+
+    // Attempt to read - this should return BoxNotFound error
+    println!("--- Attempting to read from non-existent box ---");
+    let result = client.start_resending_encrypted_message(
+        Some(&read_cap),
+        None,
+        Some(&next_index),
+        Some(0),
+        &env_desc,
+        &ciphertext,
+        &env_hash
+    ).await;
+
+    // Verify we got the expected error
+    match result {
+        Err(katzenpost_thin_client::ThinClientError::BoxNotFound) => {
+            println!("✓ Received expected BoxNotFound error");
+            println!("✅ BoxIDNotFoundError test passed!");
+        }
+        Err(e) => {
+            panic!("Expected BoxNotFound error but got: {:?}", e);
+        }
+        Ok(plaintext) => {
+            panic!("Expected BoxNotFound error but got success with plaintext len: {}", plaintext.len());
+        }
+    }
+}
