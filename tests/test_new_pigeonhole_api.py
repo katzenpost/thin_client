@@ -1263,3 +1263,82 @@ async def test_box_id_not_found_error():
 
     finally:
         client.stop()
+
+
+@pytest.mark.asyncio
+async def test_box_already_exists_error():
+    """
+    Test that we receive a BoxAlreadyExistsError when writing to a box that already has data.
+
+    This test verifies:
+    1. A new keypair is created and a message is successfully written
+    2. Attempting to write to the same box again raises BoxAlreadyExistsError
+    3. The error can be caught using isinstance() similar to Go's errors.Is()
+
+    This mirrors the Go test: TestBoxAlreadyExistsError
+    """
+    from katzenpost_thinclient import BoxAlreadyExistsError
+
+    client = await setup_thin_client()
+
+    try:
+        print("\n=== Test: BoxAlreadyExistsError ===")
+
+        # Create a fresh keypair
+        seed = os.urandom(32)
+        keypair = await client.new_keypair(seed)
+        print("✓ Created keypair")
+
+        # First write - should succeed
+        print("--- First write (should succeed) ---")
+        message1 = b"First message - this should work"
+        write_result1 = await client.encrypt_write(
+            message1, keypair.write_cap, keypair.first_message_index
+        )
+        print("✓ Encrypted first message")
+
+        await client.start_resending_encrypted_message(
+            read_cap=None,
+            write_cap=keypair.write_cap,
+            next_message_index=None,
+            reply_index=None,
+            envelope_descriptor=write_result1.envelope_descriptor,
+            message_ciphertext=write_result1.message_ciphertext,
+            envelope_hash=write_result1.envelope_hash
+        )
+        print("✓ First write succeeded")
+
+        # Wait for propagation
+        print("Waiting for message propagation...")
+        await asyncio.sleep(5)
+
+        # Second write to the SAME box - should fail
+        print("--- Second write to same box (should fail) ---")
+        message2 = b"Second message - this should fail"
+        write_result2 = await client.encrypt_write(
+            message2, keypair.write_cap, keypair.first_message_index
+        )
+        print("✓ Encrypted second message")
+
+        try:
+            await client.start_resending_encrypted_message(
+                read_cap=None,
+                write_cap=keypair.write_cap,
+                next_message_index=None,
+                reply_index=None,
+                envelope_descriptor=write_result2.envelope_descriptor,
+                message_ciphertext=write_result2.message_ciphertext,
+                envelope_hash=write_result2.envelope_hash
+            )
+            # If we get here, the test failed - we expected an error
+            raise AssertionError("Expected BoxAlreadyExistsError but no exception was raised")
+        except BoxAlreadyExistsError as e:
+            # This is the expected case
+            print(f"✓ Received expected BoxAlreadyExistsError: {e}")
+            print("✅ BoxAlreadyExistsError test passed!")
+        except Exception as e:
+            # Wrong type of exception
+            raise AssertionError(f"Expected BoxAlreadyExistsError but got {type(e).__name__}: {e}")
+
+    finally:
+        client.stop()

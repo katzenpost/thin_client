@@ -38,6 +38,7 @@ REPLICA_ERROR_STORAGE_FULL = 6
 REPLICA_ERROR_INTERNAL_ERROR = 7
 REPLICA_ERROR_INVALID_EPOCH = 8
 REPLICA_ERROR_REPLICATION_FAILED = 9
+REPLICA_ERROR_BOX_ALREADY_EXISTS = 10
 
 # Thin Client Error Codes (matching Go implementation)
 # These are error codes for thin client operations (separate from replica errors)
@@ -143,6 +144,10 @@ class ReplicationFailedError(ReplicaError):
     """Replication to other replicas failed."""
     pass
 
+class BoxAlreadyExistsError(ReplicaError):
+    """Box already contains data. Pigeonhole writes are immutable."""
+    pass
+
 class MKEMDecryptionFailedError(Exception):
     """MKEM envelope decryption failed with all replica keys."""
     pass
@@ -186,6 +191,8 @@ def error_code_to_exception(error_code: int) -> Exception:
         return InvalidEpochError("invalid epoch")
     elif error_code == REPLICA_ERROR_REPLICATION_FAILED:  # 9
         return ReplicationFailedError("replication failed")
+    elif error_code == REPLICA_ERROR_BOX_ALREADY_EXISTS:  # 10
+        return BoxAlreadyExistsError("box already exists")
 
     # Thin client decryption error codes
     elif error_code == THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED:  # 22

@@ -60,6 +60,7 @@ from .core import (
     REPLICA_ERROR_INTERNAL_ERROR,
     REPLICA_ERROR_INVALID_EPOCH,
     REPLICA_ERROR_REPLICATION_FAILED,
+    REPLICA_ERROR_BOX_ALREADY_EXISTS,
     # Thin client error codes
     THIN_CLIENT_SUCCESS,
     THIN_CLIENT_ERROR_CONNECTION_LOST,
@@ -99,6 +100,7 @@ from .core import (
     ReplicaInternalError,
     InvalidEpochError,
     ReplicationFailedError,
+    BoxAlreadyExistsError,
     # Thin client exceptions
     MKEMDecryptionFailedError,
     BACAPDecryptionFailedError,
@@ -223,6 +225,7 @@ __all__ = [
     'REPLICA_ERROR_INTERNAL_ERROR',
     'REPLICA_ERROR_INVALID_EPOCH',
     'REPLICA_ERROR_REPLICATION_FAILED',
+    'REPLICA_ERROR_BOX_ALREADY_EXISTS',
     # Thin client error codes
     'THIN_CLIENT_SUCCESS',
     'THIN_CLIENT_ERROR_CONNECTION_LOST',
@@ -260,6 +263,7 @@ __all__ = [
     'ReplicaInternalError',
     'InvalidEpochError',
     'ReplicationFailedError',
+    'BoxAlreadyExistsError',
     # Thin client exceptions
     'MKEMDecryptionFailedError',
     'BACAPDecryptionFailedError',
