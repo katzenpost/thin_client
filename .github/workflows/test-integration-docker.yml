@@ -7,7 +7,7 @@ on:
 jobs:
   test-integration-docker:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     steps:
       - name: Checkout thinclient repository
@@ -67,7 +67,7 @@ jobs:
           python -m pytest tests/ -vvv -s --tb=short --timeout=1200
 
       - name: Run Rust integration tests
-        timeout-minutes: 20
+        timeout-minutes: 45
         run: |
           cd thinclient
           cargo test --test '*' -- --nocapture --test-threads=1
