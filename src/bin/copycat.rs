@@ -157,6 +157,25 @@ async fn run_send(
     // Decode write capability
     let write_cap = BASE64.decode(&write_cap_b64)?;
 
+    // BACAP WriteCap is 168 bytes: 64-byte PrivateKey + 104-byte MessageBoxIndex
+    // Extract start_index from the write_cap if not provided explicitly
+    const PRIVATE_KEY_SIZE: usize = 64;
+    const MESSAGE_BOX_INDEX_SIZE: usize = 104;
+    const WRITE_CAP_SIZE: usize = PRIVATE_KEY_SIZE + MESSAGE_BOX_INDEX_SIZE;
+
+    let start_index = if let Some(idx_b64) = start_index_b64 {
+        BASE64.decode(&idx_b64)?
+    } else if write_cap.len() == WRITE_CAP_SIZE {
+        // Extract firstMessageBoxIndex from bytes 64-168 of the WriteCap
+        write_cap[PRIVATE_KEY_SIZE..].to_vec()
+    } else {
+        return Err(format!(
+            "Invalid write capability size: {} bytes (expected {} bytes). \
+             Either provide a full WriteCap or use -i flag to specify start index.",
+            write_cap.len(), WRITE_CAP_SIZE
+        ).into());
+    };
+
     // Read input data
     let input_data = if let Some(path) = input_file {
         std::fs::read(&path)?
@@ -180,14 +199,6 @@ async fn run_send(
 
     // Create a temporary channel for copy stream operations
     let channel = pigeonhole.create_channel("copycat-send").await?;
-
-    // Determine start index - use provided or get first index from write cap
-    let start_index = if let Some(idx_b64) = start_index_b64 {
-        BASE64.decode(&idx_b64)?
-    } else {
-        // Use the channel's write index
-        channel.write_index().ok_or("No write index")?.to_vec()
-    };
 
     // Create copy stream builder
     let mut builder = channel.copy_stream_builder().await?;
@@ -238,20 +249,28 @@ async fn run_receive(
     // Decode read capability
     let read_cap_bytes = BASE64.decode(&read_cap_b64)?;
 
+    // BACAP ReadCap is 136 bytes: 32-byte PublicKey + 104-byte MessageBoxIndex
+    // Extract start_index from the read_cap if not provided explicitly
+    const PUBLIC_KEY_SIZE: usize = 32;
+    const MESSAGE_BOX_INDEX_SIZE: usize = 104;
+    const READ_CAP_SIZE: usize = PUBLIC_KEY_SIZE + MESSAGE_BOX_INDEX_SIZE;
+
+    let start_index = if let Some(idx_b64) = start_index_b64 {
+        BASE64.decode(&idx_b64)?
+    } else if read_cap_bytes.len() == READ_CAP_SIZE {
+        // Extract firstMessageBoxIndex from bytes 32-136 of the ReadCap
+        read_cap_bytes[PUBLIC_KEY_SIZE..].to_vec()
+    } else {
+        return Err(format!(
+            "Invalid read capability size: {} bytes (expected {} bytes). \
+             Either provide a full ReadCap or use -i flag to specify start index.",
+            read_cap_bytes.len(), READ_CAP_SIZE
+        ).into());
+    };
+
     // Initialize client
     let client = init_client(config).await?;
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
-
-    // Create a ReadCapability structure
-    let start_index = if let Some(idx_b64) = start_index_b64 {
-        BASE64.decode(&idx_b64)?
-    } else {
-        // Without a start index, we need to get it from somewhere
-        // The Go version uses readCap.GetFirstMessageBoxIndex()
-        // For now, we'll require the user to provide it or use a default
-        // This is a simplification - in practice the read_cap should include the start index
-        return Err("Start index is required for receive (use -i flag)".into());
-    };
 
     let read_capability = ReadCapability {
         read_cap: read_cap_bytes,
@@ -269,7 +288,7 @@ async fn run_receive(
     let mut expected_len: Option<u32> = None;
     let mut box_num = 0;
 
-    const MAX_RETRIES: u32 = 100;
+    const MAX_RETRIES: u32 = 6;
     const BASE_DELAY_MS: u64 = 500;
 
     // Keep reading until we have all expected data
