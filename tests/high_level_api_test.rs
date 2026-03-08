@@ -493,3 +493,184 @@ async fn test_stream_buffer_recovery_workflow() {
 
     println!("\n✅ Stream buffer crash recovery workflow test passed!");
 }
+
+#[tokio::test]
+async fn test_read_box_no_retry() {
+    println!("\n=== Test: read_box_no_retry returns immediate error for non-existent box ===");
+
+    let (alice_thin, _bob_thin) = setup_clients().await.expect("Failed to setup clients");
+
+    let alice = PigeonholeClient::new_in_memory(alice_thin.clone())
+        .expect("Failed to create Alice's PigeonholeClient");
+
+    // Create a channel
+    let alice_channel = alice.create_channel("read-no-retry-test").await
+        .expect("Failed to create channel");
+    let read_cap = alice_channel.share_read_capability();
+
+    // Try to read from a box that doesn't exist yet (nothing was written)
+    // With no_retry, this should fail immediately with BoxIDNotFound
+    println!("\n--- Attempting read_box_no_retry on empty box ---");
+    let result = alice_channel.read_box_no_retry(&read_cap.start_index).await;
+
+    match result {
+        Err(e) => {
+            let err_str = format!("{:?}", e);
+            println!("✓ Got expected error: {}", err_str);
+            assert!(
+                err_str.contains("BoxIDNotFound") || err_str.contains("box id not found"),
+                "Expected BoxIDNotFound error, got: {}", err_str
+            );
+        }
+        Ok(_) => {
+            panic!("Expected BoxIDNotFound error, but read succeeded");
+        }
+    }
+
+    println!("\n✅ read_box_no_retry test passed!");
+}
+
+#[tokio::test]
+async fn test_receive_no_retry() {
+    println!("\n=== Test: receive_no_retry returns immediate error for non-existent message ===");
+
+    let (alice_thin, _bob_thin) = setup_clients().await.expect("Failed to setup clients");
+
+    let alice = PigeonholeClient::new_in_memory(alice_thin.clone())
+        .expect("Failed to create Alice's PigeonholeClient");
+
+    // Create a channel
+    let mut alice_channel = alice.create_channel("receive-no-retry-test").await
+        .expect("Failed to create channel");
+
+    // Try to receive when nothing was sent
+    // With no_retry, this should fail immediately with BoxIDNotFound
+    println!("\n--- Attempting receive_no_retry on empty channel ---");
+    let result = alice_channel.receive_no_retry().await;
+
+    match result {
+        Err(e) => {
+            let err_str = format!("{:?}", e);
+            println!("✓ Got expected error: {}", err_str);
+            assert!(
+                err_str.contains("BoxIDNotFound") || err_str.contains("box id not found"),
+                "Expected BoxIDNotFound error, got: {}", err_str
+            );
+        }
+        Ok(_) => {
+            panic!("Expected BoxIDNotFound error, but receive succeeded");
+        }
+    }
+
+    println!("\n✅ receive_no_retry test passed!");
+}
+
+#[tokio::test]
+async fn test_write_box_return_box_exists() {
+    println!("\n=== Test: write_box_return_box_exists returns error on duplicate write ===");
+
+    let (alice_thin, _bob_thin) = setup_clients().await.expect("Failed to setup clients");
+
+    let alice = PigeonholeClient::new_in_memory(alice_thin.clone())
+        .expect("Failed to create Alice's PigeonholeClient");
+
+    // Create a channel
+    let alice_channel = alice.create_channel("write-box-exists-test").await
+        .expect("Failed to create channel");
+    let start_index = alice_channel.read_index().to_vec();
+
+    // First write should succeed
+    println!("\n--- First write_box ---");
+    let message1 = b"First message";
+    alice_channel.write_box(message1, &start_index).await
+        .expect("First write should succeed");
+    println!("✓ First write succeeded");
+
+    // Wait for propagation
+    println!("\n--- Waiting 30 seconds for propagation ---");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+
+    // Second write to same index with return_box_exists should fail
+    println!("\n--- Second write_box_return_box_exists to same index ---");
+    let message2 = b"Second message";
+    let result = alice_channel.write_box_return_box_exists(message2, &start_index).await;
+
+    match result {
+        Err(e) => {
+            let err_str = format!("{:?}", e);
+            println!("✓ Got expected error: {}", err_str);
+            assert!(
+                err_str.contains("BoxAlreadyExists") || err_str.contains("box already exists"),
+                "Expected BoxAlreadyExists error, got: {}", err_str
+            );
+        }
+        Ok(_) => {
+            panic!("Expected BoxAlreadyExists error, but write succeeded");
+        }
+    }
+
+    println!("\n✅ write_box_return_box_exists test passed!");
+}
+
+#[tokio::test]
+async fn test_send_return_box_exists() {
+    println!("\n=== Test: send_return_box_exists returns error on duplicate send ===");
+
+    let (alice_thin, bob_thin) = setup_clients().await.expect("Failed to setup clients");
+
+    let alice = PigeonholeClient::new_in_memory(alice_thin.clone())
+        .expect("Failed to create Alice's PigeonholeClient");
+    let bob = PigeonholeClient::new_in_memory(bob_thin.clone())
+        .expect("Failed to create Bob's PigeonholeClient");
+
+    // Create a channel
+    let mut alice_channel = alice.create_channel("send-box-exists-test").await
+        .expect("Failed to create channel");
+    let read_cap = alice_channel.share_read_capability();
+    let _bob_channel = bob.import_channel("send-box-exists-test", &read_cap)
+        .expect("Failed to import channel");
+
+    // First send should succeed
+    println!("\n--- First send ---");
+    let message1 = b"First message";
+    alice_channel.send(message1).await
+        .expect("First send should succeed");
+    println!("✓ First send succeeded");
+
+    // Wait for propagation
+    println!("\n--- Waiting 30 seconds for propagation ---");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+
+    // Now manually write to the CURRENT write index (which was just advanced)
+    // to set up a conflict scenario. We need to use write_box to write at the
+    // new write_index, then try send_return_box_exists which will try to write there
+    let current_write_index = alice_channel.write_index().unwrap().to_vec();
+    println!("\n--- Writing directly to current write index to create conflict ---");
+    alice_channel.write_box(b"Conflict message", &current_write_index).await
+        .expect("Direct write should succeed");
+    println!("✓ Conflict message written");
+
+    // Wait for propagation
+    println!("\n--- Waiting 30 seconds for propagation ---");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+
+    // Now send_return_box_exists should fail because the box is occupied
+    println!("\n--- Attempting send_return_box_exists ---");
+    let result = alice_channel.send_return_box_exists(b"This should fail").await;
+
+    match result {
+        Err(e) => {
+            let err_str = format!("{:?}", e);
+            println!("✓ Got expected error: {}", err_str);
+            assert!(
+                err_str.contains("BoxAlreadyExists") || err_str.contains("box already exists"),
+                "Expected BoxAlreadyExists error, got: {}", err_str
+            );
+        }
+        Ok(_) => {
+            panic!("Expected BoxAlreadyExists error, but send succeeded");
+        }
+    }
+
+    println!("\n✅ send_return_box_exists test passed!");
+}

@@ -254,6 +254,46 @@ impl ChannelHandle {
         Ok(next_index)
     }
 
+    /// Write a single box payload at a specific index, returning BoxAlreadyExists as error.
+    ///
+    /// Like `write_box`, but returns `BoxAlreadyExistsError` if the box already
+    /// contains data, instead of treating it as an idempotent success.
+    ///
+    /// # Arguments
+    /// * `plaintext` - The payload to write.
+    /// * `box_index` - The specific box index to write to.
+    ///
+    /// # Returns
+    /// The next box index after this write.
+    ///
+    /// # Errors
+    /// Returns `BoxAlreadyExistsError` if the box is already written.
+    pub async fn write_box_return_box_exists(&self, plaintext: &[u8], box_index: &[u8]) -> Result<Vec<u8>> {
+        let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
+            PigeonholeDbError::Other("Cannot write on a read-only channel".to_string())
+        })?;
+
+        let (message_ciphertext, envelope_descriptor, envelope_hash) = self
+            .client
+            .encrypt_write(plaintext, write_cap, box_index)
+            .await?;
+
+        self.client
+            .start_resending_encrypted_message_return_box_exists(
+                None,
+                Some(write_cap),
+                None,
+                Some(0),
+                &envelope_descriptor,
+                &message_ciphertext,
+                &envelope_hash,
+            )
+            .await?;
+
+        let next_index = self.client.next_message_box_index(box_index).await?;
+        Ok(next_index)
+    }
+
     /// Read a single box payload at a specific index (low-level).
     ///
     /// This is the low-level primitive for reading from a pigeonhole box.
@@ -277,6 +317,45 @@ impl ChannelHandle {
         let plaintext = self
             .client
             .start_resending_encrypted_message(
+                Some(&self.channel.read_cap),
+                None,
+                Some(&next_message_index),
+                Some(0),
+                &envelope_descriptor,
+                &message_ciphertext,
+                &envelope_hash,
+            )
+            .await?;
+
+        let next_index = self.client.next_message_box_index(box_index).await?;
+        Ok((plaintext, next_index))
+    }
+
+    /// Read a single box without automatic retries on BoxIDNotFound.
+    ///
+    /// Like `read_box`, but returns `BoxIDNotFoundError` immediately instead
+    /// of retrying (which normally accounts for mixnet replication lag).
+    ///
+    /// Use this when you need to quickly check if a box exists without waiting
+    /// for potential retries.
+    ///
+    /// # Arguments
+    /// * `box_index` - The specific box index to read from.
+    ///
+    /// # Returns
+    /// A tuple of (plaintext, next_box_index).
+    ///
+    /// # Errors
+    /// Returns `BoxIDNotFoundError` immediately if box doesn't exist.
+    pub async fn read_box_no_retry(&self, box_index: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        let (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash) = self
+            .client
+            .encrypt_read(&self.channel.read_cap, box_index)
+            .await?;
+
+        let plaintext = self
+            .client
+            .start_resending_encrypted_message_no_retry(
                 Some(&self.channel.read_cap),
                 None,
                 Some(&next_message_index),
@@ -363,6 +442,65 @@ impl ChannelHandle {
         }
     }
 
+    /// Send a message, returning BoxAlreadyExists as error if box is occupied.
+    ///
+    /// Like `send`, but returns `BoxAlreadyExistsError` if the box already
+    /// contains data, instead of treating it as an idempotent success.
+    ///
+    /// # Arguments
+    /// * `plaintext` - The message to send.
+    ///
+    /// # Errors
+    /// Returns `BoxAlreadyExistsError` if the box is already written.
+    pub async fn send_return_box_exists(&mut self, plaintext: &[u8]) -> Result<()> {
+        let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
+            PigeonholeDbError::Other("Cannot send on a read-only channel".to_string())
+        })?;
+
+        let (message_ciphertext, envelope_descriptor, envelope_hash) = self
+            .client
+            .encrypt_write(plaintext, write_cap, &self.channel.write_index)
+            .await?;
+
+        let pending = self.db.create_pending_message(
+            self.channel.id,
+            plaintext,
+            &message_ciphertext,
+            &envelope_descriptor,
+            &envelope_hash,
+            &self.channel.write_index,
+        )?;
+
+        self.db.update_pending_message_status(pending.id, "sending")?;
+
+        let result = self
+            .client
+            .start_resending_encrypted_message_return_box_exists(
+                None,
+                Some(write_cap),
+                None,
+                Some(0),
+                &envelope_descriptor,
+                &message_ciphertext,
+                &envelope_hash,
+            )
+            .await;
+
+        match result {
+            Ok(_) => {
+                let next_index = self.client.next_message_box_index(&self.channel.write_index).await?;
+                self.db.update_write_index(self.channel.id, &next_index)?;
+                self.db.delete_pending_message(pending.id)?;
+                self.channel.write_index = next_index;
+                Ok(())
+            }
+            Err(e) => {
+                self.db.update_pending_message_status(pending.id, "failed")?;
+                Err(e.into())
+            }
+        }
+    }
+
     /// Receive the next message from this channel (high-level).
     ///
     /// This method reads from the current read index, stores the message,
@@ -382,6 +520,51 @@ impl ChannelHandle {
         let plaintext = self
             .client
             .start_resending_encrypted_message(
+                Some(&self.channel.read_cap),
+                None,
+                Some(&next_message_index),
+                Some(0),
+                &envelope_descriptor,
+                &message_ciphertext,
+                &envelope_hash,
+            )
+            .await?;
+
+        self.db.create_received_message(
+            self.channel.id,
+            &plaintext,
+            &self.channel.read_index,
+        )?;
+
+        let next_index = self.client.next_message_box_index(&self.channel.read_index).await?;
+        self.db.update_read_index(self.channel.id, &next_index)?;
+        self.channel.read_index = next_index;
+
+        Ok(plaintext)
+    }
+
+    /// Receive the next message without automatic retries on BoxIDNotFound.
+    ///
+    /// Like `receive`, but returns `BoxIDNotFoundError` immediately instead
+    /// of retrying (which normally accounts for mixnet replication lag).
+    ///
+    /// Use this when you need to quickly check if a message exists without
+    /// waiting for potential retries.
+    ///
+    /// # Returns
+    /// The decrypted message plaintext.
+    ///
+    /// # Errors
+    /// Returns `BoxIDNotFoundError` immediately if no message exists.
+    pub async fn receive_no_retry(&mut self) -> Result<Vec<u8>> {
+        let (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash) = self
+            .client
+            .encrypt_read(&self.channel.read_cap, &self.channel.read_index)
+            .await?;
+
+        let plaintext = self
+            .client
+            .start_resending_encrypted_message_no_retry(
                 Some(&self.channel.read_cap),
                 None,
                 Some(&next_message_index),
