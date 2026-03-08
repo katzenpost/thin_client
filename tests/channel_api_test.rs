@@ -603,8 +603,9 @@ async fn test_box_id_not_found_error() {
     println!("✓ Encrypted read request for non-existent box");
 
     // Attempt to read - this should return BoxNotFound error
+    // Use start_resending_encrypted_message_no_retry to get immediate error without retries
     println!("--- Attempting to read from non-existent box ---");
-    let result = client.start_resending_encrypted_message(
+    let result = client.start_resending_encrypted_message_no_retry(
         Some(&read_cap),
         None,
         Some(&next_index),
