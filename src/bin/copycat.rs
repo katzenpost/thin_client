@@ -335,22 +335,20 @@ async fn run_receive(
         let mut plaintext: Option<Vec<u8>> = None;
 
         // Try to read the next box with retries
+        // Use receive_no_retry() for immediate feedback, then manually retry with backoff
         for attempt in 0..MAX_RETRIES {
             eprintln!("Attempting to read box {} (attempt {}/{})...", box_num, attempt + 1, MAX_RETRIES);
 
-            match channel.receive().await {
+            match channel.receive_no_retry().await {
                 Ok(data) if !data.is_empty() => {
                     plaintext = Some(data);
                     break;
                 }
                 Ok(_) => {
-                    // Empty data received - this shouldn't normally happen
-                    eprintln!("Box {} returned empty data (attempt {}/{})", box_num, attempt + 1, MAX_RETRIES);
-                    if attempt < MAX_RETRIES - 1 {
-                        let delay = BASE_DELAY_MS * (1 << attempt.min(6));
-                        eprintln!("Retrying in {}ms...", delay);
-                        sleep(Duration::from_millis(delay)).await;
-                    }
+                    // Empty data = tombstone, treat as end of stream
+                    eprintln!("Box {} is a tombstone (empty), stopping", box_num);
+                    plaintext = Some(Vec::new());
+                    break;
                 }
                 Err(PigeonholeDbError::ThinClient(ThinClientError::BoxNotFound)) => {
                     // Box doesn't exist yet - retry with backoff
@@ -376,6 +374,12 @@ async fn run_receive(
         let data = plaintext.ok_or_else(|| {
             format!("Failed to read box {} after {} retries", box_num, MAX_RETRIES)
         })?;
+
+        // Tombstone = end of stream
+        if data.is_empty() {
+            eprintln!("Reached tombstone at box {}", box_num);
+            break;
+        }
 
         // Accumulate received data
         let data_len = data.len();
