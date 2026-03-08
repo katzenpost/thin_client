@@ -225,13 +225,12 @@ async def test_cancel_causes_start_resending_to_return_error():
     This test verifies the core cancel behavior:
     1. Start a start_resending_encrypted_message call (which blocks waiting for reply)
     2. Call cancel_resending_encrypted_message from another task
-    3. Verify that the original start_resending call returns with error code 24
-       (THIN_CLIENT_ERROR_START_RESENDING_CANCELLED)
+    3. Verify that the original start_resending call returns with StartResendingCancelledError
 
     This requires a running daemon but does NOT require a full mixnet since we're
     testing the cancel behavior before any reply is received from the mixnet.
     """
-    from katzenpost_thinclient import THIN_CLIENT_ERROR_START_RESENDING_CANCELLED
+    from katzenpost_thinclient import StartResendingCancelledError
 
     client = await setup_thin_client()
 
@@ -250,13 +249,13 @@ async def test_cancel_causes_start_resending_to_return_error():
         print(f"✓ Encrypted message")
         print(f"EnvelopeHash: {result.envelope_hash.hex()}")
 
-        # Track whether the start_resending returned with the expected error
-        start_resending_error = None
+        # Track the result of the start_resending call
+        start_resending_result = None  # Will be "success", "cancelled", or an exception
         start_resending_completed = asyncio.Event()
 
         async def start_resending_task():
-            """Task that calls start_resending and captures any error."""
-            nonlocal start_resending_error
+            """Task that calls start_resending and captures the result."""
+            nonlocal start_resending_result
             try:
                 await client.start_resending_encrypted_message(
                     read_cap=None,
@@ -267,10 +266,14 @@ async def test_cancel_causes_start_resending_to_return_error():
                     message_ciphertext=result.message_ciphertext,
                     envelope_hash=result.envelope_hash
                 )
-                # If we get here without error, that's unexpected
-                start_resending_error = "No error raised"
+                # If we get here without error, the message completed before cancel
+                start_resending_result = "success"
+            except StartResendingCancelledError:
+                # This is the expected case when cancel works
+                start_resending_result = "cancelled"
             except Exception as e:
-                start_resending_error = str(e)
+                # Unexpected error
+                start_resending_result = e
             finally:
                 start_resending_completed.set()
 
@@ -305,25 +308,25 @@ async def test_cancel_causes_start_resending_to_return_error():
 
         # Verify the result
         print(f"--- Verifying result ---")
-        print(f"Result received: {start_resending_error}")
+        print(f"Result received: {start_resending_result}")
 
-        assert start_resending_error is not None, "Expected a result but got None"
+        assert start_resending_result is not None, "Expected a result but got None"
 
         # The test can have two valid outcomes:
-        # 1. Cancel happened before ACK: start_resending returns error code 24
-        # 2. ACK arrived before cancel: start_resending completes successfully (no error)
+        # 1. Cancel happened before ACK: start_resending raises StartResendingCancelledError
+        # 2. ACK arrived before cancel: start_resending completes successfully
         #
         # Both are valid behaviors - the cancel feature works correctly in case 1,
         # and in case 2, the message simply completed before we could cancel it.
         # This can happen in fast environments (like CI with local mixnet).
-        if start_resending_error == "No error raised":
+        if start_resending_result == "success":
             print("⚠️ Message completed before cancel took effect (ACK arrived quickly)")
             print("✅ Test passed - cancel was called but message completed first (valid race condition)")
-        elif "Start resending cancelled" in start_resending_error:
-            print("✅ start_resending returned with expected error code 24 (Start resending cancelled)")
+        elif start_resending_result == "cancelled":
+            print("✅ start_resending returned with StartResendingCancelledError (error code 24)")
         else:
             # Unexpected error
-            raise AssertionError(f"Unexpected error: {start_resending_error}")
+            raise AssertionError(f"Unexpected error: {start_resending_result}")
 
     finally:
         client.stop()
@@ -1240,9 +1243,10 @@ async def test_box_id_not_found_error():
         print("✓ Encrypted read request for non-existent box")
 
         # Attempt to read - this should raise BoxIDNotFoundError
+        # Use start_resending_encrypted_message_no_retry to get immediate error without retries
         print("--- Attempting to read from non-existent box ---")
         try:
-            await client.start_resending_encrypted_message(
+            await client.start_resending_encrypted_message_no_retry(
                 read_cap=keypair.read_cap,
                 write_cap=None,
                 next_message_index=read_result.next_message_index,
@@ -1257,9 +1261,6 @@ async def test_box_id_not_found_error():
             # This is the expected case
             print(f"✓ Received expected BoxIDNotFoundError: {e}")
             print("✅ BoxIDNotFoundError test passed!")
-        except Exception as e:
-            # Wrong type of exception
-            raise AssertionError(f"Expected BoxIDNotFoundError but got {type(e).__name__}: {e}")
 
     finally:
         client.stop()
@@ -1312,7 +1313,7 @@ async def test_box_already_exists_error():
         print("Waiting for message propagation...")
         await asyncio.sleep(5)
 
-        # Second write to the SAME box - should fail
+        # Second write to the SAME box - should fail with BoxAlreadyExists
         print("--- Second write to same box (should fail) ---")
         message2 = b"Second message - this should fail"
         write_result2 = await client.encrypt_write(
@@ -1320,27 +1321,11 @@ async def test_box_already_exists_error():
         )
         print("✓ Encrypted second message")
 
-        # First send gets ACK from courier (write is queued)
-        print("--- First send: expecting ACK from courier ---")
-        await client.start_resending_encrypted_message(
-            read_cap=None,
-            write_cap=keypair.write_cap,
-            next_message_index=None,
-            reply_index=None,
-            envelope_descriptor=write_result2.envelope_descriptor,
-            message_ciphertext=write_result2.message_ciphertext,
-            envelope_hash=write_result2.envelope_hash
-        )
-        print("✓ First send received ACK")
-
-        # Wait for replica to process and cache the error response
-        print("Waiting for replica to process write...")
-        await asyncio.sleep(3)
-
-        # Second send retrieves the cached error from courier
-        print("--- Second send: expecting cached error response ---")
+        # Send the second write - should fail with BoxAlreadyExists
+        # Use start_resending_encrypted_message_return_box_exists to get the error instead of
+        # treating it as idempotent success
         try:
-            await client.start_resending_encrypted_message(
+            await client.start_resending_encrypted_message_return_box_exists(
                 read_cap=None,
                 write_cap=keypair.write_cap,
                 next_message_index=None,
@@ -1355,9 +1340,6 @@ async def test_box_already_exists_error():
             # This is the expected case
             print(f"✓ Received expected BoxAlreadyExistsError: {e}")
             print("✅ BoxAlreadyExistsError test passed!")
-        except Exception as e:
-            # Wrong type of exception
-            raise AssertionError(f"Expected BoxAlreadyExistsError but got {type(e).__name__}: {e}")
 
     finally:
         client.stop()

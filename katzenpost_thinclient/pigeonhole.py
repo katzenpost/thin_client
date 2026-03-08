@@ -242,7 +242,9 @@ async def start_resending_encrypted_message(
     reply_index: "int|None",
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
-    envelope_hash: bytes
+    envelope_hash: bytes,
+    no_retry_on_box_id_not_found: bool = False,
+    no_idempotent_box_already_exists: bool = False
 ) -> bytes:
     """
     Starts resending an encrypted message via ARQ.
@@ -272,6 +274,15 @@ async def start_resending_encrypted_message(
         envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
         message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
         envelope_hash: Hash of the courier envelope.
+        no_retry_on_box_id_not_found: If True, BoxIDNotFound errors on reads trigger
+            immediate error instead of automatic retries. By default (False), reads
+            will retry up to 10 times to handle replication lag. Set to True to get
+            immediate BoxIDNotFound error without retries.
+        no_idempotent_box_already_exists: If True, BoxAlreadyExists errors on writes are
+            returned as errors instead of being treated as idempotent success.
+            By default (False), BoxAlreadyExists is treated as success (the write
+            already happened). Set to True to detect whether a write was actually
+            performed or if the box already existed.
 
     Returns:
         bytes: For read operations, the decrypted plaintext message (at most
@@ -280,6 +291,9 @@ async def start_resending_encrypted_message(
             For write operations, returns an empty bytes object on success.
 
     Raises:
+        BoxIDNotFoundError: If no_retry_on_box_id_not_found=True and the box does not exist.
+        BoxAlreadyExistsError: If no_idempotent_box_already_exists=True and the box
+            already contains data.
         Exception: If the operation fails. Check error_code for specific errors.
 
     Example:
@@ -298,7 +312,9 @@ async def start_resending_encrypted_message(
             "reply_index": reply_index,
             "envelope_descriptor": envelope_descriptor,
             "message_ciphertext": message_ciphertext,
-            "envelope_hash": envelope_hash
+            "envelope_hash": envelope_hash,
+            "no_retry_on_box_id_not_found": no_retry_on_box_id_not_found,
+            "no_idempotent_box_already_exists": no_idempotent_box_already_exists
         }
     }
 
@@ -321,6 +337,112 @@ async def start_resending_encrypted_message(
         raise Exception(f"start_resending_encrypted_message failed: {error_msg}")
 
     return reply.get("plaintext", b"")
+
+
+async def start_resending_encrypted_message_return_box_exists(
+    self,
+    read_cap: "bytes|None",
+    write_cap: "bytes|None",
+    next_message_index: "bytes|None",
+    reply_index: "int|None",
+    envelope_descriptor: bytes,
+    message_ciphertext: bytes,
+    envelope_hash: bytes
+) -> bytes:
+    """
+    Like start_resending_encrypted_message but returns BoxAlreadyExists errors.
+
+    This is a convenience method that calls start_resending_encrypted_message with
+    no_idempotent_box_already_exists=True. Use this when you want to detect whether
+    a write was actually performed or if the box already existed.
+
+    Args:
+        read_cap: Read capability (can be None for write operations, required for reads).
+        write_cap: Write capability (can be None for read operations, required for writes).
+        next_message_index: Next message index for BACAP decryption (required for reads).
+        reply_index: Index of the reply to use (typically 0 or 1).
+        envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
+        message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
+        envelope_hash: Hash of the courier envelope.
+
+    Returns:
+        bytes: For read operations, the decrypted plaintext message.
+            For write operations, returns an empty bytes object on success.
+
+    Raises:
+        BoxAlreadyExistsError: If the box already contains data.
+        Exception: If the operation fails.
+
+    Example:
+        >>> try:
+        ...     await client.start_resending_encrypted_message_return_box_exists(
+        ...         None, write_cap, None, None, env_desc, ciphertext, env_hash)
+        ... except BoxAlreadyExistsError:
+        ...     print("Box already has data - write was idempotent")
+    """
+    return await self.start_resending_encrypted_message(
+        read_cap=read_cap,
+        write_cap=write_cap,
+        next_message_index=next_message_index,
+        reply_index=reply_index,
+        envelope_descriptor=envelope_descriptor,
+        message_ciphertext=message_ciphertext,
+        envelope_hash=envelope_hash,
+        no_idempotent_box_already_exists=True
+    )
+
+
+async def start_resending_encrypted_message_no_retry(
+    self,
+    read_cap: "bytes|None",
+    write_cap: "bytes|None",
+    next_message_index: "bytes|None",
+    reply_index: "int|None",
+    envelope_descriptor: bytes,
+    message_ciphertext: bytes,
+    envelope_hash: bytes
+) -> bytes:
+    """
+    Like start_resending_encrypted_message but disables automatic retries on BoxIDNotFound.
+
+    This is a convenience method that calls start_resending_encrypted_message with
+    no_retry_on_box_id_not_found=True. Use this when you want immediate error feedback
+    rather than waiting for potential replication lag to resolve.
+
+    Args:
+        read_cap: Read capability (can be None for write operations, required for reads).
+        write_cap: Write capability (can be None for read operations, required for writes).
+        next_message_index: Next message index for BACAP decryption (required for reads).
+        reply_index: Index of the reply to use (typically 0 or 1).
+        envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
+        message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
+        envelope_hash: Hash of the courier envelope.
+
+    Returns:
+        bytes: For read operations, the decrypted plaintext message.
+            For write operations, returns an empty bytes object on success.
+
+    Raises:
+        BoxIDNotFoundError: If the box does not exist (no automatic retries).
+        Exception: If the operation fails.
+
+    Example:
+        >>> try:
+        ...     plaintext = await client.start_resending_encrypted_message_no_retry(
+        ...         read_cap, None, next_index, reply_idx, env_desc, ciphertext, env_hash)
+        ... except BoxIDNotFoundError:
+        ...     print("Box not found - message not yet written")
+    """
+    return await self.start_resending_encrypted_message(
+        read_cap=read_cap,
+        write_cap=write_cap,
+        next_message_index=next_message_index,
+        reply_index=reply_index,
+        envelope_descriptor=envelope_descriptor,
+        message_ciphertext=message_ciphertext,
+        envelope_hash=envelope_hash,
+        no_retry_on_box_id_not_found=True
+    )
 
 
 async def cancel_resending_encrypted_message(self, envelope_hash: bytes) -> None:
