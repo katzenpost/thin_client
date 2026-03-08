@@ -509,7 +509,7 @@ async fn test_read_box_no_retry() {
     let read_cap = alice_channel.share_read_capability();
 
     // Try to read from a box that doesn't exist yet (nothing was written)
-    // With no_retry, this should fail immediately with BoxIDNotFound
+    // With no_retry, this should fail immediately with BoxNotFound
     println!("\n--- Attempting read_box_no_retry on empty box ---");
     let result = alice_channel.read_box_no_retry(&read_cap.start_index).await;
 
@@ -518,12 +518,12 @@ async fn test_read_box_no_retry() {
             let err_str = format!("{:?}", e);
             println!("✓ Got expected error: {}", err_str);
             assert!(
-                err_str.contains("BoxIDNotFound") || err_str.contains("box id not found"),
-                "Expected BoxIDNotFound error, got: {}", err_str
+                err_str.contains("BoxNotFound") || err_str.contains("box id not found"),
+                "Expected BoxNotFound error, got: {}", err_str
             );
         }
         Ok(_) => {
-            panic!("Expected BoxIDNotFound error, but read succeeded");
+            panic!("Expected BoxNotFound error, but read succeeded");
         }
     }
 
@@ -544,7 +544,7 @@ async fn test_receive_no_retry() {
         .expect("Failed to create channel");
 
     // Try to receive when nothing was sent
-    // With no_retry, this should fail immediately with BoxIDNotFound
+    // With no_retry, this should fail immediately with BoxNotFound
     println!("\n--- Attempting receive_no_retry on empty channel ---");
     let result = alice_channel.receive_no_retry().await;
 
@@ -553,12 +553,12 @@ async fn test_receive_no_retry() {
             let err_str = format!("{:?}", e);
             println!("✓ Got expected error: {}", err_str);
             assert!(
-                err_str.contains("BoxIDNotFound") || err_str.contains("box id not found"),
-                "Expected BoxIDNotFound error, got: {}", err_str
+                err_str.contains("BoxNotFound") || err_str.contains("box id not found"),
+                "Expected BoxNotFound error, got: {}", err_str
             );
         }
         Ok(_) => {
-            panic!("Expected BoxIDNotFound error, but receive succeeded");
+            panic!("Expected BoxNotFound error, but receive succeeded");
         }
     }
 

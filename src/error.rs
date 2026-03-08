@@ -32,6 +32,8 @@ pub enum ThinClientError {
     InvalidEpoch,
     /// Replication to other replicas failed (error code 9)
     ReplicationFailed,
+    /// Box already exists / already written (error code 10)
+    BoxAlreadyExists,
     /// MKEM decryption failed (error code 22)
     MkemDecryptionFailed,
     /// BACAP decryption failed (error code 23)
@@ -56,6 +58,7 @@ pub fn error_code_to_error(error_code: u8) -> ThinClientError {
         7 => ThinClientError::ReplicaInternalError,
         8 => ThinClientError::InvalidEpoch,
         9 => ThinClientError::ReplicationFailed,
+        10 => ThinClientError::BoxAlreadyExists,
         22 => ThinClientError::MkemDecryptionFailed,
         23 => ThinClientError::BacapDecryptionFailed,
         24 => ThinClientError::StartResendingCancelled,
@@ -81,6 +84,7 @@ impl fmt::Display for ThinClientError {
             ThinClientError::ReplicaInternalError => write!(f, "Replica internal error"),
             ThinClientError::InvalidEpoch => write!(f, "Invalid epoch"),
             ThinClientError::ReplicationFailed => write!(f, "Replication failed"),
+            ThinClientError::BoxAlreadyExists => write!(f, "Box already exists"),
             ThinClientError::MkemDecryptionFailed => write!(f, "MKEM decryption failed"),
             ThinClientError::BacapDecryptionFailed => write!(f, "BACAP decryption failed"),
             ThinClientError::StartResendingCancelled => write!(f, "Start resending cancelled"),
