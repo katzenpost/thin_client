@@ -144,6 +144,12 @@ struct StartResendingEncryptedMessageRequest {
     message_ciphertext: Vec<u8>,
     #[serde(with = "serde_bytes")]
     envelope_hash: Vec<u8>,
+    /// If true, BoxIDNotFound errors on reads trigger immediate error instead of automatic retries.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    no_retry_on_box_id_not_found: bool,
+    /// If true, BoxAlreadyExists errors on writes are returned as errors instead of idempotent success.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    no_idempotent_box_already_exists: bool,
 }
 
 /// Reply containing the plaintext from a resent encrypted message.
@@ -535,6 +541,102 @@ impl ThinClient {
         message_ciphertext: &[u8],
         envelope_hash: &[u8; 32]
     ) -> Result<Vec<u8>, ThinClientError> {
+        self.start_resending_encrypted_message_with_options(
+            read_cap,
+            write_cap,
+            next_message_index,
+            reply_index,
+            envelope_descriptor,
+            message_ciphertext,
+            envelope_hash,
+            false,
+            false,
+        ).await
+    }
+
+    /// Like `start_resending_encrypted_message` but returns BoxAlreadyExists errors.
+    ///
+    /// Use this when you want to detect whether a write was actually performed
+    /// or if the box already existed.
+    ///
+    /// # Arguments
+    /// Same as `start_resending_encrypted_message`
+    ///
+    /// # Returns
+    /// * `Ok(plaintext)` on success
+    /// * `Err(ThinClientError::BoxAlreadyExists)` if the box already contains data
+    /// * `Err(ThinClientError)` on other failures
+    pub async fn start_resending_encrypted_message_return_box_exists(
+        &self,
+        read_cap: Option<&[u8]>,
+        write_cap: Option<&[u8]>,
+        next_message_index: Option<&[u8]>,
+        reply_index: Option<u8>,
+        envelope_descriptor: &[u8],
+        message_ciphertext: &[u8],
+        envelope_hash: &[u8; 32]
+    ) -> Result<Vec<u8>, ThinClientError> {
+        self.start_resending_encrypted_message_with_options(
+            read_cap,
+            write_cap,
+            next_message_index,
+            reply_index,
+            envelope_descriptor,
+            message_ciphertext,
+            envelope_hash,
+            false,
+            true,  // no_idempotent_box_already_exists
+        ).await
+    }
+
+    /// Like `start_resending_encrypted_message` but disables automatic retries on BoxIDNotFound.
+    ///
+    /// Use this when you want immediate error feedback rather than waiting for
+    /// potential replication lag to resolve.
+    ///
+    /// # Arguments
+    /// Same as `start_resending_encrypted_message`
+    ///
+    /// # Returns
+    /// * `Ok(plaintext)` on success
+    /// * `Err(ThinClientError::BoxIdNotFound)` if the box does not exist (no automatic retries)
+    /// * `Err(ThinClientError)` on other failures
+    pub async fn start_resending_encrypted_message_no_retry(
+        &self,
+        read_cap: Option<&[u8]>,
+        write_cap: Option<&[u8]>,
+        next_message_index: Option<&[u8]>,
+        reply_index: Option<u8>,
+        envelope_descriptor: &[u8],
+        message_ciphertext: &[u8],
+        envelope_hash: &[u8; 32]
+    ) -> Result<Vec<u8>, ThinClientError> {
+        self.start_resending_encrypted_message_with_options(
+            read_cap,
+            write_cap,
+            next_message_index,
+            reply_index,
+            envelope_descriptor,
+            message_ciphertext,
+            envelope_hash,
+            true,  // no_retry_on_box_id_not_found
+            false,
+        ).await
+    }
+
+    /// Internal method with all options for start_resending_encrypted_message.
+    async fn start_resending_encrypted_message_with_options(
+        &self,
+        read_cap: Option<&[u8]>,
+        write_cap: Option<&[u8]>,
+        next_message_index: Option<&[u8]>,
+        reply_index: Option<u8>,
+        envelope_descriptor: &[u8],
+        message_ciphertext: &[u8],
+        envelope_hash: &[u8; 32],
+        no_retry_on_box_id_not_found: bool,
+        no_idempotent_box_already_exists: bool,
+    ) -> Result<Vec<u8>, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = StartResendingEncryptedMessageRequest {
@@ -546,6 +648,8 @@ impl ThinClient {
             envelope_descriptor: envelope_descriptor.to_vec(),
             message_ciphertext: message_ciphertext.to_vec(),
             envelope_hash: envelope_hash.to_vec(),
+            no_retry_on_box_id_not_found,
+            no_idempotent_box_already_exists,
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
