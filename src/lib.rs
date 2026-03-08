@@ -353,22 +353,7 @@ impl PigeonholeGeometry {
     }
 }
 
-/// Creates a tombstone plaintext (all zeros) for the given geometry.
-///
-/// A tombstone is used to overwrite/delete a pigeonhole box by filling it
-/// with zeros.
-pub fn tombstone_plaintext(geometry: &PigeonholeGeometry) -> Result<Vec<u8>, &'static str> {
-    geometry.validate()?;
-    Ok(vec![0u8; geometry.max_plaintext_payload_length])
-}
 
-/// Checks if a plaintext is a tombstone (all zeros of the correct length).
-pub fn is_tombstone_plaintext(geometry: &PigeonholeGeometry, plaintext: &[u8]) -> bool {
-    if plaintext.len() != geometry.max_plaintext_payload_length {
-        return false;
-    }
-    plaintext.iter().all(|&b| b == 0)
-}
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigFile {

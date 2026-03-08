@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use katzenpost_thin_client::{ThinClient, Config, PigeonholeGeometry, is_tombstone_plaintext};
+use katzenpost_thin_client::{ThinClient, Config};
 use katzenpost_thin_client::persistent::PigeonholeClient;
 
 /// Test helper to setup thin clients for integration tests
@@ -21,11 +21,6 @@ async fn setup_clients() -> Result<(Arc<ThinClient>, Arc<ThinClient>), Box<dyn s
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     Ok((alice_client, bob_client))
-}
-
-/// Get PigeonholeGeometry from a thin client
-fn get_geometry(client: &ThinClient) -> PigeonholeGeometry {
-    client.pigeonhole_geometry().clone()
 }
 
 #[tokio::test]
@@ -247,7 +242,6 @@ async fn test_tombstone_single_box() {
     println!("\n=== Test: Tombstoning a single box ===");
 
     let (alice_thin, bob_thin) = setup_clients().await.expect("Failed to setup clients");
-    let geometry = get_geometry(&alice_thin);
 
     let alice = PigeonholeClient::new_in_memory(alice_thin.clone())
         .expect("Failed to create Alice's PigeonholeClient");
@@ -277,10 +271,10 @@ async fn test_tombstone_single_box() {
     println!("✓ Bob received: {:?}", String::from_utf8_lossy(&received));
     assert_eq!(received, message);
 
-    // Step 3: Alice tombstones the box
+    // Step 3: Alice tombstones the box at the first index
     println!("\n--- Step 3: Alice tombstones the box ---");
-    alice_channel.refresh().expect("Failed to refresh"); // Get latest state
-    alice_channel.tombstone_current().await
+    let first_index = read_cap.start_index.clone();
+    alice_channel.tombstone_at(&first_index).await
         .expect("Failed to tombstone");
     println!("✓ Alice tombstoned the box");
 
@@ -296,11 +290,13 @@ async fn test_tombstone_single_box() {
     let (tombstone_content, _) = bob_channel.read_box(&first_index).await
         .expect("Failed to read tombstoned box");
 
+    // A tombstone is an empty payload with a valid signature
     assert!(
-        is_tombstone_plaintext(&geometry, &tombstone_content),
-        "Expected tombstone (all zeros)"
+        tombstone_content.is_empty(),
+        "Expected tombstone (empty payload), got {} bytes",
+        tombstone_content.len()
     );
-    println!("✓ Bob verified tombstone (content is all zeros)");
+    println!("✓ Bob verified tombstone (content is empty)");
 
     println!("\n✅ Tombstone single box test passed!");
 }
@@ -310,7 +306,6 @@ async fn test_tombstone_range() {
     println!("\n=== Test: Tombstoning a range of boxes ===");
 
     let (alice_thin, bob_thin) = setup_clients().await.expect("Failed to setup clients");
-    let geometry = get_geometry(&alice_thin);
 
     let alice = PigeonholeClient::new_in_memory(alice_thin.clone())
         .expect("Failed to create Alice's PigeonholeClient");
@@ -346,9 +341,9 @@ async fn test_tombstone_range() {
         println!("✓ Read message {}: {:?}", i + 1, String::from_utf8_lossy(&received));
     }
 
-    // Step 3: Alice tombstones the range
+    // Step 3: Alice tombstones the range starting from the first index
     println!("\n--- Step 3: Alice tombstones {} boxes ---", num_messages);
-    alice_channel.tombstone_range(num_messages).await
+    alice_channel.tombstone_from(&first_index, num_messages).await
         .expect("Failed to tombstone range");
     println!("✓ Alice sent tombstone range");
 
@@ -362,9 +357,10 @@ async fn test_tombstone_range() {
     for i in 0..num_messages {
         let (content, next_idx) = bob_channel.read_box(&current_index).await
             .expect("Failed to read box");
+        // A tombstone is an empty payload with a valid signature
         assert!(
-            is_tombstone_plaintext(&geometry, &content),
-            "Box {} should be tombstoned", i + 1
+            content.is_empty(),
+            "Box {} should be tombstoned (empty), got {} bytes", i + 1, content.len()
         );
         println!("✓ Box {} is tombstoned", i + 1);
 

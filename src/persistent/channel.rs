@@ -525,6 +525,97 @@ impl ChannelHandle {
         Ok(sent_count)
     }
 
+    /// Tombstone (delete) a specific box by its index.
+    ///
+    /// This writes an empty payload to the specified box index, effectively
+    /// deleting the message at that position. This does NOT update the channel's
+    /// write index - use this when you need to delete a specific previously-written box.
+    ///
+    /// # Arguments
+    /// * `box_index` - The specific box index to tombstone.
+    ///
+    /// # Errors
+    /// Returns an error if this is a read-only channel or the operation fails.
+    pub async fn tombstone_at(&self, box_index: &[u8]) -> Result<()> {
+        let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
+            PigeonholeDbError::Other("Cannot tombstone on a read-only channel".to_string())
+        })?;
+
+        // Create and send the tombstone
+        let (ciphertext, env_desc, env_hash) = self
+            .client
+            .tombstone_box(write_cap, box_index)
+            .await?;
+
+        let mut hash_arr = [0u8; 32];
+        hash_arr.copy_from_slice(&env_hash);
+
+        self.client
+            .start_resending_encrypted_message(
+                None,
+                Some(write_cap),
+                None,
+                None, // No reply expected for tombstone
+                &env_desc,
+                &ciphertext,
+                &hash_arr,
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Tombstone a range of boxes starting from a specific index.
+    ///
+    /// This creates tombstones for up to `count` boxes starting from `start_index`
+    /// and sends them all. This does NOT update the channel's write index - use this
+    /// when you need to delete specific previously-written boxes.
+    ///
+    /// # Arguments
+    /// * `start_index` - The box index to start tombstoning from.
+    /// * `count` - Maximum number of boxes to tombstone.
+    ///
+    /// # Returns
+    /// The number of boxes successfully tombstoned.
+    ///
+    /// # Errors
+    /// Returns an error if this is a read-only channel.
+    pub async fn tombstone_from(&self, start_index: &[u8], count: u32) -> Result<u32> {
+        let write_cap = self.channel.write_cap.as_ref().ok_or_else(|| {
+            PigeonholeDbError::Other("Cannot tombstone on a read-only channel".to_string())
+        })?;
+
+        let result: TombstoneRangeResult = self
+            .client
+            .tombstone_range(write_cap, start_index, count)
+            .await;
+
+        let mut sent_count = 0u32;
+
+        // Send all the tombstone envelopes
+        for envelope in &result.envelopes {
+            let mut hash_arr = [0u8; 32];
+            hash_arr.copy_from_slice(&envelope.envelope_hash);
+
+            match self.client.start_resending_encrypted_message(
+                None,
+                Some(write_cap),
+                None,
+                None,
+                &envelope.envelope_descriptor,
+                &envelope.message_ciphertext,
+                &hash_arr,
+            ).await {
+                Ok(_) => sent_count += 1,
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
+        }
+
+        Ok(sent_count)
+    }
+
     // ========================================================================
     // Copy Stream Operations
     // ========================================================================

@@ -15,10 +15,9 @@
 //! 9. create_courier_envelopes_from_payload - Chunk payload into courier envelopes
 //! 10. create_courier_envelopes_from_multi_payload - Chunk multiple payloads efficiently
 //!
-//! Helper functions and tests:
-//! - tombstone_box - Overwrite a box with zeros
-//! - tombstone_range - Overwrite a range of boxes with zeros
-//! - is_tombstone_plaintext - Check if plaintext is a tombstone
+//! Helper functions:
+//! - tombstone_box - Create a tombstone (empty payload with valid signature)
+//! - tombstone_range - Create tombstones for a range of boxes
 //!
 //! These tests require a running mixnet with client daemon for integration testing.
 
