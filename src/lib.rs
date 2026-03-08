@@ -33,6 +33,7 @@ pub mod core;
 pub mod pigeonhole;
 pub mod persistent;
 pub mod helpers;
+pub mod group;
 
 // ========================================================================
 // Re-exports for public API
