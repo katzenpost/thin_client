@@ -281,30 +281,37 @@ async def test_cancel_causes_start_resending_to_return_error():
         print("--- Starting start_resending_encrypted_message task ---")
         resend_task = asyncio.create_task(start_resending_task())
 
-        # Give the daemon just enough time to receive and register the message
-        # The daemon needs to: receive the request, parse it, add to arqEnvelopeHashMap
-        # Using a short delay (0.1 seconds) - this is enough for local IPC but
-        # short enough that we cancel before any network ACK can arrive.
-        await asyncio.sleep(0.1)
+        # Retry cancel until start_resending returns.
+        # The daemon only sends StartResendingEncryptedMessageReply with error code 24
+        # if it finds the envelope in arqEnvelopeHashMap. If cancel arrives before the
+        # daemon has fully registered the request, it won't find it and won't wake up
+        # the waiting caller. By retrying, we ensure we eventually hit after registration.
+        print("--- Calling cancel_resending_encrypted_message (with retry) ---")
+        max_attempts = 20
+        for attempt in range(max_attempts):
+            # Small delay between attempts to avoid spamming the daemon
+            await asyncio.sleep(0.1)
 
-        # Cancel the resending (with timeout to prevent hang)
-        print("--- Calling cancel_resending_encrypted_message ---")
-        try:
-            await asyncio.wait_for(
-                client.cancel_resending_encrypted_message(result.envelope_hash),
-                timeout=10.0
-            )
-        except asyncio.TimeoutError:
-            resend_task.cancel()
-            raise Exception("cancel_resending_encrypted_message timed out after 10 seconds")
-        print("✓ Cancel call completed")
+            try:
+                await asyncio.wait_for(
+                    client.cancel_resending_encrypted_message(result.envelope_hash),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                resend_task.cancel()
+                raise Exception("cancel_resending_encrypted_message timed out")
 
-        # Wait for the start_resending task to complete (with timeout)
-        try:
-            await asyncio.wait_for(start_resending_completed.wait(), timeout=10.0)
-        except asyncio.TimeoutError:
+            # Check if start_resending has completed
+            try:
+                await asyncio.wait_for(start_resending_completed.wait(), timeout=0.5)
+                print(f"✓ Cancel succeeded on attempt {attempt + 1}")
+                break  # start_resending returned!
+            except asyncio.TimeoutError:
+                # Cancel didn't find the envelope yet (not registered), retry
+                continue
+        else:
             resend_task.cancel()
-            raise Exception("start_resending did not return within 10 seconds after cancel")
+            raise Exception(f"start_resending did not return after {max_attempts} cancel attempts")
 
         # Verify the result
         print(f"--- Verifying result ---")
@@ -380,30 +387,37 @@ async def test_cancel_causes_start_resending_copy_command_to_return_error():
         print("--- Starting start_resending_copy_command task ---")
         resend_task = asyncio.create_task(start_resending_copy_task())
 
-        # Give the daemon just enough time to receive and register the message
-        # The daemon needs to: receive the request, parse it, add to arqEnvelopeHashMap
-        # Using a short delay (0.1 seconds) - this is enough for local IPC but
-        # short enough that we cancel before any network ACK can arrive.
-        await asyncio.sleep(0.1)
+        # Retry cancel until start_resending returns.
+        # The daemon only sends StartResendingCopyCommandReply with error code 24
+        # if it finds the write_cap_hash in arqWriteCapHashMap. If cancel arrives before
+        # the daemon has fully registered the request, it won't find it and won't wake up
+        # the waiting caller. By retrying, we ensure we eventually hit after registration.
+        print("--- Calling cancel_resending_copy_command (with retry) ---")
+        max_attempts = 20
+        for attempt in range(max_attempts):
+            # Small delay between attempts to avoid spamming the daemon
+            await asyncio.sleep(0.1)
 
-        # Cancel the resending (with timeout to prevent hang)
-        print("--- Calling cancel_resending_copy_command ---")
-        try:
-            await asyncio.wait_for(
-                client.cancel_resending_copy_command(write_cap_hash),
-                timeout=10.0
-            )
-        except asyncio.TimeoutError:
-            resend_task.cancel()
-            raise Exception("cancel_resending_copy_command timed out after 10 seconds")
-        print("✓ Cancel call completed")
+            try:
+                await asyncio.wait_for(
+                    client.cancel_resending_copy_command(write_cap_hash),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                resend_task.cancel()
+                raise Exception("cancel_resending_copy_command timed out")
 
-        # Wait for the start_resending task to complete (with timeout)
-        try:
-            await asyncio.wait_for(start_resending_completed.wait(), timeout=10.0)
-        except asyncio.TimeoutError:
+            # Check if start_resending has completed
+            try:
+                await asyncio.wait_for(start_resending_completed.wait(), timeout=0.5)
+                print(f"✓ Cancel succeeded on attempt {attempt + 1}")
+                break  # start_resending returned!
+            except asyncio.TimeoutError:
+                # Cancel didn't find the write_cap_hash yet (not registered), retry
+                continue
+        else:
             resend_task.cancel()
-            raise Exception("start_resending_copy_command did not return within 10 seconds after cancel")
+            raise Exception(f"start_resending_copy_command did not return after {max_attempts} cancel attempts")
 
         # Verify the result
         print(f"--- Verifying result ---")
