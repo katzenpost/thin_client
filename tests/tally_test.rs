@@ -1,22 +1,22 @@
 // SPDX-FileCopyrightText: Copyright (C) 2026 David Stainton
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Doodle protocol integration tests.
+//! Tally protocol integration tests.
 //!
-//! Tests the distributed meeting-poll protocol over a live mixnet.
+//! Tests the distributed meeting-availability poll over a live mixnet.
 //!
 //! # Running tests one at a time with output
 //!
-//! cargo test --test doodle_test test_doodle_two_voters         -- --nocapture
-//! cargo test --test doodle_test test_doodle_three_voters       -- --nocapture
-//! cargo test --test doodle_test test_doodle_ballot_update      -- --nocapture
-//! cargo test --test doodle_test test_doodle_best_slot          -- --nocapture
+//! cargo test --test tally_test test_tally_two_voters         -- --nocapture
+//! cargo test --test tally_test test_tally_three_voters       -- --nocapture
+//! cargo test --test tally_test test_tally_ballot_update      -- --nocapture
+//! cargo test --test tally_test test_tally_best_slot          -- --nocapture
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use katzenpost_thin_client::doodle::{Availability, DoodlePoll, TimeSlot};
+use katzenpost_thin_client::tally::{Availability, TallyPoll, Slot};
 use katzenpost_thin_client::persistent::PigeonholeClient;
 use katzenpost_thin_client::{Config, ThinClient};
 
@@ -33,18 +33,18 @@ async fn setup_client(label: &str) -> Result<Arc<ThinClient>, Box<dyn std::error
     Ok(client)
 }
 
-fn two_slots() -> Vec<TimeSlot> {
+fn two_slots() -> Vec<Slot> {
     vec![
-        TimeSlot::new("mon-9", "Monday 09:00"),
-        TimeSlot::new("tue-9", "Tuesday 09:00"),
+        Slot::new("mon-9", "Monday 09:00"),
+        Slot::new("tue-9", "Tuesday 09:00"),
     ]
 }
 
-fn three_slots() -> Vec<TimeSlot> {
+fn three_slots() -> Vec<Slot> {
     vec![
-        TimeSlot::new("mon-9", "Monday 09:00"),
-        TimeSlot::new("tue-9", "Tuesday 09:00"),
-        TimeSlot::new("wed-9", "Wednesday 09:00"),
+        Slot::new("mon-9", "Monday 09:00"),
+        Slot::new("tue-9", "Tuesday 09:00"),
+        Slot::new("wed-9", "Wednesday 09:00"),
     ]
 }
 
@@ -56,8 +56,8 @@ fn three_slots() -> Vec<TimeSlot> {
 /// Bob joins, receives Alice's CreatePoll, then casts his ballot.
 /// Alice receives Bob's ballot and verifies the tally is correct.
 #[tokio::test]
-async fn test_doodle_two_voters() {
-    println!("\n=== Test: Doodle poll with Alice (creator) and Bob ===");
+async fn test_tally_two_voters() {
+    println!("\n=== Test: Tally poll with Alice (creator) and Bob ===");
 
     let (alice_thin, bob_thin) = tokio::join!(
         setup_client("alice"),
@@ -70,7 +70,7 @@ async fn test_doodle_two_voters() {
     let bob_ph   = PigeonholeClient::new_in_memory(bob_thin.clone()).expect("Bob PigeonholeClient");
 
     println!("\n--- Alice creates the poll ---");
-    let mut alice_poll = DoodlePoll::new_poll(
+    let mut alice_poll = TallyPoll::new_poll(
         &alice_ph,
         "standup-2v",
         "Alice",
@@ -81,7 +81,7 @@ async fn test_doodle_two_voters() {
     let alice_intro = alice_poll.my_introduction();
 
     println!("\n--- Bob joins and receives Alice's CreatePoll ---");
-    let mut bob_poll = DoodlePoll::join_poll(
+    let mut bob_poll = TallyPoll::join_poll(
         &bob_ph,
         "standup-2v",
         "Bob",
@@ -145,7 +145,7 @@ async fn test_doodle_two_voters() {
     println!("✓ Alice's tally: mon-9 Yes={} No={} Maybe={}", mon.yes, mon.no, mon.maybe);
     println!("✓ Alice's tally: tue-9 Yes={} No={} Maybe={}", tue.yes, tue.no, tue.maybe);
 
-    println!("\n✅ Two-voter Doodle test passed!");
+    println!("\n✅ Two-voter tally test passed!");
 }
 
 // ---------------------------------------------------------------------------
@@ -155,8 +155,8 @@ async fn test_doodle_two_voters() {
 /// Alice, Bob, and Carol each vote.  All three agree on Wednesday, so
 /// `best_slot()` should return Wednesday for every participant.
 #[tokio::test]
-async fn test_doodle_three_voters() {
-    println!("\n=== Test: Doodle poll with three voters ===");
+async fn test_tally_three_voters() {
+    println!("\n=== Test: Tally poll with three voters ===");
 
     let (alice_thin, bob_thin, carol_thin) = tokio::join!(
         setup_client("alice"),
@@ -172,7 +172,7 @@ async fn test_doodle_three_voters() {
     let carol_ph = PigeonholeClient::new_in_memory(carol_thin.clone()).expect("Carol ph");
 
     println!("\n--- Alice creates the poll ---");
-    let mut alice_poll = DoodlePoll::new_poll(
+    let mut alice_poll = TallyPoll::new_poll(
         &alice_ph, "standup-3v", "Alice",
         "Team standup", three_slots(),
     ).await.expect("Alice new_poll");
@@ -180,8 +180,8 @@ async fn test_doodle_three_voters() {
 
     println!("\n--- Bob and Carol join in parallel ---");
     let (bob_poll, carol_poll) = tokio::join!(
-        DoodlePoll::join_poll(&bob_ph,   "standup-3v", "Bob",   &alice_intro),
-        DoodlePoll::join_poll(&carol_ph, "standup-3v", "Carol", &alice_intro),
+        TallyPoll::join_poll(&bob_ph,   "standup-3v", "Bob",   &alice_intro),
+        TallyPoll::join_poll(&carol_ph, "standup-3v", "Carol", &alice_intro),
     );
     let mut bob_poll   = bob_poll.expect("Bob join_poll");
     let mut carol_poll = carol_poll.expect("Carol join_poll");
@@ -245,7 +245,7 @@ async fn test_doodle_three_voters() {
         println!("✓ {} best_slot: '{}'", name, best.label);
     }
 
-    println!("\n✅ Three-voter Doodle test passed!");
+    println!("\n✅ Three-voter tally test passed!");
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +255,7 @@ async fn test_doodle_three_voters() {
 /// Bob first votes No on Monday, then changes his mind and votes Yes.
 /// Alice should see only the latest ballot from Bob.
 #[tokio::test]
-async fn test_doodle_ballot_update() {
+async fn test_tally_ballot_update() {
     println!("\n=== Test: Ballot update (last-write-wins) ===");
 
     let (alice_thin, bob_thin) = tokio::join!(
@@ -268,13 +268,13 @@ async fn test_doodle_ballot_update() {
     let alice_ph = PigeonholeClient::new_in_memory(alice_thin.clone()).expect("Alice ph");
     let bob_ph   = PigeonholeClient::new_in_memory(bob_thin.clone()).expect("Bob ph");
 
-    let mut alice_poll = DoodlePoll::new_poll(
+    let mut alice_poll = TallyPoll::new_poll(
         &alice_ph, "standup-upd", "Alice",
         "Update test poll", two_slots(),
     ).await.expect("Alice new_poll");
 
     let alice_intro = alice_poll.my_introduction();
-    let mut bob_poll = DoodlePoll::join_poll(
+    let mut bob_poll = TallyPoll::join_poll(
         &bob_ph, "standup-upd", "Bob", &alice_intro,
     ).await.expect("Bob join_poll");
 
@@ -324,7 +324,7 @@ async fn test_doodle_ballot_update() {
 /// Two slots each receive one Yes vote.  `best_slot` should return the
 /// first one in creation order (tie-break by index).
 #[tokio::test]
-async fn test_doodle_best_slot() {
+async fn test_tally_best_slot() {
     println!("\n=== Test: best_slot tie-breaking ===");
 
     let (alice_thin, bob_thin) = tokio::join!(
@@ -339,13 +339,13 @@ async fn test_doodle_best_slot() {
 
     // Alice votes Yes on Monday; Bob votes Yes on Tuesday.
     // Both slots have exactly 1 Yes; Monday (index 0) should win the tie.
-    let mut alice_poll = DoodlePoll::new_poll(
+    let mut alice_poll = TallyPoll::new_poll(
         &alice_ph, "standup-tie", "Alice",
         "Tie-break test", two_slots(),
     ).await.expect("Alice new_poll");
 
     let alice_intro = alice_poll.my_introduction();
-    let mut bob_poll = DoodlePoll::join_poll(
+    let mut bob_poll = TallyPoll::join_poll(
         &bob_ph, "standup-tie", "Bob", &alice_intro,
     ).await.expect("Bob join_poll");
 

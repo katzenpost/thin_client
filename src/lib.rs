@@ -35,7 +35,7 @@ pub mod persistent;
 pub mod helpers;
 pub mod group;
 pub mod chat;
-pub mod doodle;
+pub mod tally;
 
 // ========================================================================
 // Re-exports for public API
