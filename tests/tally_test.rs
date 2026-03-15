@@ -66,12 +66,12 @@ async fn test_tally_two_voters() {
     let alice_thin = alice_thin.expect("Alice ThinClient");
     let bob_thin   = bob_thin.expect("Bob ThinClient");
 
-    let alice_ph = PigeonholeClient::new_in_memory(alice_thin.clone()).expect("Alice PigeonholeClient");
-    let bob_ph   = PigeonholeClient::new_in_memory(bob_thin.clone()).expect("Bob PigeonholeClient");
+    let alice_ph = Arc::new(PigeonholeClient::new_in_memory(alice_thin.clone()).expect("Alice PigeonholeClient"));
+    let bob_ph   = Arc::new(PigeonholeClient::new_in_memory(bob_thin.clone()).expect("Bob PigeonholeClient"));
 
     println!("\n--- Alice creates the poll ---");
     let mut alice_poll = TallyPoll::new_poll(
-        &alice_ph,
+        alice_ph.clone(),
         "standup-2v",
         "Alice",
         "Weekly standup",
@@ -82,7 +82,7 @@ async fn test_tally_two_voters() {
 
     println!("\n--- Bob joins and receives Alice's CreatePoll ---");
     let mut bob_poll = TallyPoll::join_poll(
-        &bob_ph,
+        bob_ph.clone(),
         "standup-2v",
         "Bob",
         &alice_intro,
@@ -98,7 +98,7 @@ async fn test_tally_two_voters() {
 
     println!("\n--- Exchange introductions ---");
     let bob_intro = bob_poll.my_introduction();
-    alice_poll.add_member(&alice_ph, &bob_intro).expect("Alice add Bob");
+    alice_poll.add_member(&bob_intro).expect("Alice add Bob");
     // Bob already has Alice from join_poll; only Alice needs to add Bob.
 
     println!("\n--- Alice and Bob cast ballots in parallel ---");
@@ -167,21 +167,21 @@ async fn test_tally_three_voters() {
     let bob_thin   = bob_thin.expect("Bob ThinClient");
     let carol_thin = carol_thin.expect("Carol ThinClient");
 
-    let alice_ph = PigeonholeClient::new_in_memory(alice_thin.clone()).expect("Alice ph");
-    let bob_ph   = PigeonholeClient::new_in_memory(bob_thin.clone()).expect("Bob ph");
-    let carol_ph = PigeonholeClient::new_in_memory(carol_thin.clone()).expect("Carol ph");
+    let alice_ph = Arc::new(PigeonholeClient::new_in_memory(alice_thin.clone()).expect("Alice ph"));
+    let bob_ph   = Arc::new(PigeonholeClient::new_in_memory(bob_thin.clone()).expect("Bob ph"));
+    let carol_ph = Arc::new(PigeonholeClient::new_in_memory(carol_thin.clone()).expect("Carol ph"));
 
     println!("\n--- Alice creates the poll ---");
     let mut alice_poll = TallyPoll::new_poll(
-        &alice_ph, "standup-3v", "Alice",
+        alice_ph.clone(), "standup-3v", "Alice",
         "Team standup", three_slots(),
     ).await.expect("Alice new_poll");
     let alice_intro = alice_poll.my_introduction();
 
     println!("\n--- Bob and Carol join in parallel ---");
     let (bob_poll, carol_poll) = tokio::join!(
-        TallyPoll::join_poll(&bob_ph,   "standup-3v", "Bob",   &alice_intro),
-        TallyPoll::join_poll(&carol_ph, "standup-3v", "Carol", &alice_intro),
+        TallyPoll::join_poll(bob_ph.clone(),   "standup-3v", "Bob",   &alice_intro),
+        TallyPoll::join_poll(carol_ph.clone(), "standup-3v", "Carol", &alice_intro),
     );
     let mut bob_poll   = bob_poll.expect("Bob join_poll");
     let mut carol_poll = carol_poll.expect("Carol join_poll");
@@ -190,11 +190,11 @@ async fn test_tally_three_voters() {
     let carol_intro = carol_poll.my_introduction();
 
     println!("\n--- Exchange introductions ---");
-    alice_poll.add_member(&alice_ph, &bob_intro).expect("Alice add Bob");
-    alice_poll.add_member(&alice_ph, &carol_intro).expect("Alice add Carol");
+    alice_poll.add_member(&bob_intro).expect("Alice add Bob");
+    alice_poll.add_member(&carol_intro).expect("Alice add Carol");
     // Bob and Carol already have Alice from join_poll.
-    bob_poll.add_member(&bob_ph, &carol_intro).expect("Bob add Carol");
-    carol_poll.add_member(&carol_ph, &bob_intro).expect("Carol add Bob");
+    bob_poll.add_member(&carol_intro).expect("Bob add Carol");
+    carol_poll.add_member(&bob_intro).expect("Carol add Bob");
 
     println!("\n--- Bob and Carol receive Alice's CreatePoll ---");
     // Each of Bob and Carol needs to receive Alice's CreatePoll to learn the slots.
@@ -265,21 +265,21 @@ async fn test_tally_ballot_update() {
     let alice_thin = alice_thin.expect("Alice ThinClient");
     let bob_thin   = bob_thin.expect("Bob ThinClient");
 
-    let alice_ph = PigeonholeClient::new_in_memory(alice_thin.clone()).expect("Alice ph");
-    let bob_ph   = PigeonholeClient::new_in_memory(bob_thin.clone()).expect("Bob ph");
+    let alice_ph = Arc::new(PigeonholeClient::new_in_memory(alice_thin.clone()).expect("Alice ph"));
+    let bob_ph   = Arc::new(PigeonholeClient::new_in_memory(bob_thin.clone()).expect("Bob ph"));
 
     let mut alice_poll = TallyPoll::new_poll(
-        &alice_ph, "standup-upd", "Alice",
+        alice_ph.clone(), "standup-upd", "Alice",
         "Update test poll", two_slots(),
     ).await.expect("Alice new_poll");
 
     let alice_intro = alice_poll.my_introduction();
     let mut bob_poll = TallyPoll::join_poll(
-        &bob_ph, "standup-upd", "Bob", &alice_intro,
+        bob_ph.clone(), "standup-upd", "Bob", &alice_intro,
     ).await.expect("Bob join_poll");
 
     let bob_intro = bob_poll.my_introduction();
-    alice_poll.add_member(&alice_ph, &bob_intro).expect("Alice add Bob");
+    alice_poll.add_member(&bob_intro).expect("Alice add Bob");
     // Bob already has Alice from join_poll.
 
     // Bob receives CreatePoll.
@@ -334,23 +334,23 @@ async fn test_tally_best_slot() {
     let alice_thin = alice_thin.expect("Alice ThinClient");
     let bob_thin   = bob_thin.expect("Bob ThinClient");
 
-    let alice_ph = PigeonholeClient::new_in_memory(alice_thin.clone()).expect("Alice ph");
-    let bob_ph   = PigeonholeClient::new_in_memory(bob_thin.clone()).expect("Bob ph");
+    let alice_ph = Arc::new(PigeonholeClient::new_in_memory(alice_thin.clone()).expect("Alice ph"));
+    let bob_ph   = Arc::new(PigeonholeClient::new_in_memory(bob_thin.clone()).expect("Bob ph"));
 
     // Alice votes Yes on Monday; Bob votes Yes on Tuesday.
     // Both slots have exactly 1 Yes; Monday (index 0) should win the tie.
     let mut alice_poll = TallyPoll::new_poll(
-        &alice_ph, "standup-tie", "Alice",
+        alice_ph.clone(), "standup-tie", "Alice",
         "Tie-break test", two_slots(),
     ).await.expect("Alice new_poll");
 
     let alice_intro = alice_poll.my_introduction();
     let mut bob_poll = TallyPoll::join_poll(
-        &bob_ph, "standup-tie", "Bob", &alice_intro,
+        bob_ph.clone(), "standup-tie", "Bob", &alice_intro,
     ).await.expect("Bob join_poll");
 
     let bob_intro = bob_poll.my_introduction();
-    alice_poll.add_member(&alice_ph, &bob_intro).expect("Alice add Bob");
+    alice_poll.add_member(&bob_intro).expect("Alice add Bob");
     // Bob already has Alice from join_poll.
 
     bob_poll.receive_one_and_apply().await.expect("Bob receive CreatePoll");

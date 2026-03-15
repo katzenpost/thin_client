@@ -1,11 +1,33 @@
 // SPDX-FileCopyrightText: Copyright (C) 2026 David Stainton
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Generic group channel: each member owns one `EventChannel<E>` for writing;
-//! the others hold imported read-only `EventChannel<E>`s for every peer.
+//! Generic group channel: each member owns one `EventChannel<Envelope<E>>` for
+//! writing; the others hold imported read-only channels for every peer.
+//!
+//! # Channel rotation
+//!
+//! Call [`GroupChannel::rotate_channel`] to rotate your write channel for
+//! post-compromise security.  Rotation events piggyback transparently on the
+//! existing application channels via a private [`Envelope<E>`] wrapper; the
+//! receive methods strip the wrapper and surface only `App` payloads to the
+//! caller.
+//!
+//! The protocol:
+//!
+//! 1. Writer calls `rotate_channel()`: creates a new channel, sends
+//!    `Envelope::Rotate { new_intro }` on the **old** channel, then waits for
+//!    ACKs from every member.
+//! 2. Each reader that receives a `Rotate` envelope imports the new channel
+//!    and replies with `Envelope::Ack { new_member_id }` on *their own*
+//!    channel.
+//! 3. Once the writer has collected ACKs from every member, it atomically
+//!    replaces `my_channel` and `my_introduction` with the new ones.
+//!
+//! Until all ACKs arrive the writer continues publishing on the old channel
+//! so readers are never left without a valid endpoint.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, RwLock};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use std::time::Duration;
 
 use blake2::{Blake2s256, Digest};
@@ -16,6 +38,10 @@ use crate::persistent::error::{PigeonholeDbError, Result};
 use crate::persistent::{PigeonholeClient, ReadCapability};
 
 use super::event_channel::EventChannel;
+
+// ============================================================================
+// Public types
+// ============================================================================
 
 /// Out-of-band introduction: a member's display name, read capability, and
 /// starting index.  Exchanged directly (e.g. QR code, secure side-channel)
@@ -56,66 +82,97 @@ pub struct ReceivedGroupEvent<E> {
     pub event: E,
 }
 
-/// A group where every member publishes to their own `EventChannel<E>` and
-/// reads from every other member's channel.
+// ============================================================================
+// Private wire format
+// ============================================================================
+
+/// All messages on group channels are framed in this envelope.
+///
+/// `App` carries normal application events.  `Rotate` and `Ack` implement the
+/// channel-rotation handshake; they are stripped by the receive methods and
+/// never surfaced to the caller.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum Envelope<E> {
+    App(E),
+    Rotate { new_intro: Introduction },
+    Ack { new_member_id: String },
+}
+
+// ============================================================================
+// Rotation state
+// ============================================================================
+
+struct PendingRotation<E> {
+    /// The freshly-created channel that will replace `my_channel` once all
+    /// members have ACKed.
+    new_channel: EventChannel<Envelope<E>>,
+    /// Introduction that readers will need to import the new channel.
+    new_introduction: Introduction,
+    /// Member IDs (hash of current read cap) that have not yet ACKed.
+    acks_needed: HashSet<String>,
+}
+
+// ============================================================================
+// GroupChannel
+// ============================================================================
+
+/// A group where every member publishes to their own `EventChannel<Envelope<E>>`
+/// and reads from every other member's channel.
 ///
 /// # Type parameter
 ///
-/// `E` is the application event type.  It must be serializable with
-/// `serde` (CBOR encoding is used on the wire).  Examples:
+/// `E` is the application event type.  It must be serializable with `serde`
+/// (CBOR encoding is used on the wire).  Examples:
 ///
-/// - A simple `enum ChatEvent { Text(String), Introduction(Introduction) }`
-///   for plain group chat.
-/// - A CRDT operation type such as `Dot<String>` (a `GCounter<String>` op)
-///   for replicated-state applications.
+/// - `enum ChatEvent { Text(String), Introduction(Introduction) }`
+/// - A CRDT operation type such as `Dot<String>` (a `GCounter<String>` op).
 ///
 /// # Receiving
 ///
 /// Use [`receive_from`] to block until a specific member's next message
 /// arrives, or [`receive_any`] to race all member channels and return
-/// whichever delivers first.  Both rely on the daemon's ARQ mechanism
-/// rather than an application-level sleep/poll loop.
+/// whichever delivers first.  Both rely on the daemon's ARQ mechanism rather
+/// than an application-level sleep/poll loop.  `Rotate` and `Ack` envelopes
+/// are processed silently and never returned.
 ///
-/// # Channel rotation (future work)
+/// # Channel rotation
 ///
-/// For post-compromise security, each member should periodically rotate to a
-/// freshly generated channel.  The rotation handshake requires the writer to
-/// receive an explicit ACK from every reader confirming they have imported the
-/// new read cap before the old channel is retired.  This is not yet
-/// implemented; the current design keeps a single `EventChannel<E>` per
-/// member for simplicity.
+/// Call [`rotate_channel`] to initiate a post-compromise key rotation.  Check
+/// [`rotation_pending`] to see if the handshake is still in progress.  While
+/// rotation is pending the group continues to operate normally; new messages
+/// are still written on the old channel until every peer ACKs.
 pub struct GroupChannel<E> {
     pub name: String,
     pub my_display_name: String,
-    /// Cached at creation; immutable, so no lock needed to share it.
-    my_introduction: Introduction,
-    /// Wrapped in `Arc<Mutex<...>>` so `send` takes `&self` and can be
-    /// called concurrently with `receive_from_all` in `tokio::join!`.
-    my_channel: Arc<Mutex<EventChannel<E>>>,
-    /// The member map is wrapped in `Arc<RwLock<...>>` so that `add_member`
-    /// and `remove_member` take `&self` and can run concurrently with `send`.
-    /// Receive methods take a snapshot (clone of `Arc`s) under a brief read
-    /// lock, then do all async work outside it.  A `std::sync::RwLock` is
-    /// used rather than `tokio::sync::RwLock` because every map operation is
-    /// synchronous; the async work lives inside the per-channel `Mutex`.
-    ///
-    /// Key: `Introduction::member_id()` (Blake2s-256 hex of the read cap).
-    /// Value: `(display_name, channel)` — display_name is stored alongside
-    /// the channel so that `ReceivedGroupEvent::sender` stays human-readable.
-    member_channels: Arc<RwLock<HashMap<String, (String, Arc<Mutex<EventChannel<E>>>)>>>,
-    /// Events that were received by a `receive_any` call alongside the winner
-    /// but not yet returned to the caller.  Because `ChannelHandle::receive`
-    /// advances the persistent read cursor before it returns, any result that
-    /// is produced must eventually be delivered — it cannot be silently
-    /// discarded.  Buffered events are drained in FIFO order by the next
-    /// `receive_any` call before new network I/O is issued.
+    /// Stored so `add_member` and `rotate_channel` can call pigeonhole without
+    /// requiring the caller to pass it each time.
+    pigeonhole: Arc<PigeonholeClient>,
+    /// Swapped atomically on rotation completion.
+    my_introduction: RwLock<Introduction>,
+    /// The local member's write channel.  Swapped atomically on rotation
+    /// completion.  `tokio::sync::Mutex` (not Arc-wrapped) because only `self`
+    /// ever accesses it; Arc is not needed.
+    my_channel: Mutex<EventChannel<Envelope<E>>>,
+    /// Key: `Introduction::member_id()`.
+    /// Value: `(display_name, channel)`.
+    member_channels: Arc<RwLock<HashMap<String, (String, Arc<Mutex<EventChannel<Envelope<E>>>>)>>>,
+    /// Events received alongside the winner of a `receive_any` race that have
+    /// not yet been returned to the caller.  Drained in FIFO order before new
+    /// network I/O.
     receive_any_buffer: Mutex<VecDeque<ReceivedGroupEvent<E>>>,
+    /// Non-`None` while a rotation handshake is in progress.
+    /// `std::sync::Mutex` because it is never held across `.await` points.
+    pending_rotation: StdMutex<Option<PendingRotation<E>>>,
 }
 
-impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
+impl<E: Serialize + DeserializeOwned + Clone + Send + 'static> GroupChannel<E> {
+    // -----------------------------------------------------------------------
+    // Constructors
+    // -----------------------------------------------------------------------
+
     /// Create a new group and generate the local member's channel.
     pub async fn create(
-        pigeonhole: &PigeonholeClient,
+        pigeonhole: Arc<PigeonholeClient>,
         group_name: &str,
         my_display_name: &str,
     ) -> Result<Self> {
@@ -123,15 +180,17 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
         let handle = pigeonhole.create_channel(&my_channel_name).await?;
         let read_cap = handle.share_read_capability();
         let my_introduction = Introduction::new(my_display_name, read_cap.read_cap, read_cap.start_index);
-        let my_channel = Arc::new(Mutex::new(EventChannel::new(handle)));
+        let my_channel = Mutex::new(EventChannel::new(handle));
 
         Ok(Self {
             name: group_name.to_string(),
             my_display_name: my_display_name.to_string(),
-            my_introduction,
+            pigeonhole,
+            my_introduction: RwLock::new(my_introduction),
             my_channel,
             member_channels: Arc::new(RwLock::new(HashMap::new())),
             receive_any_buffer: Mutex::new(VecDeque::new()),
+            pending_rotation: StdMutex::new(None),
         })
     }
 
@@ -142,7 +201,7 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
     /// in the local DB.  The signature is `async` purely for API symmetry so
     /// callers can treat both constructors the same way.
     pub async fn restore(
-        pigeonhole: &PigeonholeClient,
+        pigeonhole: Arc<PigeonholeClient>,
         group_name: &str,
         my_display_name: &str,
         member_intros: &[Introduction],
@@ -151,7 +210,7 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
         let handle = pigeonhole.get_channel(&my_channel_name)?;
         let read_cap = handle.share_read_capability();
         let my_introduction = Introduction::new(my_display_name, read_cap.read_cap, read_cap.start_index);
-        let my_channel = Arc::new(Mutex::new(EventChannel::new(handle)));
+        let my_channel = Mutex::new(EventChannel::new(handle));
 
         let mut map = HashMap::new();
         for intro in member_intros {
@@ -167,17 +226,23 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
         Ok(Self {
             name: group_name.to_string(),
             my_display_name: my_display_name.to_string(),
-            my_introduction,
+            pigeonhole,
+            my_introduction: RwLock::new(my_introduction),
             my_channel,
             member_channels: Arc::new(RwLock::new(map)),
             receive_any_buffer: Mutex::new(VecDeque::new()),
+            pending_rotation: StdMutex::new(None),
         })
     }
+
+    // -----------------------------------------------------------------------
+    // Membership
+    // -----------------------------------------------------------------------
 
     /// Return an `Introduction` suitable for sharing with new members so they
     /// can import this member's channel.
     pub fn my_introduction(&self) -> Introduction {
-        self.my_introduction.clone()
+        self.my_introduction.read().expect("my_introduction lock poisoned").clone()
     }
 
     /// Number of remote member channels currently tracked.
@@ -190,7 +255,7 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
     /// The member is keyed internally by [`Introduction::member_id`] (a hash
     /// of the read cap), not by `display_name`.  Two members may share a
     /// display name without colliding.
-    pub fn add_member(&self, pigeonhole: &PigeonholeClient, intro: &Introduction) -> Result<()> {
+    pub fn add_member(&self, intro: &Introduction) -> Result<()> {
         let id = intro.member_id();
         let channel_name = format!("group:{}:member:{}", self.name, id);
         let read_cap = ReadCapability {
@@ -198,7 +263,7 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
             start_index: intro.start_index.clone(),
             name: Some(intro.display_name.clone()),
         };
-        let handle = pigeonhole.import_channel(&channel_name, &read_cap)?;
+        let handle = self.pigeonhole.import_channel(&channel_name, &read_cap)?;
         self.member_channels
             .write()
             .expect("member_channels lock poisoned")
@@ -218,13 +283,189 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
             .is_some()
     }
 
+    // -----------------------------------------------------------------------
+    // Send
+    // -----------------------------------------------------------------------
+
     /// Send an event on the local member's channel.
-    pub async fn send(&self, event: &E) -> Result<()> {
-        self.my_channel.lock().await.send(event).await
+    ///
+    /// The event is wrapped in `Envelope::App` before writing to the wire.
+    pub async fn send(&self, event: E) -> Result<()> {
+        self.my_channel.lock().await.send(&Envelope::App(event)).await
     }
+
+    // -----------------------------------------------------------------------
+    // Channel rotation
+    // -----------------------------------------------------------------------
+
+    /// Initiate a channel rotation.
+    ///
+    /// Creates a new write channel, broadcasts a `Rotate` envelope on the
+    /// current channel, then waits for ACKs from every member before
+    /// atomically switching to the new channel.  Until all ACKs arrive,
+    /// [`send`] continues to write on the old channel so peers are never
+    /// left without a valid endpoint.
+    ///
+    /// Returns an error if a rotation is already in progress.
+    pub async fn rotate_channel(&self) -> Result<()> {
+        // Ensure no rotation is already pending.
+        {
+            let pr = self.pending_rotation.lock().expect("pending_rotation lock poisoned");
+            if pr.is_some() {
+                return Err(PigeonholeDbError::Other("Channel rotation already in progress".to_string()));
+            }
+        }
+
+        // Create a new write channel with a unique name derived from the
+        // current timestamp to avoid collisions with the existing one.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let new_channel_name = format!("group:{}:self:rot:{}", self.name, ts);
+        let handle = self.pigeonhole.create_channel(&new_channel_name).await?;
+        let read_cap = handle.share_read_capability();
+        let new_introduction = Introduction::new(
+            &self.my_display_name,
+            read_cap.read_cap,
+            read_cap.start_index,
+        );
+        let new_channel: EventChannel<Envelope<E>> = EventChannel::new(handle);
+
+        // Collect current member IDs — these are the peers whose ACKs we need.
+        let acks_needed: HashSet<String> = self.member_channels
+            .read()
+            .expect("member_channels lock poisoned")
+            .keys()
+            .cloned()
+            .collect();
+
+        // Announce the rotation on the current channel so peers can import the
+        // new channel before we switch.
+        let rotate_env = Envelope::<E>::Rotate { new_intro: new_introduction.clone() };
+        self.my_channel.lock().await.send(&rotate_env).await?;
+
+        if acks_needed.is_empty() {
+            // No peers to ACK — complete the rotation immediately.
+            *self.my_channel.lock().await = new_channel;
+            *self.my_introduction.write().expect("my_introduction lock poisoned") = new_introduction;
+        } else {
+            *self.pending_rotation.lock().expect("pending_rotation lock poisoned") =
+                Some(PendingRotation { new_channel, new_introduction, acks_needed });
+        }
+
+        Ok(())
+    }
+
+    /// Returns `true` if a channel rotation handshake is in progress.
+    pub fn rotation_pending(&self) -> bool {
+        self.pending_rotation.lock().expect("pending_rotation lock poisoned").is_some()
+    }
+
+    // -----------------------------------------------------------------------
+    // Envelope processing (private)
+    // -----------------------------------------------------------------------
+
+    /// Process `Rotate` and `Ack` envelopes received from `sender_member_id`.
+    ///
+    /// This is called by the receive methods after stripping `App` payloads.
+    /// Holding no locks on entry; acquires them internally for short critical
+    /// sections, never across `.await` points.
+    async fn process_envelopes(
+        &self,
+        sender_member_id: &str,
+        envelopes: Vec<Envelope<E>>,
+    ) -> Result<()> {
+        for envelope in envelopes {
+            match envelope {
+                Envelope::App(_) => {
+                    // Should not reach here — callers strip App before this call.
+                    debug_assert!(false, "process_envelopes called with App envelope");
+                }
+                Envelope::Rotate { new_intro } => {
+                    // Import the peer's new channel (sync — no await needed).
+                    let new_id = new_intro.member_id();
+                    let channel_name = format!("group:{}:member:{}", self.name, new_id);
+                    let read_cap = ReadCapability {
+                        read_cap: new_intro.read_cap.clone(),
+                        start_index: new_intro.start_index.clone(),
+                        name: Some(new_intro.display_name.clone()),
+                    };
+                    let handle = self.pigeonhole.import_channel(&channel_name, &read_cap)?;
+
+                    // Replace the old channel entry with the new one.
+                    {
+                        let mut map = self.member_channels
+                            .write()
+                            .expect("member_channels lock poisoned");
+                        map.remove(sender_member_id);
+                        map.insert(
+                            new_id.clone(),
+                            (new_intro.display_name.clone(), Arc::new(Mutex::new(EventChannel::new(handle)))),
+                        );
+                    }
+
+                    // If we have a pending rotation, rename the peer's ID in
+                    // `acks_needed` so their subsequent ACK (sent on their new
+                    // channel) is matched correctly.
+                    {
+                        let mut pr = self.pending_rotation.lock().expect("pending_rotation lock poisoned");
+                        if let Some(ref mut pending) = *pr {
+                            if pending.acks_needed.remove(sender_member_id) {
+                                pending.acks_needed.insert(new_id.clone());
+                            }
+                        }
+                    }
+
+                    // Acknowledge the peer's rotation on our current channel.
+                    let ack = Envelope::<E>::Ack { new_member_id: new_id };
+                    self.my_channel.lock().await.send(&ack).await?;
+                }
+                Envelope::Ack { new_member_id } => {
+                    // Determine whether this ACK satisfies our pending rotation.
+                    let should_complete = {
+                        let mut pr = self.pending_rotation.lock().expect("pending_rotation lock poisoned");
+                        if let Some(ref mut pending) = *pr {
+                            let matches = new_member_id == pending.new_introduction.member_id();
+                            if matches {
+                                pending.acks_needed.remove(sender_member_id);
+                                pending.acks_needed.is_empty()
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    };
+
+                    if should_complete {
+                        // Take the pending rotation (brief lock, then dropped).
+                        let completed = self.pending_rotation
+                            .lock()
+                            .expect("pending_rotation lock poisoned")
+                            .take()
+                            .expect("pending_rotation vanished between checks");
+
+                        // Atomically replace the write channel and introduction.
+                        *self.my_channel.lock().await = completed.new_channel;
+                        *self.my_introduction.write().expect("my_introduction lock poisoned") =
+                            completed.new_introduction;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Receive
+    // -----------------------------------------------------------------------
 
     /// Block until the next event from `member_id` arrives, using the daemon's
     /// ARQ mechanism.  Returns immediately if a message is already waiting.
+    ///
+    /// `Rotate` and `Ack` envelopes are processed transparently; the method
+    /// loops until an `App` payload is found.
     ///
     /// Pass [`Introduction::member_id`] as `member_id`.
     pub async fn receive_from(&self, member_id: &str) -> Result<ReceivedGroupEvent<E>> {
@@ -234,51 +475,74 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
             .get(member_id)
             .ok_or_else(|| PigeonholeDbError::Other(format!("No member '{}' in group", member_id)))?
             .clone();
+
         let mut ch = channel.lock().await;
-        let event = ch.receive().await?;
-        Ok(ReceivedGroupEvent { sender: display_name, event })
+        loop {
+            match ch.receive().await? {
+                Envelope::App(event) => return Ok(ReceivedGroupEvent { sender: display_name, event }),
+                other => self.process_envelopes(member_id, vec![other]).await?,
+            }
+        }
     }
 
-    /// Block until every member has delivered one event, receiving from all
-    /// member channels concurrently.
+    /// Block until every member has delivered one `App` event, receiving from
+    /// all member channels concurrently.
+    ///
+    /// Each spawned task loops on its channel until it finds an `App` payload,
+    /// collecting any `Rotate`/`Ack` envelopes along the way.  Those are
+    /// processed by the calling task after all spawned tasks complete.
     ///
     /// All ARQ requests are started simultaneously.  Results are collected in
-    /// completion order (fastest channel first) so no channel waits on
-    /// another.  Returns one event per member in the order they arrived.
+    /// completion order so no channel waits on another.
     pub async fn receive_from_all(&self) -> Result<Vec<ReceivedGroupEvent<E>>> {
-        // snapshot: (display_name, channel)
-        let snapshot: Vec<(String, Arc<Mutex<EventChannel<E>>>)> = self.member_channels
-            .read()
-            .expect("member_channels lock poisoned")
-            .values()
-            .map(|(display_name, ch)| (display_name.clone(), ch.clone()))
-            .collect();
+        // snapshot: (member_id, display_name, channel)
+        let snapshot: Vec<(String, String, Arc<Mutex<EventChannel<Envelope<E>>>>)> =
+            self.member_channels
+                .read()
+                .expect("member_channels lock poisoned")
+                .iter()
+                .map(|(id, (name, ch))| (id.clone(), name.clone(), ch.clone()))
+                .collect();
 
         if snapshot.is_empty() {
             return Ok(vec![]);
         }
 
         let mut set = tokio::task::JoinSet::new();
-
         let results_cap = snapshot.len();
-        for (name, channel) in snapshot {
+
+        for (member_id, display_name, channel) in snapshot {
             set.spawn(async move {
                 let mut ch = channel.lock().await;
-                ch.receive().await
-                    .map(|event| ReceivedGroupEvent { sender: name, event })
+                let mut rotation_envelopes: Vec<Envelope<E>> = Vec::new();
+                loop {
+                    match ch.receive().await {
+                        Ok(Envelope::App(e)) => {
+                            return Ok::<_, PigeonholeDbError>((member_id, display_name, e, rotation_envelopes));
+                        }
+                        Ok(other) => rotation_envelopes.push(other),
+                        Err(e) => return Err(e),
+                    }
+                }
             });
         }
 
         let mut results = Vec::with_capacity(results_cap);
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(Ok(event))  => results.push(event),
-                Ok(Err(e))     => return Err(e),
-                Err(join_err)  => return Err(PigeonholeDbError::Other(
+                Ok(Ok((member_id, display_name, event, envelopes))) => {
+                    if !envelopes.is_empty() {
+                        self.process_envelopes(&member_id, envelopes).await?;
+                    }
+                    results.push(ReceivedGroupEvent { sender: display_name, event });
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(join_err) => return Err(PigeonholeDbError::Other(
                     format!("receive_from_all task panicked: {}", join_err)
                 )),
             }
         }
+
         Ok(results)
     }
 
@@ -286,15 +550,14 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
     /// results have arrived, rather than blocking until every member delivers.
     ///
     /// Returns `Ok(events)` where `events` contains one entry per member that
-    /// delivered within the deadline; members that did not deliver are simply
-    /// absent from the result (their tasks are aborted before their
+    /// delivered within the deadline.  Members that did not deliver are simply
+    /// absent from the result (their tasks are aborted before
     /// `ChannelHandle::receive` completes, so no cursor is advanced and no
     /// message is lost on those channels).
     ///
     /// **No-loss guarantee**: any member whose `receive()` completed
-    /// *concurrently* with the timeout — meaning its read cursor has already
-    /// advanced — has its event placed in the internal pending buffer and will
-    /// be returned by the next [`receive_any`] call.
+    /// *concurrently* with the timeout has its event placed in the internal
+    /// pending buffer and will be returned by the next [`receive_any`] call.
     ///
     /// If any member's `receive()` returns an error, all already-collected
     /// events are moved to the pending buffer and the error is propagated.
@@ -302,31 +565,42 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
         &self,
         timeout: Duration,
     ) -> Result<Vec<ReceivedGroupEvent<E>>> {
-        // snapshot: (display_name, channel)
-        let snapshot: Vec<(String, Arc<Mutex<EventChannel<E>>>)> = self.member_channels
-            .read()
-            .expect("member_channels lock poisoned")
-            .values()
-            .map(|(dn, ch)| (dn.clone(), ch.clone()))
-            .collect();
+        let snapshot: Vec<(String, String, Arc<Mutex<EventChannel<Envelope<E>>>>)> =
+            self.member_channels
+                .read()
+                .expect("member_channels lock poisoned")
+                .iter()
+                .map(|(id, (dn, ch))| (id.clone(), dn.clone(), ch.clone()))
+                .collect();
 
         if snapshot.is_empty() {
             return Ok(vec![]);
         }
 
         let n = snapshot.len();
-        // Capacity = n: completing tasks send without blocking, preserving
-        // results even if we time out before draining them.
+        // Capacity = n: tasks send without blocking, preserving results even if
+        // we time out before draining them.
         let (tx, mut rx) = tokio::sync::mpsc::channel(n);
         let mut handles = Vec::with_capacity(n);
 
-        for (display_name, channel) in snapshot {
+        for (member_id, display_name, channel) in snapshot {
             let tx = tx.clone();
             let handle = tokio::spawn(async move {
                 let mut ch = channel.lock().await;
-                let result = ch.receive().await
-                    .map(|event| ReceivedGroupEvent { sender: display_name, event });
-                let _ = tx.send(result).await;
+                let mut rotation_envelopes: Vec<Envelope<E>> = Vec::new();
+                loop {
+                    match ch.receive().await {
+                        Ok(Envelope::App(e)) => {
+                            let _ = tx.send(Ok((member_id, display_name, e, rotation_envelopes))).await;
+                            return;
+                        }
+                        Ok(other) => rotation_envelopes.push(other),
+                        Err(e) => {
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
+                    }
+                }
             });
             handles.push(handle);
         }
@@ -334,36 +608,48 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
 
         let deadline = tokio::time::Instant::now() + timeout;
         let mut results = Vec::with_capacity(n);
+        let mut pending_envelopes: Vec<(String, Vec<Envelope<E>>)> = Vec::new();
         let mut first_err: Option<PigeonholeDbError> = None;
 
         loop {
             if results.len() == n {
-                break; // all members delivered
+                break;
             }
             match tokio::time::timeout_at(deadline, rx.recv()).await {
-                Ok(Some(Ok(event))) => results.push(event),
-                Ok(Some(Err(e)))    => { first_err = Some(e); break; }
-                Ok(None) | Err(_)   => break, // channel closed or deadline
+                Ok(Some(Ok((mid, dname, event, envelopes)))) => {
+                    pending_envelopes.push((mid, envelopes));
+                    results.push(ReceivedGroupEvent { sender: dname, event });
+                }
+                Ok(Some(Err(e))) => { first_err = Some(e); break; }
+                Ok(None) | Err(_) => break,
             }
         }
 
-        // Abort tasks that haven't finished receive() yet.
+        // Abort tasks that haven't finished yet.
         for handle in &handles {
             handle.abort();
         }
 
-        // Drain any events that landed just before/during abort (their cursors
-        // are already advanced and must not be discarded).
+        // Drain any events that landed just before/during abort.
         let mut late: Vec<ReceivedGroupEvent<E>> = Vec::new();
         while let Ok(extra) = rx.try_recv() {
-            if let Ok(event) = extra {
-                late.push(event);
+            if let Ok((mid, dname, event, envelopes)) = extra {
+                pending_envelopes.push((mid, envelopes));
+                late.push(ReceivedGroupEvent { sender: dname, event });
+            }
+        }
+
+        // Process accumulated rotation envelopes.
+        for (mid, envelopes) in pending_envelopes {
+            if !envelopes.is_empty() {
+                if let Err(e) = self.process_envelopes(&mid, envelopes).await {
+                    // Surface the first error, but don't lose results.
+                    if first_err.is_none() { first_err = Some(e); }
+                }
             }
         }
 
         if let Some(e) = first_err {
-            // Move all successfully received events to the pending buffer so
-            // they are not lost despite the error return.
             let mut buf = self.receive_any_buffer.lock().await;
             for event in results.into_iter().chain(late) {
                 buf.push_back(event);
@@ -380,22 +666,20 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
         }
     }
 
-    /// Block until any member sends an event, racing all member channels
+    /// Block until any member sends an `App` event, racing all member channels
     /// concurrently.  The first to deliver wins; remaining tasks are aborted.
+    ///
+    /// `Rotate` and `Ack` envelopes are processed transparently.  If the
+    /// winning task (or the extras that arrived alongside it) contain only
+    /// rotation envelopes, a new race is started immediately.
     ///
     /// **No-loss guarantee**: `ChannelHandle::receive` advances the persistent
     /// read cursor before it returns.  Any task that completes a receive must
-    /// therefore have its result delivered to the caller — discarding it would
-    /// permanently skip that message.  To handle races where multiple channels
-    /// deliver simultaneously, the channel passed to spawned tasks has capacity
-    /// equal to the member count, so every completing task can send its result
-    /// without blocking.  After returning the first result, any extras already
-    /// in the channel are drained into an internal buffer and returned by
-    /// subsequent `receive_any` calls before new network I/O is issued.
-    ///
-    /// Each member's channel uses the daemon's ARQ mechanism, so there is no
-    /// application-level sleep or timeout — the daemon retries automatically
-    /// until the box is available.
+    /// therefore have its result delivered.  The channel passed to spawned
+    /// tasks has capacity equal to the member count, so every completing task
+    /// can send its result without blocking.  After returning the first `App`
+    /// result, any additional `App` results already in the channel are drained
+    /// into the internal buffer and returned by subsequent `receive_any` calls.
     pub async fn receive_any(&self) -> Result<ReceivedGroupEvent<E>> {
         // Drain the buffer before doing any network I/O.
         {
@@ -405,63 +689,288 @@ impl<E: Serialize + DeserializeOwned + Send + 'static> GroupChannel<E> {
             }
         }
 
-        // snapshot: (display_name, channel)
-        let snapshot: Vec<(String, Arc<Mutex<EventChannel<E>>>)> = self.member_channels
-            .read()
-            .expect("member_channels lock poisoned")
-            .values()
-            .map(|(display_name, ch)| (display_name.clone(), ch.clone()))
-            .collect();
+        loop {
+            let snapshot: Vec<(String, String, Arc<Mutex<EventChannel<Envelope<E>>>>)> =
+                self.member_channels
+                    .read()
+                    .expect("member_channels lock poisoned")
+                    .iter()
+                    .map(|(id, (name, ch))| (id.clone(), name.clone(), ch.clone()))
+                    .collect();
 
-        if snapshot.is_empty() {
-            return Err(PigeonholeDbError::Other("Group has no members".to_string()));
-        }
+            if snapshot.is_empty() {
+                return Err(PigeonholeDbError::Other("Group has no members".to_string()));
+            }
 
-        // One slot per member so that a completing task's tx.send() resolves
-        // without yielding.  A non-yielding send completes before the tokio
-        // scheduler can switch to our task, so by the time rx.recv() wakes us
-        // up every task that finished receive() has already placed its result
-        // in the channel.
-        let n = snapshot.len();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(n);
-        let mut handles = Vec::with_capacity(n);
+            // One slot per member so that a completing task's tx.send() resolves
+            // without yielding.
+            let n = snapshot.len();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(n);
+            let mut handles = Vec::with_capacity(n);
 
-        for (name, channel) in snapshot {
-            let tx = tx.clone();
-            let handle = tokio::spawn(async move {
-                let mut ch = channel.lock().await;
-                let result = ch.receive().await
-                    .map(|event| ReceivedGroupEvent { sender: name, event });
-                let _ = tx.send(result).await;
-            });
-            handles.push(handle);
-        }
-        drop(tx);
+            for (member_id, display_name, channel) in snapshot {
+                let tx = tx.clone();
+                let handle = tokio::spawn(async move {
+                    let mut ch = channel.lock().await;
+                    let result = ch.receive().await
+                        .map(|env| (member_id, display_name, env));
+                    let _ = tx.send(result).await;
+                });
+                handles.push(handle);
+            }
+            drop(tx);
 
-        let first = rx.recv().await
-            .ok_or_else(|| PigeonholeDbError::Other("All member channels failed".to_string()))?;
+            let first = rx.recv().await
+                .ok_or_else(|| PigeonholeDbError::Other("All member channels failed".to_string()))?;
 
-        // Abort tasks that haven't completed receive() yet.  Tasks that already
-        // completed sent their result non-blocking (capacity = n), so their
-        // results are already in `rx` and will be captured by try_recv below.
-        for handle in &handles {
-            handle.abort();
-        }
+            // Abort tasks that haven't completed receive() yet.
+            for handle in &handles {
+                handle.abort();
+            }
 
-        // Drain results that arrived alongside the winner.  These come from
-        // tasks whose receive() completed before the abort fired; their read
-        // cursors have already advanced and the messages must not be discarded.
-        {
-            let mut buf = self.receive_any_buffer.lock().await;
-            while let Ok(extra) = rx.try_recv() {
-                if let Ok(event) = extra {
-                    buf.push_back(event);
+            // Drain results that arrived alongside the winner.
+            let mut extras: Vec<(String, String, Envelope<E>)> = Vec::new();
+            while let Ok(Ok(extra)) = rx.try_recv() {
+                extras.push(extra);
+            }
+
+            match first? {
+                (_member_id, display_name, Envelope::App(event)) => {
+                    // Process any extras and buffer App ones.
+                    let mut rotation_extras: Vec<(String, Vec<Envelope<E>>)> = Vec::new();
+                    {
+                        let mut buf = self.receive_any_buffer.lock().await;
+                        for (mid, dname, env) in extras {
+                            match env {
+                                Envelope::App(e) => buf.push_back(ReceivedGroupEvent { sender: dname, event: e }),
+                                other => {
+                                    rotation_extras.push((mid.clone(), vec![other]));
+                                }
+                            }
+                        }
+                    }
+                    for (mid, envelopes) in rotation_extras {
+                        self.process_envelopes(&mid, envelopes).await?;
+                    }
+
+                    return Ok(ReceivedGroupEvent { sender: display_name, event });
                 }
-                // An Err result means that receive() failed before advancing
-                // the cursor, so nothing was consumed and we can drop it.
+                (member_id, _, non_app) => {
+                    // Process the non-App result and any extras, then loop.
+                    self.process_envelopes(&member_id, vec![non_app]).await?;
+
+                    let mut rotation_extras: Vec<(String, Vec<Envelope<E>>)> = Vec::new();
+                    {
+                        let mut buf = self.receive_any_buffer.lock().await;
+                        for (mid, dname, env) in extras {
+                            match env {
+                                Envelope::App(e) => buf.push_back(ReceivedGroupEvent { sender: dname, event: e }),
+                                other => rotation_extras.push((mid.clone(), vec![other])),
+                            }
+                        }
+                    }
+                    for (mid, envelopes) in rotation_extras {
+                        self.process_envelopes(&mid, envelopes).await?;
+                    }
+
+                    // Check if any App arrived while processing rotation events.
+                    {
+                        let mut buf = self.receive_any_buffer.lock().await;
+                        if let Some(event) = buf.pop_front() {
+                            return Ok(event);
+                        }
+                    }
+                    // No App yet — race again.
+                }
             }
         }
+    }
+}
 
-        first
+// ============================================================================
+// Unit tests (no network required)
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    // A minimal application event type used across all round-trip tests.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    enum TestEvent {
+        Text(String),
+        Counter(u64),
+    }
+
+    fn make_intro(display_name: &str, read_cap: &[u8]) -> Introduction {
+        Introduction::new(display_name, read_cap.to_vec(), vec![0u8; 8])
+    }
+
+    // -----------------------------------------------------------------------
+    // Envelope round-trips
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn envelope_app_cbor_roundtrip() {
+        let original: Envelope<TestEvent> = Envelope::App(TestEvent::Text("hello".to_string()));
+        let bytes = serde_cbor::to_vec(&original).unwrap();
+        let decoded: Envelope<TestEvent> = serde_cbor::from_slice(&bytes).unwrap();
+        match decoded {
+            Envelope::App(TestEvent::Text(s)) => assert_eq!(s, "hello"),
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn envelope_app_counter_cbor_roundtrip() {
+        let original: Envelope<TestEvent> = Envelope::App(TestEvent::Counter(42));
+        let bytes = serde_cbor::to_vec(&original).unwrap();
+        let decoded: Envelope<TestEvent> = serde_cbor::from_slice(&bytes).unwrap();
+        match decoded {
+            Envelope::App(TestEvent::Counter(n)) => assert_eq!(n, 42),
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn envelope_rotate_cbor_roundtrip() {
+        let intro = make_intro("Alice", b"alice_read_cap_bytes");
+        let original: Envelope<TestEvent> = Envelope::Rotate { new_intro: intro.clone() };
+        let bytes = serde_cbor::to_vec(&original).unwrap();
+        let decoded: Envelope<TestEvent> = serde_cbor::from_slice(&bytes).unwrap();
+        match decoded {
+            Envelope::Rotate { new_intro } => {
+                assert_eq!(new_intro.display_name, "Alice");
+                assert_eq!(new_intro.read_cap, b"alice_read_cap_bytes");
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn envelope_ack_cbor_roundtrip() {
+        let original: Envelope<TestEvent> = Envelope::Ack {
+            new_member_id: "deadbeef1234".to_string(),
+        };
+        let bytes = serde_cbor::to_vec(&original).unwrap();
+        let decoded: Envelope<TestEvent> = serde_cbor::from_slice(&bytes).unwrap();
+        match decoded {
+            Envelope::Ack { new_member_id } => assert_eq!(new_member_id, "deadbeef1234"),
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+
+    /// The three envelope variants must not decode as one another.
+    #[test]
+    fn envelope_variants_are_distinguishable() {
+        let intro = make_intro("Bob", b"bob_cap");
+        let app: Envelope<TestEvent>    = Envelope::App(TestEvent::Counter(1));
+        let rotate: Envelope<TestEvent> = Envelope::Rotate { new_intro: intro };
+        let ack: Envelope<TestEvent>    = Envelope::Ack { new_member_id: "abc".to_string() };
+
+        let app_bytes    = serde_cbor::to_vec(&app).unwrap();
+        let rotate_bytes = serde_cbor::to_vec(&rotate).unwrap();
+        let ack_bytes    = serde_cbor::to_vec(&ack).unwrap();
+
+        // Each decodes back to exactly its own variant.
+        assert!(matches!(serde_cbor::from_slice::<Envelope<TestEvent>>(&app_bytes).unwrap(),    Envelope::App(_)));
+        assert!(matches!(serde_cbor::from_slice::<Envelope<TestEvent>>(&rotate_bytes).unwrap(), Envelope::Rotate { .. }));
+        assert!(matches!(serde_cbor::from_slice::<Envelope<TestEvent>>(&ack_bytes).unwrap(),    Envelope::Ack { .. }));
+
+        // None decodes as a different variant.
+        assert!(serde_cbor::from_slice::<Envelope<TestEvent>>(&app_bytes)
+            .map(|e: Envelope<TestEvent>| !matches!(e, Envelope::Rotate { .. })).unwrap_or(true));
+    }
+
+    // -----------------------------------------------------------------------
+    // Introduction round-trips and member_id properties
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn introduction_cbor_roundtrip() {
+        let original = make_intro("Carol", b"carol_cap_bytes_xyz");
+        let bytes = serde_cbor::to_vec(&original).unwrap();
+        let decoded: Introduction = serde_cbor::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.display_name, original.display_name);
+        assert_eq!(decoded.read_cap,     original.read_cap);
+        assert_eq!(decoded.start_index,  original.start_index);
+    }
+
+    #[test]
+    fn member_id_is_deterministic() {
+        let intro = make_intro("Alice", b"stable_read_cap");
+        assert_eq!(intro.member_id(), intro.member_id(),
+            "member_id must return the same value on repeated calls");
+    }
+
+    #[test]
+    fn member_id_differs_for_different_read_caps() {
+        let a = make_intro("Alice", b"cap_a");
+        let b = make_intro("Alice", b"cap_b"); // same display_name, different cap
+        assert_ne!(a.member_id(), b.member_id(),
+            "different read caps must produce different member_ids");
+    }
+
+    #[test]
+    fn member_id_ignores_display_name() {
+        let same_cap = b"shared_cap_bytes";
+        let a = make_intro("Alice", same_cap);
+        let b = make_intro("Bob",   same_cap); // different display_name, same cap
+        assert_eq!(a.member_id(), b.member_id(),
+            "member_id depends only on read_cap, not display_name");
+    }
+
+    #[test]
+    fn member_id_ignores_start_index() {
+        let cap = b"cap_for_start_index_test";
+        let a = Introduction::new("Alice", cap.to_vec(), vec![0u8; 8]);
+        let b = Introduction::new("Alice", cap.to_vec(), vec![1u8; 8]);
+        assert_eq!(a.member_id(), b.member_id(),
+            "member_id depends only on read_cap, not start_index");
+    }
+
+    /// A `Rotate` envelope survives a CBOR round-trip even with a non-trivial
+    /// Introduction (multi-byte read_cap and non-zero start_index).
+    #[test]
+    fn envelope_rotate_preserves_intro_fields() {
+        let intro = Introduction::new(
+            "Dave",
+            (0u8..32).collect(), // 32-byte read_cap
+            (0u8..8).collect(),  // 8-byte start_index
+        );
+        let expected_id = intro.member_id();
+
+        let env: Envelope<TestEvent> = Envelope::Rotate { new_intro: intro };
+        let bytes = serde_cbor::to_vec(&env).unwrap();
+        let decoded: Envelope<TestEvent> = serde_cbor::from_slice(&bytes).unwrap();
+
+        match decoded {
+            Envelope::Rotate { new_intro } => {
+                assert_eq!(new_intro.display_name, "Dave");
+                assert_eq!(new_intro.read_cap, (0u8..32).collect::<Vec<_>>());
+                assert_eq!(new_intro.start_index, (0u8..8).collect::<Vec<_>>());
+                assert_eq!(new_intro.member_id(), expected_id);
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+
+    /// Round-tripping an `Ack` that uses the hex-encoded Blake2s-256 member_id
+    /// format (as produced by `Introduction::member_id()`).
+    #[test]
+    fn envelope_ack_with_realistic_member_id() {
+        let intro = make_intro("Eve", b"realistic_read_cap_32bytes_padded");
+        let member_id = intro.member_id();
+        assert_eq!(member_id.len(), 64, "Blake2s-256 hex is 64 chars");
+
+        let env: Envelope<TestEvent> = Envelope::Ack { new_member_id: member_id.clone() };
+        let bytes = serde_cbor::to_vec(&env).unwrap();
+        let decoded: Envelope<TestEvent> = serde_cbor::from_slice(&bytes).unwrap();
+
+        match decoded {
+            Envelope::Ack { new_member_id } => assert_eq!(new_member_id, member_id),
+            other => panic!("unexpected variant: {:?}", other),
+        }
     }
 }

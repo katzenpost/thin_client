@@ -59,6 +59,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -224,7 +225,7 @@ impl TallyPoll {
     /// [`add_member`] for each additional participant after sharing your
     /// [`my_introduction`] with them out-of-band.
     pub async fn new_poll(
-        pigeonhole: &PigeonholeClient,
+        pigeonhole: Arc<PigeonholeClient>,
         poll_name: &str,
         my_display_name: &str,
         title: impl Into<String>,
@@ -233,7 +234,7 @@ impl TallyPoll {
         let channel = GroupChannel::create(pigeonhole, poll_name, my_display_name).await?;
         let title = title.into();
         let event = TallyEvent::CreatePoll { title: title.clone(), slots: slots.clone() };
-        channel.send(&event).await?;
+        channel.send(event.clone()).await?;
         let mut state = PollState::default();
         state.apply(my_display_name, event);
         Ok(Self { channel, state })
@@ -245,19 +246,19 @@ impl TallyPoll {
     /// To receive the `CreatePoll` event and initialize the local state, call
     /// [`receive_one_and_apply`] (or [`receive_and_apply`]).
     pub async fn join_poll(
-        pigeonhole: &PigeonholeClient,
+        pigeonhole: Arc<PigeonholeClient>,
         poll_name: &str,
         my_display_name: &str,
         creator_intro: &Introduction,
     ) -> Result<Self> {
         let channel = GroupChannel::create(pigeonhole, poll_name, my_display_name).await?;
-        channel.add_member(pigeonhole, creator_intro)?;
+        channel.add_member(creator_intro)?;
         Ok(Self { channel, state: PollState::default() })
     }
 
     /// Restore a previously persisted poll from the database.
     pub async fn restore(
-        pigeonhole: &PigeonholeClient,
+        pigeonhole: Arc<PigeonholeClient>,
         poll_name: &str,
         my_display_name: &str,
         member_intros: &[Introduction],
@@ -281,8 +282,8 @@ impl TallyPoll {
     }
 
     /// Import a member's read capability and start tracking their channel.
-    pub fn add_member(&self, pigeonhole: &PigeonholeClient, intro: &Introduction) -> Result<()> {
-        self.channel.add_member(pigeonhole, intro)
+    pub fn add_member(&self, intro: &Introduction) -> Result<()> {
+        self.channel.add_member(intro)
     }
 
     /// Remove a member's channel from local tracking.
@@ -304,7 +305,7 @@ impl TallyPoll {
     /// is guaranteed by channel ordering.
     pub async fn cast_ballot(&mut self, votes: HashMap<String, Availability>) -> Result<()> {
         let event = TallyEvent::CastBallot { votes };
-        self.channel.send(&event).await?;
+        self.channel.send(event.clone()).await?;
         let my_name = self.channel.my_display_name.clone();
         self.state.apply(&my_name, event);
         Ok(())

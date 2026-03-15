@@ -10,11 +10,12 @@
 //! # Example
 //!
 //! ```ignore
-//! let chat = GroupChat::create(&pigeonhole, "my-room", "Alice").await?;
+//! let ph = Arc::new(PigeonholeClient::new_in_memory(thin_client.clone())?);
+//! let chat = GroupChat::create(ph.clone(), "my-room", "Alice").await?;
 //! let intro = chat.my_introduction();
 //!
 //! // share `intro` out-of-band, then:
-//! chat.add_member(&pigeonhole, &bob_intro)?;
+//! chat.add_member(&bob_intro)?;
 //!
 //! chat.send_text("hello everyone!").await?;
 //!
@@ -26,6 +27,7 @@
 //! }
 //! ```
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -64,7 +66,7 @@ pub struct GroupChat(GroupChannel<ChatEvent>);
 impl GroupChat {
     /// Create a new chat room and generate the local member's channel.
     pub async fn create(
-        pigeonhole: &PigeonholeClient,
+        pigeonhole: Arc<PigeonholeClient>,
         room_name: &str,
         my_display_name: &str,
     ) -> Result<Self> {
@@ -75,7 +77,7 @@ impl GroupChat {
 
     /// Restore a previously created chat room from persisted channels.
     pub async fn restore(
-        pigeonhole: &PigeonholeClient,
+        pigeonhole: Arc<PigeonholeClient>,
         room_name: &str,
         my_display_name: &str,
         member_intros: &[Introduction],
@@ -98,8 +100,8 @@ impl GroupChat {
     /// Import a member's read capability and start tracking their channel.
     ///
     /// Pass [`Introduction::member_id`] to `remove_member` to undo this.
-    pub fn add_member(&self, pigeonhole: &PigeonholeClient, intro: &Introduction) -> Result<()> {
-        self.0.add_member(pigeonhole, intro)
+    pub fn add_member(&self, intro: &Introduction) -> Result<()> {
+        self.0.add_member(intro)
     }
 
     /// Remove a member's channel from local tracking.
@@ -116,12 +118,28 @@ impl GroupChat {
 
     /// Send a plain-text message to the group.
     pub async fn send_text(&self, text: &str) -> Result<()> {
-        self.0.send(&ChatEvent::Text(text.to_string())).await
+        self.0.send(ChatEvent::Text(text.to_string())).await
     }
 
     /// Broadcast an [`Introduction`] so existing members can add the newcomer.
     pub async fn send_introduction(&self, intro: &Introduction) -> Result<()> {
-        self.0.send(&ChatEvent::Introduction(intro.clone())).await
+        self.0.send(ChatEvent::Introduction(intro.clone())).await
+    }
+
+    // -----------------------------------------------------------------------
+    // Channel rotation
+    // -----------------------------------------------------------------------
+
+    /// Initiate a channel rotation for post-compromise security.
+    ///
+    /// See [`GroupChannel::rotate_channel`] for the full protocol description.
+    pub async fn rotate_channel(&self) -> crate::persistent::error::Result<()> {
+        self.0.rotate_channel().await
+    }
+
+    /// Returns `true` if a channel rotation handshake is in progress.
+    pub fn rotation_pending(&self) -> bool {
+        self.0.rotation_pending()
     }
 
     // -----------------------------------------------------------------------
