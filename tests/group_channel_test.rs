@@ -22,21 +22,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-
-use katzenpost_thin_client::group::{GroupChannel, Introduction};
+use katzenpost_thin_client::chat::{ChatEvent, GroupChat};
+use katzenpost_thin_client::group::GroupChannel;
 use katzenpost_thin_client::persistent::PigeonholeClient;
 use katzenpost_thin_client::{Config, ThinClient};
-
-// ---------------------------------------------------------------------------
-// Application event type for basic chat tests
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum ChatEvent {
-    Text(String),
-    Introduction(Introduction),
-}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -75,13 +64,13 @@ async fn test_group_channel_three_members() {
 
     println!("\n--- Step 1: All members create group channels in parallel ---");
     let (alice_group, bob_group, carol_group) = tokio::join!(
-        GroupChannel::create(&alice_ph, "test-room", "Alice"),
-        GroupChannel::create(&bob_ph,   "test-room", "Bob"),
-        GroupChannel::create(&carol_ph, "test-room", "Carol"),
+        GroupChat::create(&alice_ph, "test-room", "Alice"),
+        GroupChat::create(&bob_ph,   "test-room", "Bob"),
+        GroupChat::create(&carol_ph, "test-room", "Carol"),
     );
-    let alice_group: GroupChannel<ChatEvent> = alice_group.expect("Alice group");
-    let bob_group:   GroupChannel<ChatEvent> = bob_group.expect("Bob group");
-    let carol_group: GroupChannel<ChatEvent> = carol_group.expect("Carol group");
+    let alice_group: GroupChat = alice_group.expect("Alice group");
+    let bob_group:   GroupChat = bob_group.expect("Bob group");
+    let carol_group: GroupChat = carol_group.expect("Carol group");
     println!("✓ Alice, Bob, Carol created group 'test-room'");
 
     println!("\n--- Step 2: Exchange read capabilities ---");
@@ -102,7 +91,7 @@ async fn test_group_channel_three_members() {
 
     println!("\n--- Step 3: Alice sends a message ---");
     let alice_msg = "Hello everyone!";
-    alice_group.send(&ChatEvent::Text(alice_msg.to_string())).await.expect("Alice send");
+    alice_group.send_text(alice_msg).await.expect("Alice send");
     println!("✓ Alice sent: '{}'", alice_msg);
 
     // Bob and Carol each have Alice as a member — receive_from_all races their
@@ -130,11 +119,9 @@ async fn test_group_channel_three_members() {
     println!("\n--- Step 5+6: Bob and Carol reply in parallel ---");
     let bob_msg   = "Hi from Bob!";
     let carol_msg = "Hey, Carol here!";
-    let bob_ev    = ChatEvent::Text(bob_msg.to_string());
-    let carol_ev  = ChatEvent::Text(carol_msg.to_string());
     let (r1, r2) = tokio::join!(
-        bob_group.send(&bob_ev),
-        carol_group.send(&carol_ev),
+        bob_group.send_text(bob_msg),
+        carol_group.send_text(carol_msg),
     );
     r1.expect("Bob send"); r2.expect("Carol send");
     println!("✓ Bob sent: '{}'", bob_msg);
@@ -177,13 +164,13 @@ async fn test_group_channel_introduction() {
 
     println!("\n--- Create group channels in parallel ---");
     let (alice_group, bob_group, carol_group) = tokio::join!(
-        GroupChannel::create(&alice_ph, "intro-test", "Alice"),
-        GroupChannel::create(&bob_ph,   "intro-test", "Bob"),
-        GroupChannel::create(&carol_ph, "intro-test", "Carol"),
+        GroupChat::create(&alice_ph, "intro-test", "Alice"),
+        GroupChat::create(&bob_ph,   "intro-test", "Bob"),
+        GroupChat::create(&carol_ph, "intro-test", "Carol"),
     );
-    let alice_group: GroupChannel<ChatEvent> = alice_group.unwrap();
-    let bob_group:   GroupChannel<ChatEvent> = bob_group.unwrap();
-    let carol_group: GroupChannel<ChatEvent> = carol_group.unwrap();
+    let alice_group: GroupChat = alice_group.unwrap();
+    let bob_group:   GroupChat = bob_group.unwrap();
+    let carol_group: GroupChat = carol_group.unwrap();
 
     let alice_intro = alice_group.my_introduction();
     let bob_intro   = bob_group.my_introduction();
@@ -198,7 +185,7 @@ async fn test_group_channel_introduction() {
     println!("✓ Initial setup: Alice knows everyone, Bob only knows Alice");
 
     println!("\n--- Alice sends Carol's introduction ---");
-    alice_group.send(&ChatEvent::Introduction(carol_intro.clone())).await.unwrap();
+    alice_group.send_introduction(&carol_intro).await.unwrap();
     println!("✓ Alice sent Carol's introduction");
 
     println!("\n--- Bob receives from all members (just Alice) ---");
@@ -217,7 +204,7 @@ async fn test_group_channel_introduction() {
 
     println!("\n--- Bob sends message to group (now including Carol) ---");
     let bob_text = "Hi Carol, nice to meet you!";
-    bob_group.send(&ChatEvent::Text(bob_text.to_string())).await.unwrap();
+    bob_group.send_text(bob_text).await.unwrap();
     println!("✓ Bob sent: '{}'", bob_text);
 
     println!("\n--- Carol receives from all members ---");
