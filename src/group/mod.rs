@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (C) 2026 David Stainton
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Group chat: each member has their own BACAP stream.
+//! Group channel: each member has their own typed BACAP stream.
 
 pub mod channel;
-pub mod messages;
+pub mod event_channel;
 
-pub use channel::{GroupChannel, ReceivedGroupMessage};
-pub use messages::{GroupChatMessage, Introduction};
+pub use channel::{GroupChannel, Introduction, ReceivedGroupEvent};
+pub use event_channel::EventChannel;
 

@@ -33,3 +33,6 @@ base64 = "0.22"
 [[bin]]
 name = "copycat"
 path = "src/bin/copycat.rs"
+
+[dev-dependencies]
+crdts = "7"
