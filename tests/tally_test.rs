@@ -89,7 +89,8 @@ async fn test_tally_two_voters() {
     ).await.expect("Bob join_poll");
 
     // Bob receives Alice's CreatePoll and folds it into his state.
-    bob_poll.receive_one_and_apply().await.expect("Bob receive CreatePoll");
+    tokio::time::timeout(Duration::from_secs(120), bob_poll.receive_one_and_apply())
+        .await.expect("Bob receive CreatePoll timed out").expect("Bob receive CreatePoll");
     assert_eq!(bob_poll.poll_state().title, "Weekly standup");
     assert_eq!(bob_poll.poll_state().slots.len(), 2);
     println!("✓ Bob sees poll: '{}' with {} slots",
@@ -120,8 +121,8 @@ async fn test_tally_two_voters() {
 
     println!("\n--- Alice and Bob receive from all members ---");
     let (r1, r2) = tokio::join!(
-        alice_poll.receive_and_apply(),
-        bob_poll.receive_and_apply(),
+        alice_poll.receive_and_apply_timeout(Duration::from_secs(120)),
+        bob_poll.receive_and_apply_timeout(Duration::from_secs(120)),
     );
     r1.expect("Alice receive_and_apply");
     r2.expect("Bob receive_and_apply");
@@ -199,11 +200,11 @@ async fn test_tally_three_voters() {
     println!("\n--- Bob and Carol receive Alice's CreatePoll ---");
     // Each of Bob and Carol needs to receive Alice's CreatePoll to learn the slots.
     let (r1, r2) = tokio::join!(
-        bob_poll.receive_one_and_apply(),
-        carol_poll.receive_one_and_apply(),
+        tokio::time::timeout(Duration::from_secs(120), bob_poll.receive_one_and_apply()),
+        tokio::time::timeout(Duration::from_secs(120), carol_poll.receive_one_and_apply()),
     );
-    r1.expect("Bob receive CreatePoll");
-    r2.expect("Carol receive CreatePoll");
+    r1.expect("Bob receive CreatePoll timed out").expect("Bob receive CreatePoll");
+    r2.expect("Carol receive CreatePoll timed out").expect("Carol receive CreatePoll");
     assert_eq!(bob_poll.poll_state().slots.len(), 3);
     assert_eq!(carol_poll.poll_state().slots.len(), 3);
     println!("✓ Bob and Carol know the 3 slots");
@@ -232,9 +233,9 @@ async fn test_tally_three_voters() {
 
     println!("\n--- All three receive from all members in parallel ---");
     let (r1, r2, r3) = tokio::join!(
-        alice_poll.receive_and_apply(),
-        bob_poll.receive_and_apply(),
-        carol_poll.receive_and_apply(),
+        alice_poll.receive_and_apply_timeout(Duration::from_secs(120)),
+        bob_poll.receive_and_apply_timeout(Duration::from_secs(120)),
+        carol_poll.receive_and_apply_timeout(Duration::from_secs(120)),
     );
     r1.expect("Alice receive"); r2.expect("Bob receive"); r3.expect("Carol receive");
 
@@ -283,7 +284,8 @@ async fn test_tally_ballot_update() {
     // Bob already has Alice from join_poll.
 
     // Bob receives CreatePoll.
-    bob_poll.receive_one_and_apply().await.expect("Bob receive CreatePoll");
+    tokio::time::timeout(Duration::from_secs(120), bob_poll.receive_one_and_apply())
+        .await.expect("Bob receive CreatePoll timed out").expect("Bob receive CreatePoll");
 
     println!("\n--- Bob casts first ballot (No on Monday) ---");
     bob_poll.cast_ballot(HashMap::from([
@@ -292,7 +294,7 @@ async fn test_tally_ballot_update() {
     ])).await.expect("Bob first ballot");
 
     // Alice receives Bob's first ballot.
-    alice_poll.receive_and_apply().await.expect("Alice receive first ballot");
+    alice_poll.receive_and_apply_timeout(Duration::from_secs(120)).await.expect("Alice receive first ballot");
     let tally = alice_poll.tally();
     let mon = tally.iter().find(|t| t.slot.id == "mon-9").unwrap();
     assert_eq!(mon.no, 1, "Bob's first ballot: No on Monday");
@@ -306,7 +308,7 @@ async fn test_tally_ballot_update() {
     ])).await.expect("Bob second ballot");
 
     // Alice receives Bob's updated ballot.
-    alice_poll.receive_and_apply().await.expect("Alice receive second ballot");
+    alice_poll.receive_and_apply_timeout(Duration::from_secs(120)).await.expect("Alice receive second ballot");
     let tally = alice_poll.tally();
     let mon = tally.iter().find(|t| t.slot.id == "mon-9").unwrap();
     // The updated ballot replaces the old one: only Yes should remain.
@@ -353,7 +355,8 @@ async fn test_tally_best_slot() {
     alice_poll.add_member(&bob_intro).expect("Alice add Bob");
     // Bob already has Alice from join_poll.
 
-    bob_poll.receive_one_and_apply().await.expect("Bob receive CreatePoll");
+    tokio::time::timeout(Duration::from_secs(120), bob_poll.receive_one_and_apply())
+        .await.expect("Bob receive CreatePoll timed out").expect("Bob receive CreatePoll");
 
     let (r1, r2) = tokio::join!(
         alice_poll.cast_ballot(HashMap::from([
@@ -368,8 +371,8 @@ async fn test_tally_best_slot() {
     r1.expect("Alice cast"); r2.expect("Bob cast");
 
     let (r1, r2) = tokio::join!(
-        alice_poll.receive_and_apply(),
-        bob_poll.receive_and_apply(),
+        alice_poll.receive_and_apply_timeout(Duration::from_secs(120)),
+        bob_poll.receive_and_apply_timeout(Duration::from_secs(120)),
     );
     r1.expect("Alice receive"); r2.expect("Bob receive");
 
