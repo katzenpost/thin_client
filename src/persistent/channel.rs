@@ -8,7 +8,7 @@ use std::sync::Arc;
 use rand::RngCore;
 
 use crate::core::ThinClient;
-use crate::pigeonhole::TombstoneRangeResult;
+use crate::pigeonhole::{TombstoneRangeResult, EncryptReadResult, EncryptWriteResult, KeypairResult};
 use super::db::Database;
 use super::error::{PigeonholeDbError, Result};
 use super::models::{Channel as ChannelModel, ReadCapability, ReceivedMessage};
@@ -66,7 +66,7 @@ impl PigeonholeClient {
         rand::thread_rng().fill_bytes(&mut seed);
 
         // Create keypair via thin client
-        let (write_cap, read_cap, first_index) = self.client.new_keypair(&seed).await?;
+        let KeypairResult { write_cap, read_cap, first_message_index: first_index } = self.client.new_keypair(&seed).await?;
 
         // Store in database
         let channel = self.db.create_channel(name, &write_cap, &read_cap, &first_index)?;
@@ -233,7 +233,7 @@ impl ChannelHandle {
             PigeonholeDbError::Other("Cannot write on a read-only channel".to_string())
         })?;
 
-        let (message_ciphertext, envelope_descriptor, envelope_hash) = self
+        let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_write(plaintext, write_cap, box_index)
             .await?;
@@ -273,7 +273,7 @@ impl ChannelHandle {
             PigeonholeDbError::Other("Cannot write on a read-only channel".to_string())
         })?;
 
-        let (message_ciphertext, envelope_descriptor, envelope_hash) = self
+        let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_write(plaintext, write_cap, box_index)
             .await?;
@@ -309,7 +309,7 @@ impl ChannelHandle {
     /// # Errors
     /// Returns an error if the read operation fails.
     pub async fn read_box(&self, box_index: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        let (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash) = self
+        let EncryptReadResult { message_ciphertext, next_message_index, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_read(&self.channel.read_cap, box_index)
             .await?;
@@ -348,7 +348,7 @@ impl ChannelHandle {
     /// # Errors
     /// Returns `BoxIDNotFoundError` immediately if box doesn't exist.
     pub async fn read_box_no_retry(&self, box_index: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        let (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash) = self
+        let EncryptReadResult { message_ciphertext, next_message_index, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_read(&self.channel.read_cap, box_index)
             .await?;
@@ -398,7 +398,7 @@ impl ChannelHandle {
             PigeonholeDbError::Other("Cannot send on a read-only channel".to_string())
         })?;
 
-        let (message_ciphertext, envelope_descriptor, envelope_hash) = self
+        let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_write(plaintext, write_cap, &self.channel.write_index)
             .await?;
@@ -457,7 +457,7 @@ impl ChannelHandle {
             PigeonholeDbError::Other("Cannot send on a read-only channel".to_string())
         })?;
 
-        let (message_ciphertext, envelope_descriptor, envelope_hash) = self
+        let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_write(plaintext, write_cap, &self.channel.write_index)
             .await?;
@@ -512,7 +512,7 @@ impl ChannelHandle {
     /// # Errors
     /// Returns an error if the read operation fails.
     pub async fn receive(&mut self) -> Result<Vec<u8>> {
-        let (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash) = self
+        let EncryptReadResult { message_ciphertext, next_message_index, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_read(&self.channel.read_cap, &self.channel.read_index)
             .await?;
@@ -557,7 +557,7 @@ impl ChannelHandle {
     /// # Errors
     /// Returns `BoxIDNotFoundError` immediately if no message exists.
     pub async fn receive_no_retry(&mut self) -> Result<Vec<u8>> {
-        let (message_ciphertext, next_message_index, envelope_descriptor, envelope_hash) = self
+        let EncryptReadResult { message_ciphertext, next_message_index, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_read(&self.channel.read_cap, &self.channel.read_index)
             .await?;
@@ -917,7 +917,7 @@ impl CopyStreamBuilder {
     async fn new(client: Arc<ThinClient>) -> Result<Self> {
         let mut seed = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut seed);
-        let (temp_write_cap, _temp_read_cap, temp_first_index) =
+        let KeypairResult { write_cap: temp_write_cap, read_cap: _temp_read_cap, first_message_index: temp_first_index } =
             client.new_keypair(&seed).await?;
 
         Ok(Self {
@@ -965,7 +965,7 @@ impl CopyStreamBuilder {
         self.buffer = result.buffer;
 
         for chunk in result.envelopes {
-            let (ciphertext, env_desc, env_hash) = self
+            let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } = self
                 .client
                 .encrypt_write(&chunk, &self.temp_write_cap, &self.temp_index)
                 .await?;
@@ -1022,7 +1022,7 @@ impl CopyStreamBuilder {
         self.buffer = result.buffer;
 
         for chunk in result.envelopes {
-            let (ciphertext, env_desc, env_hash) = self
+            let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } = self
                 .client
                 .encrypt_write(&chunk, &self.temp_write_cap, &self.temp_index)
                 .await?;

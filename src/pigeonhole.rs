@@ -324,6 +324,31 @@ struct SetStreamBufferReply {
     error_code: u8,
 }
 
+/// Result from new_keypair containing the generated capabilities.
+#[derive(Debug, Clone)]
+pub struct KeypairResult {
+    pub write_cap: Vec<u8>,
+    pub read_cap: Vec<u8>,
+    pub first_message_index: Vec<u8>,
+}
+
+/// Result from encrypt_read containing the encrypted read request.
+#[derive(Debug, Clone)]
+pub struct EncryptReadResult {
+    pub message_ciphertext: Vec<u8>,
+    pub next_message_index: Vec<u8>,
+    pub envelope_descriptor: Vec<u8>,
+    pub envelope_hash: [u8; 32],
+}
+
+/// Result from encrypt_write containing the encrypted write request.
+#[derive(Debug, Clone)]
+pub struct EncryptWriteResult {
+    pub message_ciphertext: Vec<u8>,
+    pub envelope_descriptor: Vec<u8>,
+    pub envelope_hash: [u8; 32],
+}
+
 /// Result of creating courier envelopes, including the envelopes and buffer for crash recovery.
 #[derive(Debug, Clone)]
 pub struct CreateEnvelopesResult {
@@ -351,7 +376,7 @@ impl ThinClient {
     /// # Returns
     /// * `Ok((write_cap, read_cap, first_message_index))` on success
     /// * `Err(ThinClientError)` on failure
-    pub async fn new_keypair(&self, seed: &[u8; 32]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
+    pub async fn new_keypair(&self, seed: &[u8; 32]) -> Result<KeypairResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = NewKeypairRequest {
@@ -378,7 +403,7 @@ impl ThinClient {
         let read_cap = reply.read_cap.ok_or_else(|| ThinClientError::Other("new_keypair: read_cap is None".to_string()))?;
         let first_message_index = reply.first_message_index.ok_or_else(|| ThinClientError::Other("new_keypair: first_message_index is None".to_string()))?;
 
-        Ok((write_cap, read_cap, first_message_index))
+        Ok(KeypairResult { write_cap, read_cap, first_message_index })
     }
 
     /// Encrypts a read operation for a given read capability.
@@ -397,7 +422,7 @@ impl ThinClient {
         &self,
         read_cap: &[u8],
         message_box_index: &[u8]
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, [u8; 32]), ThinClientError> {
+    ) -> Result<EncryptReadResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = EncryptReadRequest {
@@ -429,12 +454,12 @@ impl ThinClient {
         let mut envelope_hash = [0u8; 32];
         envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
 
-        Ok((
+        Ok(EncryptReadResult {
             message_ciphertext,
             next_message_index,
             envelope_descriptor,
-            envelope_hash
-        ))
+            envelope_hash,
+        })
     }
 
     /// Encrypts a write operation for a given write capability.
@@ -465,7 +490,7 @@ impl ThinClient {
         plaintext: &[u8],
         write_cap: &[u8],
         message_box_index: &[u8]
-    ) -> Result<(Vec<u8>, Vec<u8>, [u8; 32]), ThinClientError> {
+    ) -> Result<EncryptWriteResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = EncryptWriteRequest {
@@ -497,11 +522,11 @@ impl ThinClient {
         let mut envelope_hash = [0u8; 32];
         envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
 
-        Ok((
+        Ok(EncryptWriteResult {
             message_ciphertext,
             envelope_descriptor,
-            envelope_hash
-        ))
+            envelope_hash,
+        })
     }
 
     /// Starts resending an encrypted message via ARQ (Automatic Repeat Request).
@@ -1081,10 +1106,8 @@ impl ThinClient {
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
         // Tombstones are created by sending an empty plaintext to encrypt_write
         // The daemon will detect this and sign an empty payload instead of encrypting
-        let (ciphertext, env_desc, env_hash) = self
-            .encrypt_write(&[], write_cap, box_index).await?;
-
-        Ok((ciphertext, env_desc, env_hash.to_vec()))
+        let result = self.encrypt_write(&[], write_cap, box_index).await?;
+        Ok((result.message_ciphertext, result.envelope_descriptor, result.envelope_hash.to_vec()))
     }
 }
 
