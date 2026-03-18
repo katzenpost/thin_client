@@ -23,6 +23,7 @@
 
 use std::time::Duration;
 use katzenpost_thin_client::{ThinClient, Config};
+use katzenpost_thin_client::pigeonhole::{KeypairResult, EncryptReadResult, EncryptWriteResult};
 
 /// Test helper to setup a thin client for integration tests
 async fn setup_thin_client() -> Result<std::sync::Arc<ThinClient>, Box<dyn std::error::Error>> {
@@ -51,7 +52,7 @@ async fn test_new_keypair_basic() {
     }
     assert!(result.is_ok(), "new_keypair should succeed: {:?}", result.err());
 
-    let (write_cap, read_cap, first_index) = result.unwrap();
+    let KeypairResult { write_cap, read_cap, first_message_index: first_index } = result.unwrap();
 
     // Verify we got non-empty capabilities
     assert!(!write_cap.is_empty(), "WriteCap should not be empty");
@@ -73,15 +74,17 @@ async fn test_alice_sends_bob_complete_workflow() {
 
     // Alice creates a keypair
     let alice_seed: [u8; 32] = rand::random();
-    let (alice_write_cap, bob_read_cap, first_index) = alice_client.new_keypair(&alice_seed).await
-        .expect("Failed to create Alice's keypair");
+    let KeypairResult { write_cap: alice_write_cap, read_cap: bob_read_cap, first_message_index: first_index } =
+        alice_client.new_keypair(&alice_seed).await
+            .expect("Failed to create Alice's keypair");
     println!("✓ Alice created keypair");
 
     // Alice encrypts and sends a message
     let message = b"Hello Bob, this is Alice!";
-    let (ciphertext, env_desc, env_hash) = alice_client
-        .encrypt_write(message, &alice_write_cap, &first_index).await
-        .expect("Failed to encrypt write");
+    let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+        alice_client
+            .encrypt_write(message, &alice_write_cap, &first_index).await
+            .expect("Failed to encrypt write");
     println!("✓ Alice encrypted message");
 
     // Alice starts resending the encrypted message
@@ -136,8 +139,9 @@ async fn test_next_message_box_index() {
 
     // Generate keypair to get a first_index
     let seed: [u8; 32] = rand::random();
-    let (_write_cap, _read_cap, first_index) = client.new_keypair(&seed).await
-        .expect("Failed to create keypair");
+    let KeypairResult { write_cap: _write_cap, read_cap: _read_cap, first_message_index: first_index } =
+        client.new_keypair(&seed).await
+            .expect("Failed to create keypair");
 
     println!("✓ Created keypair");
     println!("  First index length: {}", first_index.len());
@@ -171,15 +175,17 @@ async fn test_create_courier_envelopes_from_payload() {
     // Step 1: Alice creates destination channel
     println!("\n--- Step 1: Creating destination channel ---");
     let dest_seed: [u8; 32] = rand::random();
-    let (dest_write_cap, dest_read_cap, dest_first_index) = alice_client.new_keypair(&dest_seed).await
-        .expect("Failed to create destination keypair");
+    let KeypairResult { write_cap: dest_write_cap, read_cap: dest_read_cap, first_message_index: dest_first_index } =
+        alice_client.new_keypair(&dest_seed).await
+            .expect("Failed to create destination keypair");
     println!("✓ Alice created destination channel");
 
     // Step 2: Alice creates temporary copy stream channel
     println!("\n--- Step 2: Creating temporary copy stream channel ---");
     let temp_seed: [u8; 32] = rand::random();
-    let (temp_write_cap, _temp_read_cap, temp_first_index) = alice_client.new_keypair(&temp_seed).await
-        .expect("Failed to create temp keypair");
+    let KeypairResult { write_cap: temp_write_cap, read_cap: _temp_read_cap, first_message_index: temp_first_index } =
+        alice_client.new_keypair(&temp_seed).await
+            .expect("Failed to create temp keypair");
     println!("✓ Alice created temporary copy stream channel");
 
     // Step 3: Create a payload with length prefix (like Go/Python tests)
@@ -208,9 +214,10 @@ async fn test_create_courier_envelopes_from_payload() {
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
     let mut temp_index = temp_first_index.clone();
     for (i, chunk) in copy_stream_result.envelopes.iter().enumerate() {
-        let (ciphertext, env_desc, env_hash) = alice_client
-            .encrypt_write(chunk, &temp_write_cap, &temp_index).await
-            .expect("Failed to encrypt chunk");
+        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+            alice_client
+                .encrypt_write(chunk, &temp_write_cap, &temp_index).await
+                .expect("Failed to encrypt chunk");
 
         let _ = alice_client.start_resending_encrypted_message(
             None,
@@ -277,20 +284,23 @@ async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
     // Step 1: Create two destination channels
     println!("\n--- Step 1: Creating two destination channels ---");
     let chan1_seed: [u8; 32] = rand::random();
-    let (chan1_write_cap, chan1_read_cap, chan1_first_index) = alice_client.new_keypair(&chan1_seed).await
-        .expect("Failed to create channel 1 keypair");
+    let KeypairResult { write_cap: chan1_write_cap, read_cap: chan1_read_cap, first_message_index: chan1_first_index } =
+        alice_client.new_keypair(&chan1_seed).await
+            .expect("Failed to create channel 1 keypair");
     println!("✓ Created Channel 1");
 
     let chan2_seed: [u8; 32] = rand::random();
-    let (chan2_write_cap, chan2_read_cap, chan2_first_index) = alice_client.new_keypair(&chan2_seed).await
-        .expect("Failed to create channel 2 keypair");
+    let KeypairResult { write_cap: chan2_write_cap, read_cap: chan2_read_cap, first_message_index: chan2_first_index } =
+        alice_client.new_keypair(&chan2_seed).await
+            .expect("Failed to create channel 2 keypair");
     println!("✓ Created Channel 2");
 
     // Step 2: Create temporary copy stream channel
     println!("\n--- Step 2: Creating temporary copy stream channel ---");
     let temp_seed: [u8; 32] = rand::random();
-    let (temp_write_cap, _temp_read_cap, temp_first_index) = alice_client.new_keypair(&temp_seed).await
-        .expect("Failed to create temp keypair");
+    let KeypairResult { write_cap: temp_write_cap, read_cap: _temp_read_cap, first_message_index: temp_first_index } =
+        alice_client.new_keypair(&temp_seed).await
+            .expect("Failed to create temp keypair");
     println!("✓ Created temporary copy stream channel");
 
     // Step 3: Create payloads for each channel
@@ -321,9 +331,10 @@ async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
     let mut temp_index = temp_first_index.clone();
     for (i, chunk) in result.envelopes.iter().enumerate() {
-        let (ciphertext, env_desc, env_hash) = alice_client
-            .encrypt_write(chunk, &temp_write_cap, &temp_index).await
-            .expect("Failed to encrypt chunk");
+        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+            alice_client
+                .encrypt_write(chunk, &temp_write_cap, &temp_index).await
+                .expect("Failed to encrypt chunk");
 
         let _ = alice_client.start_resending_encrypted_message(
             None,
@@ -408,15 +419,17 @@ async fn test_tombstone_box() {
 
     // Create keypair
     let seed: [u8; 32] = rand::random();
-    let (write_cap, read_cap, first_index) = alice.new_keypair(&seed).await
-        .expect("Failed to create keypair");
+    let KeypairResult { write_cap, read_cap, first_message_index: first_index } =
+        alice.new_keypair(&seed).await
+            .expect("Failed to create keypair");
     println!("✓ Created keypair");
 
     // Step 1: Alice writes a message
     let message = b"Secret message that will be tombstoned";
-    let (ciphertext, env_desc, env_hash) = alice
-        .encrypt_write(message, &write_cap, &first_index).await
-        .expect("Failed to encrypt write");
+    let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+        alice
+            .encrypt_write(message, &write_cap, &first_index).await
+            .expect("Failed to encrypt write");
 
     let reply_index: u8 = 0;
     alice.start_resending_encrypted_message(
@@ -516,8 +529,9 @@ async fn test_tombstone_range() {
 
     // Create keypair
     let seed: [u8; 32] = rand::random();
-    let (write_cap, _read_cap, first_index) = alice_client.new_keypair(&seed).await
-        .expect("Failed to create keypair");
+    let KeypairResult { write_cap, read_cap: _read_cap, first_message_index: first_index } =
+        alice_client.new_keypair(&seed).await
+            .expect("Failed to create keypair");
     println!("✓ Created keypair");
 
     // Write 3 messages to sequential boxes
@@ -527,9 +541,10 @@ async fn test_tombstone_range() {
     println!("\n--- Writing {} messages ---", num_messages);
     for i in 0..num_messages {
         let message = format!("Message {} to be tombstoned", i + 1);
-        let (ciphertext, env_desc, env_hash) = alice_client
-            .encrypt_write(message.as_bytes(), &write_cap, &current_index).await
-            .expect("Failed to encrypt write");
+        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+            alice_client
+                .encrypt_write(message.as_bytes(), &write_cap, &current_index).await
+                .expect("Failed to encrypt write");
 
         let _ = alice_client.start_resending_encrypted_message(
             None,
@@ -591,8 +606,9 @@ async fn test_box_id_not_found_error() {
 
     // Create a fresh keypair - but do NOT write anything to it
     let seed: [u8; 32] = rand::random();
-    let (_write_cap, read_cap, first_index) = client.new_keypair(&seed).await
-        .expect("Failed to create keypair");
+    let KeypairResult { write_cap: _write_cap, read_cap, first_message_index: first_index } =
+        client.new_keypair(&seed).await
+            .expect("Failed to create keypair");
     println!("✓ Created fresh keypair (no messages written)");
 
     // Encrypt a read request for the non-existent box
