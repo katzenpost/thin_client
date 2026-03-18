@@ -92,7 +92,7 @@ async fn run_client(config_path: &str) -> Result<(), Box<dyn std::error::Error>>
     }
 
     println!("✅ Pretty printing PKI document:");
-    let doc = client.pki_document().await;
+    let doc = client.pki_document().await?;
     pretty_print_pki_doc(&doc);
     println!("AFTER Pretty printing PKI document");
 
