@@ -2,7 +2,7 @@ name: Integration Tests with Docker Mixnet
 
 on:
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, update_python_pigeonhole ]
 
 jobs:
   test-integration-docker:
