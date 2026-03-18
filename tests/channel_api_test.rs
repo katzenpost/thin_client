@@ -23,7 +23,7 @@
 
 use std::time::Duration;
 use katzenpost_thin_client::{ThinClient, Config};
-use katzenpost_thin_client::pigeonhole::{KeypairResult, EncryptReadResult, EncryptWriteResult};
+use katzenpost_thin_client::pigeonhole::{KeypairResult, EncryptWriteResult};
 
 /// Test helper to setup a thin client for integration tests
 async fn setup_thin_client() -> Result<std::sync::Arc<ThinClient>, Box<dyn std::error::Error>> {
