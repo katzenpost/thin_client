@@ -35,7 +35,6 @@ class KeypairResult:
 class EncryptReadResult:
     """Result from encrypt_read containing the encrypted read request."""
     message_ciphertext: bytes
-    next_message_index: bytes
     envelope_descriptor: bytes
     envelope_hash: bytes
 
@@ -46,6 +45,19 @@ class EncryptWriteResult:
     message_ciphertext: bytes
     envelope_descriptor: bytes
     envelope_hash: bytes
+
+
+@dataclass
+class StartResendingResult:
+    """Result from start_resending_encrypted_message and its variants."""
+    plaintext: bytes
+    """Decrypted message for read operations, or empty bytes for writes."""
+    courier_identity_hash: "bytes | None"
+    """32-byte hash of the identity key of the courier that handled this message.
+    Callers can watch PKI document updates for this courier disappearing from
+    consensus and cancel+re-encrypt if needed."""
+    courier_queue_id: "bytes | None"
+    """Queue ID of the courier that handled this message."""
 
 
 # New Pigeonhole API methods - these will be attached to ThinClient class
@@ -133,8 +145,8 @@ async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> Encry
         message_box_index: Starting read position for the channel.
 
     Returns:
-        EncryptReadResult: Contains message_ciphertext, next_message_index,
-            envelope_descriptor, and envelope_hash.
+        EncryptReadResult: Contains message_ciphertext, envelope_descriptor,
+            and envelope_hash.
 
     Raises:
         Exception: If the encryption fails.
@@ -165,7 +177,6 @@ async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> Encry
 
     return EncryptReadResult(
         message_ciphertext=reply["message_ciphertext"],
-        next_message_index=reply["next_message_index"],
         envelope_descriptor=reply["envelope_descriptor"],
         envelope_hash=reply["envelope_hash"]
     )
@@ -336,7 +347,11 @@ async def start_resending_encrypted_message(
         error_msg = thin_client_error_to_string(error_code)
         raise Exception(f"start_resending_encrypted_message failed: {error_msg}")
 
-    return reply.get("plaintext", b"")
+    return StartResendingResult(
+        plaintext=reply.get("plaintext", b""),
+        courier_identity_hash=reply.get("courier_identity_hash"),
+        courier_queue_id=reply.get("courier_queue_id"),
+    )
 
 
 async def start_resending_encrypted_message_return_box_exists(
@@ -348,7 +363,7 @@ async def start_resending_encrypted_message_return_box_exists(
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
     envelope_hash: bytes
-) -> bytes:
+) -> StartResendingResult:
     """
     Like start_resending_encrypted_message but returns BoxAlreadyExists errors.
 
@@ -401,7 +416,7 @@ async def start_resending_encrypted_message_no_retry(
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
     envelope_hash: bytes
-) -> bytes:
+) -> StartResendingResult:
     """
     Like start_resending_encrypted_message but disables automatic retries on BoxIDNotFound.
 

@@ -88,8 +88,6 @@ struct EncryptReadReply {
     #[serde(default, with = "optional_bytes")]
     message_ciphertext: Option<Vec<u8>>,
     #[serde(default, with = "optional_bytes")]
-    next_message_index: Option<Vec<u8>>,
-    #[serde(default, with = "optional_bytes")]
     envelope_descriptor: Option<Vec<u8>>,
     #[serde(default, with = "optional_bytes")]
     envelope_hash: Option<Vec<u8>>,
@@ -160,6 +158,22 @@ struct StartResendingEncryptedMessageReply {
     #[serde(default, with = "optional_bytes")]
     plaintext: Option<Vec<u8>>,
     error_code: u8,
+    #[serde(default, with = "optional_bytes")]
+    courier_identity_hash: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    courier_queue_id: Option<Vec<u8>>,
+}
+
+/// Result returned by `start_resending_encrypted_message` and its variants.
+///
+/// Contains the decrypted plaintext (for reads) along with the courier identity
+/// that was selected to handle the message. Callers can watch PKI document updates
+/// and cancel+re-encrypt if the courier disappears from consensus.
+#[derive(Debug, Clone)]
+pub struct StartResendingResult {
+    pub plaintext: Vec<u8>,
+    pub courier_identity_hash: Option<Vec<u8>>,
+    pub courier_queue_id: Option<Vec<u8>>,
 }
 
 /// Request to cancel resending an encrypted message.
@@ -336,7 +350,6 @@ pub struct KeypairResult {
 #[derive(Debug, Clone)]
 pub struct EncryptReadResult {
     pub message_ciphertext: Vec<u8>,
-    pub next_message_index: Vec<u8>,
     pub envelope_descriptor: Vec<u8>,
     pub envelope_hash: [u8; 32],
 }
@@ -416,7 +429,7 @@ impl ThinClient {
     /// * `message_box_index` - Starting read position for the channel
     ///
     /// # Returns
-    /// * `Ok((message_ciphertext, next_message_index, envelope_descriptor, envelope_hash))` on success
+    /// * `Ok(EncryptReadResult)` on success
     /// * `Err(ThinClientError)` on failure
     pub async fn encrypt_read(
         &self,
@@ -447,7 +460,6 @@ impl ThinClient {
         }
 
         let message_ciphertext = reply.message_ciphertext.ok_or_else(|| ThinClientError::Other("encrypt_read: message_ciphertext is None".to_string()))?;
-        let next_message_index = reply.next_message_index.ok_or_else(|| ThinClientError::Other("encrypt_read: next_message_index is None".to_string()))?;
         let envelope_descriptor = reply.envelope_descriptor.ok_or_else(|| ThinClientError::Other("encrypt_read: envelope_descriptor is None".to_string()))?;
         let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_read: envelope_hash is None".to_string()))?;
 
@@ -456,7 +468,6 @@ impl ThinClient {
 
         Ok(EncryptReadResult {
             message_ciphertext,
-            next_message_index,
             envelope_descriptor,
             envelope_hash,
         })
@@ -565,7 +576,7 @@ impl ThinClient {
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
         envelope_hash: &[u8; 32]
-    ) -> Result<Vec<u8>, ThinClientError> {
+    ) -> Result<StartResendingResult, ThinClientError> {
         self.start_resending_encrypted_message_with_options(
             read_cap,
             write_cap,
@@ -600,7 +611,7 @@ impl ThinClient {
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
         envelope_hash: &[u8; 32]
-    ) -> Result<Vec<u8>, ThinClientError> {
+    ) -> Result<StartResendingResult, ThinClientError> {
         self.start_resending_encrypted_message_with_options(
             read_cap,
             write_cap,
@@ -635,7 +646,7 @@ impl ThinClient {
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
         envelope_hash: &[u8; 32]
-    ) -> Result<Vec<u8>, ThinClientError> {
+    ) -> Result<StartResendingResult, ThinClientError> {
         self.start_resending_encrypted_message_with_options(
             read_cap,
             write_cap,
@@ -661,7 +672,7 @@ impl ThinClient {
         envelope_hash: &[u8; 32],
         no_retry_on_box_id_not_found: bool,
         no_idempotent_box_already_exists: bool,
-    ) -> Result<Vec<u8>, ThinClientError> {
+    ) -> Result<StartResendingResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = StartResendingEncryptedMessageRequest {
@@ -698,7 +709,11 @@ impl ThinClient {
             return Err(error_code_to_error(reply.error_code));
         }
 
-        Ok(reply.plaintext.unwrap_or_default())
+        Ok(StartResendingResult {
+            plaintext: reply.plaintext.unwrap_or_default(),
+            courier_identity_hash: reply.courier_identity_hash,
+            courier_queue_id: reply.courier_queue_id,
+        })
     }
 
     /// Cancels ARQ resending for an encrypted message.

@@ -159,6 +159,7 @@ from .pigeonhole import (
     EncryptReadResult,
     EncryptWriteResult,
     CreateEnvelopesResult,
+    StartResendingResult,
 )
 
 

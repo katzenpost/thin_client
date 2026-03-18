@@ -44,7 +44,7 @@ pub mod tally;
 pub use crate::core::{ThinClient, EventSinkReceiver};
 pub use crate::error::ThinClientError;
 pub use crate::helpers::{find_services, pretty_print_pki_doc};
-pub use crate::pigeonhole::TombstoneRangeResult;
+pub use crate::pigeonhole::{TombstoneRangeResult, StartResendingResult};
 
 // ========================================================================
 // Imports for types defined in this file
