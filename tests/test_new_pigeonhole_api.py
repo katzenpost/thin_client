@@ -446,6 +446,7 @@ async def test_cancel_causes_start_resending_copy_command_to_return_error():
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(600)
 async def test_multiple_messages_sequence():
     """
     Test sending multiple messages with incrementing indices.
