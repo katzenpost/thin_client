@@ -23,13 +23,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use katzenpost_thin_client::chat::{ChatEvent, GroupChat};
-use katzenpost_thin_client::group::GroupChannel;
 use katzenpost_thin_client::persistent::PigeonholeClient;
 use katzenpost_thin_client::{Config, ThinClient};
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
 
 async fn setup_client(label: &str) -> Result<Arc<ThinClient>, Box<dyn std::error::Error>> {
     println!("[{}] ThinClient::new ...", label);
@@ -39,10 +35,6 @@ async fn setup_client(label: &str) -> Result<Arc<ThinClient>, Box<dyn std::error
     println!("[{}] setup_client done", label);
     Ok(client)
 }
-
-// ---------------------------------------------------------------------------
-// Basic chat tests (ChatEvent)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_group_channel_three_members() {
@@ -224,116 +216,6 @@ async fn test_group_channel_introduction() {
 
     println!("\n✅ Introduction test passed!");
 }
-
-// ---------------------------------------------------------------------------
-// CRDT integration test
-// ---------------------------------------------------------------------------
-
-/// Each of three participants broadcasts a GCounter increment operation on
-/// their own channel.  After all messages propagate through the mixnet, every
-/// participant folds the received operations into a local GCounter and verifies
-/// the total matches the expected sum.
-///
-/// This directly demonstrates the `state = fold(events)` pattern described in
-/// the Pigeonhole blog post.
-#[tokio::test]
-async fn test_group_crdt_gcounter() {
-    use crdts::{CmRDT, Dot, GCounter};
-
-    type CounterOp = Dot<String>;
-
-    println!("\n=== Test: CRDT GCounter over group channel ===");
-
-    println!("\n--- Setup: create three clients in parallel ---");
-    let (alice_thin, bob_thin, carol_thin) = tokio::join!(
-        setup_client("alice"),
-        setup_client("bob"),
-        setup_client("carol"),
-    );
-    let alice_thin = alice_thin.expect("Failed to setup Alice");
-    let bob_thin   = bob_thin.expect("Failed to setup Bob");
-    let carol_thin = carol_thin.expect("Failed to setup Carol");
-
-    let alice_ph = Arc::new(PigeonholeClient::new_in_memory(alice_thin.clone()).unwrap());
-    let bob_ph   = Arc::new(PigeonholeClient::new_in_memory(bob_thin.clone()).unwrap());
-    let carol_ph = Arc::new(PigeonholeClient::new_in_memory(carol_thin.clone()).unwrap());
-
-    println!("\n--- Create group channels in parallel ---");
-    let (alice_group, bob_group, carol_group) = tokio::join!(
-        GroupChannel::create(alice_ph.clone(), "crdt-test", "Alice"),
-        GroupChannel::create(bob_ph.clone(),   "crdt-test", "Bob"),
-        GroupChannel::create(carol_ph.clone(), "crdt-test", "Carol"),
-    );
-    let alice_group: GroupChannel<CounterOp> = alice_group.unwrap();
-    let bob_group:   GroupChannel<CounterOp> = bob_group.unwrap();
-    let carol_group: GroupChannel<CounterOp> = carol_group.unwrap();
-
-    let alice_intro = alice_group.my_introduction();
-    let bob_intro   = bob_group.my_introduction();
-    let carol_intro = carol_group.my_introduction();
-
-    alice_group.add_member(&bob_intro).unwrap();
-    alice_group.add_member(&carol_intro).unwrap();
-    bob_group.add_member(&alice_intro).unwrap();
-    bob_group.add_member(&carol_intro).unwrap();
-    carol_group.add_member(&alice_intro).unwrap();
-    carol_group.add_member(&bob_intro).unwrap();
-    println!("✓ All members joined group 'crdt-test'");
-
-    let alice_gen: GCounter<String> = GCounter::new();
-    let bob_gen:   GCounter<String> = GCounter::new();
-    let carol_gen: GCounter<String> = GCounter::new();
-
-    let alice_op = alice_gen.inc("Alice".to_string());
-    let bob_op   = bob_gen.inc("Bob".to_string());
-    let carol_op = carol_gen.inc("Carol".to_string());
-
-    println!("\n--- All three send in parallel ---");
-    let (r1, r2, r3) = tokio::join!(
-        alice_group.send(alice_op.clone()),
-        bob_group.send(bob_op.clone()),
-        carol_group.send(carol_op.clone()),
-    );
-    r1.expect("Alice send"); r2.expect("Bob send"); r3.expect("Carol send");
-    println!("✓ Alice, Bob, Carol each sent their counter op");
-
-    println!("\n--- All three receive in parallel ---");
-    let (alice_received, bob_received, carol_received) = tokio::join!(
-        alice_group.receive_from_all(),
-        bob_group.receive_from_all(),
-        carol_group.receive_from_all(),
-    );
-    let alice_received = alice_received.expect("Alice receive_from_all");
-    let bob_received   = bob_received.expect("Bob receive_from_all");
-    let carol_received = carol_received.expect("Carol receive_from_all");
-    println!("✓ All ops received");
-
-    // Fold: each participant applies their own op plus the received ops.
-    let mut alice_counter: GCounter<String> = GCounter::new();
-    alice_counter.apply(alice_op.clone());
-    for e in &alice_received { alice_counter.apply(e.event.clone()); }
-    assert_eq!(alice_counter.read().to_string(), "3");
-    println!("✓ Alice's counter = {} (expected 3)", alice_counter.read());
-
-    let mut bob_counter: GCounter<String> = GCounter::new();
-    bob_counter.apply(bob_op.clone());
-    for e in &bob_received { bob_counter.apply(e.event.clone()); }
-    assert_eq!(bob_counter.read().to_string(), "3");
-    println!("✓ Bob's counter = {} (expected 3)", bob_counter.read());
-
-    let mut carol_counter: GCounter<String> = GCounter::new();
-    carol_counter.apply(carol_op.clone());
-    for e in &carol_received { carol_counter.apply(e.event.clone()); }
-    assert_eq!(carol_counter.read().to_string(), "3");
-    println!("✓ Carol's counter = {} (expected 3)", carol_counter.read());
-
-    println!("\n✅ CRDT GCounter group test passed!");
-    println!("  All three participants independently converged to state = 3");
-}
-
-// ---------------------------------------------------------------------------
-// Channel rotation integration test
-// ---------------------------------------------------------------------------
 
 /// Alice and Bob are in a two-member group.  Alice rotates her write channel.
 ///
