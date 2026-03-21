@@ -23,7 +23,7 @@
 
 use std::time::Duration;
 use katzenpost_thin_client::{ThinClient, Config};
-use katzenpost_thin_client::pigeonhole::{KeypairResult, EncryptReadResult, EncryptWriteResult};
+use katzenpost_thin_client::pigeonhole::{KeypairResult, EncryptWriteResult};
 
 /// Test helper to setup a thin client for integration tests
 async fn setup_thin_client() -> Result<std::sync::Arc<ThinClient>, Box<dyn std::error::Error>> {
@@ -105,31 +105,30 @@ async fn test_alice_sends_bob_complete_workflow() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Bob encrypts a read operation
-    let EncryptReadResult { message_ciphertext: bob_ciphertext, next_message_index: bob_next_index, envelope_descriptor: bob_env_desc, envelope_hash: bob_env_hash } =
-        bob_client
-            .encrypt_read(&bob_read_cap, &first_index).await
-            .expect("Failed to encrypt read");
+    let bob_read_result = bob_client
+        .encrypt_read(&bob_read_cap, &first_index).await
+        .expect("Failed to encrypt read");
     println!("✓ Bob encrypted read operation");
 
     // Bob starts resending to retrieve the message
-    let bob_plaintext = bob_client.start_resending_encrypted_message(
+    let bob_result = bob_client.start_resending_encrypted_message(
         Some(&bob_read_cap),
         None,
-        Some(&bob_next_index),
+        Some(&first_index),
         Some(0),
-        &bob_env_desc,
-        &bob_ciphertext,
-        &bob_env_hash
+        &bob_read_result.envelope_descriptor,
+        &bob_read_result.message_ciphertext,
+        &bob_read_result.envelope_hash
     ).await.expect("Failed to retrieve message");
 
     println!("✓ Bob received message");
 
     // Verify the message matches
-    assert_eq!(bob_plaintext, message, "Bob should receive Alice's message");
+    assert_eq!(bob_result.plaintext, message, "Bob should receive Alice's message");
 
     println!("✅ Complete workflow test passed!");
     println!("  Message sent: {:?}", String::from_utf8_lossy(message));
-    println!("  Message received: {:?}", String::from_utf8_lossy(&bob_plaintext));
+    println!("  Message received: {:?}", String::from_utf8_lossy(&bob_result.plaintext));
 }
 
 #[tokio::test]
@@ -253,25 +252,24 @@ async fn test_create_courier_envelopes_from_payload() {
 
     // Step 7: Bob reads from destination channel
     println!("\n--- Step 7: Bob reads from destination channel ---");
-    let EncryptReadResult { message_ciphertext: bob_ciphertext, next_message_index: bob_next_index, envelope_descriptor: bob_env_desc, envelope_hash: bob_env_hash } =
-        bob_client
-            .encrypt_read(&dest_read_cap, &dest_first_index).await
-            .expect("Failed to encrypt read");
+    let bob_read_result = bob_client
+        .encrypt_read(&dest_read_cap, &dest_first_index).await
+        .expect("Failed to encrypt read");
 
-    let bob_plaintext = bob_client.start_resending_encrypted_message(
+    let bob_result = bob_client.start_resending_encrypted_message(
         Some(&dest_read_cap),
         None,
-        Some(&bob_next_index),
+        Some(&dest_first_index),
         Some(0),
-        &bob_env_desc,
-        &bob_ciphertext,
-        &bob_env_hash
+        &bob_read_result.envelope_descriptor,
+        &bob_read_result.message_ciphertext,
+        &bob_read_result.envelope_hash
     ).await.expect("Failed to retrieve message");
 
-    println!("✓ Bob received {} bytes", bob_plaintext.len());
+    println!("✓ Bob received {} bytes", bob_result.plaintext.len());
 
     // Verify the payload matches
-    assert_eq!(bob_plaintext, large_payload, "Received payload should match original");
+    assert_eq!(bob_result.plaintext, large_payload, "Received payload should match original");
 
     println!("✅ create_courier_envelopes_from_payload test passed!");
 }
@@ -370,43 +368,41 @@ async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
 
     // Step 7: Bob reads from Channel 1
     println!("\n--- Step 7: Bob reads from Channel 1 ---");
-    let EncryptReadResult { message_ciphertext: bob1_ciphertext, next_message_index: bob1_next_index, envelope_descriptor: bob1_env_desc, envelope_hash: bob1_env_hash } =
-        bob_client
-            .encrypt_read(&chan1_read_cap, &chan1_first_index).await
-            .expect("Failed to encrypt read for channel 1");
+    let bob1_read_result = bob_client
+        .encrypt_read(&chan1_read_cap, &chan1_first_index).await
+        .expect("Failed to encrypt read for channel 1");
 
-    let bob1_plaintext = bob_client.start_resending_encrypted_message(
+    let bob1_result = bob_client.start_resending_encrypted_message(
         Some(&chan1_read_cap),
         None,
-        Some(&bob1_next_index),
+        Some(&chan1_first_index),
         Some(0),
-        &bob1_env_desc,
-        &bob1_ciphertext,
-        &bob1_env_hash
+        &bob1_read_result.envelope_descriptor,
+        &bob1_read_result.message_ciphertext,
+        &bob1_read_result.envelope_hash
     ).await.expect("Failed to retrieve from channel 1");
 
-    println!("✓ Bob received from Channel 1: {:?}", String::from_utf8_lossy(&bob1_plaintext));
-    assert_eq!(bob1_plaintext, payload1, "Channel 1 payload mismatch");
+    println!("✓ Bob received from Channel 1: {:?}", String::from_utf8_lossy(&bob1_result.plaintext));
+    assert_eq!(bob1_result.plaintext, payload1, "Channel 1 payload mismatch");
 
     // Step 8: Bob reads from Channel 2
     println!("\n--- Step 8: Bob reads from Channel 2 ---");
-    let EncryptReadResult { message_ciphertext: bob2_ciphertext, next_message_index: bob2_next_index, envelope_descriptor: bob2_env_desc, envelope_hash: bob2_env_hash } =
-        bob_client
-            .encrypt_read(&chan2_read_cap, &chan2_first_index).await
-            .expect("Failed to encrypt read for channel 2");
+    let bob2_read_result = bob_client
+        .encrypt_read(&chan2_read_cap, &chan2_first_index).await
+        .expect("Failed to encrypt read for channel 2");
 
-    let bob2_plaintext = bob_client.start_resending_encrypted_message(
+    let bob2_result = bob_client.start_resending_encrypted_message(
         Some(&chan2_read_cap),
         None,
-        Some(&bob2_next_index),
+        Some(&chan2_first_index),
         Some(0),
-        &bob2_env_desc,
-        &bob2_ciphertext,
-        &bob2_env_hash
+        &bob2_read_result.envelope_descriptor,
+        &bob2_read_result.message_ciphertext,
+        &bob2_read_result.envelope_hash
     ).await.expect("Failed to retrieve from channel 2");
 
-    println!("✓ Bob received from Channel 2: {:?}", String::from_utf8_lossy(&bob2_plaintext));
-    assert_eq!(bob2_plaintext, payload2, "Channel 2 payload mismatch");
+    println!("✓ Bob received from Channel 2: {:?}", String::from_utf8_lossy(&bob2_result.plaintext));
+    assert_eq!(bob2_result.plaintext, payload2, "Channel 2 payload mismatch");
 
     println!("✅ create_courier_envelopes_from_multi_payload multi-channel test passed!");
 }
@@ -451,23 +447,22 @@ async fn test_tombstone_box() {
     tokio::time::sleep(Duration::from_secs(30)).await;
 
     // Step 2: Bob reads and verifies
-    let EncryptReadResult { message_ciphertext: bob_ciphertext, next_message_index: bob_next_index, envelope_descriptor: bob_env_desc, envelope_hash: bob_env_hash } =
-        bob
-            .encrypt_read(&read_cap, &first_index).await
-            .expect("Failed to encrypt read");
+    let bob_read_result = bob
+        .encrypt_read(&read_cap, &first_index).await
+        .expect("Failed to encrypt read");
 
-    let plaintext = bob.start_resending_encrypted_message(
+    let read_result = bob.start_resending_encrypted_message(
         Some(&read_cap),
         None,
-        Some(&bob_next_index),
+        Some(&first_index),
         Some(reply_index),
-        &bob_env_desc,
-        &bob_ciphertext,
-        &bob_env_hash
+        &bob_read_result.envelope_descriptor,
+        &bob_read_result.message_ciphertext,
+        &bob_read_result.envelope_hash
     ).await.expect("Failed to read message");
 
-    assert_eq!(plaintext, message, "Message mismatch");
-    println!("✓ Bob read message: {:?}", String::from_utf8_lossy(&plaintext));
+    assert_eq!(read_result.plaintext, message, "Message mismatch");
+    println!("✓ Bob read message: {:?}", String::from_utf8_lossy(&read_result.plaintext));
 
     // Step 3: Alice tombstones the box
     let (tomb_ciphertext, tomb_env_desc, tomb_env_hash) = alice
@@ -497,27 +492,26 @@ async fn test_tombstone_box() {
         println!("Polling for tombstone (attempt {}/{})...", attempt, MAX_ATTEMPTS);
         tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
 
-        let EncryptReadResult { message_ciphertext: ciphertext2, next_message_index: next_idx2, envelope_descriptor: env_desc2, envelope_hash: env_hash2 } =
-            bob
-                .encrypt_read(&read_cap, &first_index).await
-                .expect("Failed to encrypt read for tombstone check");
+        let tomb_read_result = bob
+            .encrypt_read(&read_cap, &first_index).await
+            .expect("Failed to encrypt read for tombstone check");
 
-        let bob_plaintext2 = bob.start_resending_encrypted_message(
+        let tomb_result = bob.start_resending_encrypted_message(
             Some(&read_cap),
             None,
-            Some(&next_idx2),
+            Some(&first_index),
             Some(reply_index),
-            &env_desc2,
-            &ciphertext2,
-            &env_hash2
+            &tomb_read_result.envelope_descriptor,
+            &tomb_read_result.message_ciphertext,
+            &tomb_read_result.envelope_hash
         ).await.expect("Failed to read tombstone");
 
-        if bob_plaintext2.is_empty() {
+        if tomb_result.plaintext.is_empty() {
             tombstone_verified = true;
             println!("✓ Bob verified tombstone on attempt {}", attempt);
             break;
         }
-        println!("  Still seeing original message ({} bytes), retrying...", bob_plaintext2.len());
+        println!("  Still seeing original message ({} bytes), retrying...", tomb_result.plaintext.len());
     }
 
     assert!(tombstone_verified, "Tombstone not propagated after {} attempts", MAX_ATTEMPTS);
@@ -618,10 +612,9 @@ async fn test_box_id_not_found_error() {
     println!("✓ Created fresh keypair (no messages written)");
 
     // Encrypt a read request for the non-existent box
-    let EncryptReadResult { message_ciphertext: ciphertext, next_message_index: next_index, envelope_descriptor: env_desc, envelope_hash: env_hash } =
-        client
-            .encrypt_read(&read_cap, &first_index).await
-            .expect("Failed to encrypt read");
+    let read_result = client
+        .encrypt_read(&read_cap, &first_index).await
+        .expect("Failed to encrypt read");
     println!("✓ Encrypted read request for non-existent box");
 
     // Attempt to read - this should return BoxNotFound error
@@ -630,11 +623,11 @@ async fn test_box_id_not_found_error() {
     let result = client.start_resending_encrypted_message_no_retry(
         Some(&read_cap),
         None,
-        Some(&next_index),
+        Some(&first_index),
         Some(0),
-        &env_desc,
-        &ciphertext,
-        &env_hash
+        &read_result.envelope_descriptor,
+        &read_result.message_ciphertext,
+        &read_result.envelope_hash
     ).await;
 
     // Verify we got the expected error
@@ -646,8 +639,8 @@ async fn test_box_id_not_found_error() {
         Err(e) => {
             panic!("Expected BoxNotFound error but got: {:?}", e);
         }
-        Ok(plaintext) => {
-            panic!("Expected BoxNotFound error but got success with plaintext len: {}", plaintext.len());
+        Ok(result) => {
+            panic!("Expected BoxNotFound error but got success with plaintext len: {}", result.plaintext.len());
         }
     }
 }

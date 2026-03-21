@@ -309,17 +309,17 @@ impl ChannelHandle {
     /// # Errors
     /// Returns an error if the read operation fails.
     pub async fn read_box(&self, box_index: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        let EncryptReadResult { message_ciphertext, next_message_index, envelope_descriptor, envelope_hash } = self
+        let EncryptReadResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_read(&self.channel.read_cap, box_index)
             .await?;
 
-        let plaintext = self
+        let result = self
             .client
             .start_resending_encrypted_message(
                 Some(&self.channel.read_cap),
                 None,
-                Some(&next_message_index),
+                Some(box_index),
                 Some(0),
                 &envelope_descriptor,
                 &message_ciphertext,
@@ -328,7 +328,7 @@ impl ChannelHandle {
             .await?;
 
         let next_index = self.client.next_message_box_index(box_index).await?;
-        Ok((plaintext, next_index))
+        Ok((result.plaintext, next_index))
     }
 
     /// Read a single box without automatic retries on BoxIDNotFound.
@@ -348,17 +348,17 @@ impl ChannelHandle {
     /// # Errors
     /// Returns `BoxIDNotFoundError` immediately if box doesn't exist.
     pub async fn read_box_no_retry(&self, box_index: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        let EncryptReadResult { message_ciphertext, next_message_index, envelope_descriptor, envelope_hash } = self
+        let EncryptReadResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_read(&self.channel.read_cap, box_index)
             .await?;
 
-        let plaintext = self
+        let result = self
             .client
             .start_resending_encrypted_message_no_retry(
                 Some(&self.channel.read_cap),
                 None,
-                Some(&next_message_index),
+                Some(box_index),
                 Some(0),
                 &envelope_descriptor,
                 &message_ciphertext,
@@ -367,7 +367,7 @@ impl ChannelHandle {
             .await?;
 
         let next_index = self.client.next_message_box_index(box_index).await?;
-        Ok((plaintext, next_index))
+        Ok((result.plaintext, next_index))
     }
 
     // ========================================================================
@@ -512,17 +512,17 @@ impl ChannelHandle {
     /// # Errors
     /// Returns an error if the read operation fails.
     pub async fn receive(&mut self) -> Result<Vec<u8>> {
-        let EncryptReadResult { message_ciphertext, next_message_index, envelope_descriptor, envelope_hash } = self
+        let EncryptReadResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_read(&self.channel.read_cap, &self.channel.read_index)
             .await?;
 
-        let plaintext = self
+        let result = self
             .client
             .start_resending_encrypted_message(
                 Some(&self.channel.read_cap),
                 None,
-                Some(&next_message_index),
+                Some(&self.channel.read_index.clone()),
                 Some(0),
                 &envelope_descriptor,
                 &message_ciphertext,
@@ -532,7 +532,7 @@ impl ChannelHandle {
 
         self.db.create_received_message(
             self.channel.id,
-            &plaintext,
+            &result.plaintext,
             &self.channel.read_index,
         )?;
 
@@ -540,7 +540,7 @@ impl ChannelHandle {
         self.db.update_read_index(self.channel.id, &next_index)?;
         self.channel.read_index = next_index;
 
-        Ok(plaintext)
+        Ok(result.plaintext)
     }
 
     /// Receive the next message without automatic retries on BoxIDNotFound.
@@ -557,17 +557,17 @@ impl ChannelHandle {
     /// # Errors
     /// Returns `BoxIDNotFoundError` immediately if no message exists.
     pub async fn receive_no_retry(&mut self) -> Result<Vec<u8>> {
-        let EncryptReadResult { message_ciphertext, next_message_index, envelope_descriptor, envelope_hash } = self
+        let EncryptReadResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
             .client
             .encrypt_read(&self.channel.read_cap, &self.channel.read_index)
             .await?;
 
-        let plaintext = self
+        let result = self
             .client
             .start_resending_encrypted_message_no_retry(
                 Some(&self.channel.read_cap),
                 None,
-                Some(&next_message_index),
+                Some(&self.channel.read_index.clone()),
                 Some(0),
                 &envelope_descriptor,
                 &message_ciphertext,
@@ -577,7 +577,7 @@ impl ChannelHandle {
 
         self.db.create_received_message(
             self.channel.id,
-            &plaintext,
+            &result.plaintext,
             &self.channel.read_index,
         )?;
 
@@ -585,7 +585,7 @@ impl ChannelHandle {
         self.db.update_read_index(self.channel.id, &next_index)?;
         self.channel.read_index = next_index;
 
-        Ok(plaintext)
+        Ok(result.plaintext)
     }
 
     /// Get unread messages from the database (already received).
