@@ -513,7 +513,8 @@ class Config:
                  on_connection_status:"Callable|None"=None,
                  on_new_pki_document:"Callable|None"=None,
                  on_message_sent:"Callable|None"=None,
-                 on_message_reply:"Callable|None"=None) -> None:
+                 on_message_reply:"Callable|None"=None,
+                 on_daemon_disconnected:"Callable|None"=None) -> None:
         """
         Initialize the Config object.
 
@@ -577,6 +578,7 @@ class Config:
         self.on_new_pki_document = on_new_pki_document
         self.on_message_sent = on_message_sent
         self.on_message_reply = on_message_reply
+        self.on_daemon_disconnected = on_daemon_disconnected
 
     async def handle_connection_status_event(self, event: asyncio.Event) -> None:
         if self.on_connection_status:
@@ -593,6 +595,10 @@ class Config:
     async def handle_message_reply_event(self, event: asyncio.Event) -> None:
         if self.on_message_reply:
             await self.on_message_reply(event)
+
+    async def handle_daemon_disconnected_event(self, event: dict) -> None:
+        if self.on_daemon_disconnected:
+            await self.on_daemon_disconnected(event)
 
 
 class ThinClient:
@@ -629,6 +635,9 @@ class ThinClient:
         self.read_channel_responses : Dict[bytes,bytes] = {}  # message_id -> payload
         self._is_connected : bool = False  # Track connection state
         self._stopping : bool = False  # Track shutdown state to suppress expected errors
+        self._received_shutdown : bool = False  # Track if daemon sent ShutdownEvent before disconnect
+        self._daemon_instance_token : "bytes|None" = None  # Daemon instance token for reconnect detection
+        self._in_flight_resends : Dict[bytes, Dict[str, Any]] = {}  # envelope_hash -> request dict
 
         # Mutexes to serialize socket send/recv operations:
         self._send_lock = asyncio.Lock()
@@ -767,6 +776,23 @@ class ThinClient:
         """
         return self._is_connected
 
+    def _create_socket(self) -> socket.socket:
+        """Create a new non-blocking socket matching the configured network type."""
+        network = self.config.network.lower()
+        if network.startswith("tcp"):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        elif network.startswith("unix"):
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            if self.config.address.startswith("@"):
+                random_bytes = [random.randint(0, 255) for _ in range(16)]
+                hex_string = ''.join(format(byte, '02x') for byte in random_bytes)
+                client_abstract = f"\0katzenpost_python_thin_client_{hex_string}"
+                sock.bind(client_abstract)
+        else:
+            raise RuntimeError(f"Unknown network type: {self.config.network}")
+        sock.setblocking(False)
+        return sock
+
     def stop(self) -> None:
         """
         Gracefully shut down the client and close its socket.
@@ -828,39 +854,122 @@ class ThinClient:
             self.logger.debug(f"Received daemon response: [{len(raw_data)}] {type(response)} {response}")
         return response
 
-    async def worker_loop(self, loop:asyncio.events.AbstractEventLoop) -> None:
-        """
-        Background task that listens for events and dispatches them.
-        """
-        self.logger.debug("read loop start")
-        while True:
+    async def _reconnect(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Reconnect to the daemon with exponential backoff. Blocks until connected or stopped."""
+        backoff = 1.0
+        max_backoff = 60.0
+
+        while not self._stopping:
+            await asyncio.sleep(backoff)
+            if self._stopping:
+                return
+
+            try:
+                self.logger.debug(f"Attempting to reconnect to daemon at {self.config.network}://{self.config.address}")
+                self.socket = self._create_socket()
+                await loop.sock_connect(self.socket, self.server_addr)
+
+                # Handshake: read ConnectionStatusEvent
+                response1 = await self.recv(loop)
+                if response1.get("connection_status_event") is None:
+                    self.logger.error("Reconnect handshake failed: expected connection_status_event")
+                    self.socket.close()
+                    continue
+                self.parse_status(response1["connection_status_event"])
+                await self.config.handle_connection_status_event(response1["connection_status_event"])
+
+                # Handshake: read NewPKIDocumentEvent (may have empty payload)
+                response2 = await self.recv(loop)
+                if response2.get("new_pki_document_event") is not None:
+                    if response2["new_pki_document_event"].get("payload"):
+                        self.parse_pki_doc(response2["new_pki_document_event"])
+                        await self.config.handle_new_pki_document_event(response2["new_pki_document_event"])
+
+                self.logger.info(f"Reconnected to daemon (connected={self._is_connected})")
+                return
+
+            except (BrokenPipeError, ConnectionResetError, OSError, asyncio.CancelledError) as e:
+                if self._stopping:
+                    return
+                self.logger.debug(f"Reconnect failed: {e} (backoff {backoff}s)")
+                backoff = min(backoff * 2, max_backoff)
+                try:
+                    self.socket.close()
+                except Exception:
+                    pass
+
+    async def _replay_in_flight_resends(self) -> None:
+        """Re-send all tracked in-flight requests to the daemon after reconnect."""
+        for key, request in list(self._in_flight_resends.items()):
+            try:
+                cbor_request = cbor2.dumps(request)
+                length_prefix = struct.pack('>I', len(cbor_request))
+                await self._send_all(length_prefix + cbor_request)
+                self.logger.debug(f"Replayed in-flight request: {key.hex()[:16]}...")
+            except Exception as e:
+                self.logger.error(f"Failed to replay in-flight request: {e}")
+
+    async def _read_until_disconnect(self, loop: asyncio.AbstractEventLoop) -> "Exception|None":
+        """Read and dispatch messages until disconnect or stop. Returns the disconnect error, or None if stopped."""
+        while not self._stopping:
             try:
                 response = await self.recv(loop)
             except asyncio.CancelledError:
-                # Handle cancellation of the read loop - expected during shutdown
-                self.logger.debug("worker_loop cancelled")
-                break
+                return None
             except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                # Connection errors during shutdown are expected
                 if self._stopping:
-                    self.logger.debug(f"Connection closed during shutdown: {e}")
-                    break
-                else:
-                    self.logger.error(f"Unexpected connection error: {e}")
-                    raise
+                    return None
+                return e
             except Exception as e:
+                if self._stopping:
+                    return None
                 self.logger.error(f"Error reading from socket: {e}")
-                raise
+                return e
             else:
                 def handle_response_err(task):
                     try:
-                        result = task.result()
+                        task.result()
                     except Exception:
                         import traceback
                         traceback.print_exc()
-                        raise
                 resp = asyncio.create_task(self.handle_response(response))
                 resp.add_done_callback(handle_response_err)
+        return None
+
+    async def worker_loop(self, loop: asyncio.events.AbstractEventLoop) -> None:
+        """
+        Background task that listens for events and dispatches them.
+        Survives daemon disconnects by automatically reconnecting with exponential backoff.
+        Only stopping (from stop()) causes this task to exit.
+        """
+        while not self._stopping:
+            disconnect_err = await self._read_until_disconnect(loop)
+            if disconnect_err is None:
+                return
+
+            self.logger.info(f"Daemon disconnected (graceful={self._received_shutdown}, err={disconnect_err})")
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self._is_connected = False
+            previous_token = self._daemon_instance_token
+
+            await self.config.handle_daemon_disconnected_event({
+                "is_graceful": self._received_shutdown,
+                "error": str(disconnect_err) if disconnect_err else None,
+            })
+            self._received_shutdown = False
+
+            await self._reconnect(loop)
+            if self._stopping:
+                return
+
+            if self._daemon_instance_token != previous_token:
+                self.logger.info("New daemon instance detected, replaying in-flight requests")
+                await self._replay_in_flight_resends()
+            else:
+                self.logger.info("Same daemon instance, skipping replay")
 
     def parse_status(self, event: "Dict[str,Any]") -> None:
         """
@@ -870,6 +979,9 @@ class ThinClient:
         assert event is not None
 
         self._is_connected = event.get("is_connected", False)
+        token = event.get("instance_token")
+        if token is not None:
+            self._daemon_instance_token = bytes(token) if not isinstance(token, bytes) else token
 
         if self._is_connected:
             self.logger.debug("Daemon is connected to mixnet - full functionality available")
@@ -1000,6 +1112,10 @@ class ThinClient:
         """
         assert response is not None
 
+        if response.get("shutdown_event") is not None:
+            self.logger.info("Received ShutdownEvent from daemon")
+            self._received_shutdown = True
+            return
         if response.get("connection_status_event") is not None:
             self.logger.debug("connection status event")
             self.parse_status(response["connection_status_event"])

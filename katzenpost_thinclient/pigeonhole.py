@@ -10,6 +10,7 @@ These methods use WriteCap/ReadCap keypairs and provide direct
 control over the Pigeonhole protocol.
 """
 
+import hashlib
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List
@@ -329,21 +330,22 @@ async def start_resending_encrypted_message(
         }
     }
 
+    # Track in-flight request for replay on reconnect to new daemon instance
+    tracking_key = bytes(envelope_hash)
+    self._in_flight_resends[tracking_key] = request
     try:
         reply = await self._send_and_wait(query_id=query_id, request=request)
     except Exception as e:
         self.logger.error(f"Error starting resending encrypted message: {e}")
         raise
+    finally:
+        self._in_flight_resends.pop(tracking_key, None)
 
     error_code = reply.get('error_code', 0)
     if error_code != THIN_CLIENT_SUCCESS:
-        # Use error_code_to_exception to map error codes to specific exceptions
-        # This matches Go's errorCodeToSentinel behavior for replica error codes (1-9)
-        # and thin client error codes (22-24)
         exc = error_code_to_exception(error_code)
         if exc:
             raise exc
-        # Should not reach here, but fallback just in case
         error_msg = thin_client_error_to_string(error_code)
         raise Exception(f"start_resending_encrypted_message failed: {error_msg}")
 
@@ -479,6 +481,14 @@ async def cancel_resending_encrypted_message(self, envelope_hash: bytes) -> None
     Example:
         >>> await client.cancel_resending_encrypted_message(env_hash)
     """
+    # Remove from in-flight tracking so it won't be replayed on reconnect
+    tracking_key = bytes(envelope_hash)
+    self._in_flight_resends.pop(tracking_key, None)
+
+    # If disconnected, just remove from tracking — daemon has no state to cancel
+    if not self.is_connected():
+        return
+
     query_id = self.new_query_id()
 
     request = {
@@ -581,6 +591,9 @@ async def start_resending_copy_command(
         >>> await client.start_resending_copy_command(
         ...     temp_write_cap, courier_identity_hash, courier_queue_id)
     """
+    # Compute write cap hash for in-flight tracking (matches daemon-side hash)
+    tracking_key = hashlib.blake2b(write_cap, digest_size=32).digest()
+
     query_id = self.new_query_id()
 
     request_data = {
@@ -597,11 +610,15 @@ async def start_resending_copy_command(
         "start_resending_copy_command": request_data
     }
 
+    # Track in-flight request for replay on reconnect to new daemon instance
+    self._in_flight_resends[tracking_key] = request
     try:
         reply = await self._send_and_wait(query_id=query_id, request=request)
     except Exception as e:
         self.logger.error(f"Error starting resending copy command: {e}")
         raise
+    finally:
+        self._in_flight_resends.pop(tracking_key, None)
 
     if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
         error_msg = thin_client_error_to_string(reply['error_code'])
@@ -627,6 +644,14 @@ async def cancel_resending_copy_command(self, write_cap_hash: bytes) -> None:
     Example:
         >>> await client.cancel_resending_copy_command(write_cap_hash)
     """
+    # Remove from in-flight tracking so it won't be replayed on reconnect
+    tracking_key = bytes(write_cap_hash)
+    self._in_flight_resends.pop(tracking_key, None)
+
+    # If disconnected, just remove from tracking — daemon has no state to cancel
+    if not self.is_connected():
+        return
+
     query_id = self.new_query_id()
 
     request = {

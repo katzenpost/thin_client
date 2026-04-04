@@ -249,8 +249,8 @@ class TestGracefulShutdown:
         print("✅ worker_loop handles BrokenPipeError gracefully during shutdown")
 
     @pytest.mark.asyncio
-    async def test_worker_loop_raises_broken_pipe_when_not_stopping(self):
-        """Test that worker_loop raises BrokenPipeError when not in shutdown."""
+    async def test_worker_loop_redials_on_broken_pipe_when_not_stopping(self):
+        """Test that worker_loop enters redial on BrokenPipeError when not in shutdown."""
         from .conftest import get_config_path
 
         config_path = get_config_path()
@@ -260,6 +260,15 @@ class TestGracefulShutdown:
         # Ensure stopping flag is False (not in shutdown)
         client._stopping = False
 
+        disconnected_events = []
+
+        async def on_disconnected(event):
+            disconnected_events.append(event)
+            # Stop the client after receiving disconnect event to prevent redial loop
+            client._stopping = True
+
+        client.config.on_daemon_disconnected = on_disconnected
+
         # Mock recv to raise BrokenPipeError
         async def mock_recv_broken_pipe(loop):
             raise BrokenPipeError("Connection closed")
@@ -268,12 +277,14 @@ class TestGracefulShutdown:
 
         loop = asyncio.get_running_loop()
 
-        # worker_loop should raise BrokenPipeError when _stopping is False
-        with pytest.raises(BrokenPipeError):
-            await client.worker_loop(loop)
+        # worker_loop should emit disconnect event and then exit (because we set _stopping=True)
+        await client.worker_loop(loop)
+
+        assert len(disconnected_events) == 1
+        assert disconnected_events[0]["is_graceful"] == False
 
         client.socket.close()
-        print("✅ worker_loop raises BrokenPipeError when not stopping")
+        print("✅ worker_loop emits disconnect event on BrokenPipeError when not stopping")
 
     @pytest.mark.asyncio
     async def test_worker_loop_handles_connection_reset_during_shutdown(self):
