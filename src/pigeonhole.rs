@@ -541,11 +541,23 @@ impl ThinClient {
         })
     }
 
-    /// Starts resending an encrypted message via ARQ (Automatic Repeat Request).
+    /// Sends an encrypted message via ARQ (Automatic Repeat Request) and blocks until completion.
     ///
-    /// This method initiates automatic repeat request for an encrypted message,
-    /// which will be resent periodically until either a reply is received or
-    /// the operation is cancelled.
+    /// This method BLOCKS until a reply is received from the daemon.
+    /// The message will be resent periodically until either:
+    /// - A successful response is received
+    /// - An error response is received from the daemon
+    /// - The operation is cancelled via cancel_resending_encrypted_message
+    ///
+    /// The daemon implements a finite state machine for the stop-and-wait ARQ protocol:
+    /// - **Default writes** (write_cap set, no_idempotent_box_already_exists false):
+    ///   Returns success after a single round-trip. The courier ACK confirms the
+    ///   envelope was received and will be dispatched to both shard replicas.
+    /// - **BoxAlreadyExists-aware writes** (no_idempotent_box_already_exists true):
+    ///   Requires two round-trips — one for the courier ACK, and a second to
+    ///   retrieve the replica's error code.
+    /// - **Reads** (read_cap set): Requires two round-trips — one for the courier
+    ///   ACK, and a second to retrieve the decrypted payload from the replica.
     ///
     /// # Arguments
     /// * `read_cap` - Optional read capability (for read operations)
@@ -561,13 +573,6 @@ impl ThinClient {
     ///   (at most `PigeonholeGeometry.max_plaintext_payload_length` bytes).
     ///   For write operations, returns an empty vector on success.
     /// * `Err(ThinClientError)` on failure
-    /// Sends an encrypted message via ARQ and blocks until completion.
-    ///
-    /// This method BLOCKS until a reply is received from the daemon.
-    /// The message will be resent periodically until either:
-    /// - A successful response is received (plaintext for reads, ACK for writes)
-    /// - An error response is received from the daemon
-    /// - The operation is cancelled via cancel_resending_encrypted_message
     pub async fn start_resending_encrypted_message(
         &self,
         read_cap: Option<&[u8]>,

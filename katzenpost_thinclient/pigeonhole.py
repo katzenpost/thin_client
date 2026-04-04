@@ -270,8 +270,15 @@ async def start_resending_encrypted_message(
     This is used for both read and write operations in the new Pigeonhole API.
 
     The daemon implements a finite state machine (FSM) for handling the stop-and-wait ARQ protocol:
-    - For write operations (write_cap != None, read_cap == None):
+    - For default write operations (write_cap != None, read_cap == None,
+      no_idempotent_box_already_exists == False):
       The method waits for an ACK from the courier and returns immediately.
+      The ACK confirms the courier received the envelope and will dispatch it
+      to both shard replicas. This requires only a single round-trip through
+      the mixnet.
+    - For BoxAlreadyExists-aware writes (no_idempotent_box_already_exists == True):
+      The method waits for an ACK, then sends a second SURB to retrieve the
+      replica's error code. This requires two round-trips through the mixnet.
     - For read operations (read_cap != None, write_cap == None):
       The method waits for an ACK from the courier, then the daemon automatically
       sends a new SURB to request the payload, and this method waits for the payload.
