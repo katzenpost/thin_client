@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use serde_cbor::Value;
 use rand::RngCore;
 use log::debug;
+use blake2::{Blake2b, Digest, digest::consts::U32};
 
 use crate::error::{ThinClientError, error_code_to_error};
 use crate::core::ThinClient;
@@ -694,9 +695,22 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("start_resending_encrypted_message".to_string()), request_value);
 
+        // Track in-flight request for replay on reconnect to new daemon instance
+        let tracking_key = envelope_hash.to_vec();
+        self.in_flight_resends.lock().await.insert(tracking_key.clone(), request.clone());
+
         // Use direct response routing (like Python's _send_and_wait)
         // This blocks until the daemon sends a reply with matching query_id
-        let reply_map = self.send_and_wait_direct(query_id, request).await?;
+        let reply_map = match self.send_and_wait_direct(query_id, request).await {
+            Ok(reply) => {
+                self.in_flight_resends.lock().await.remove(&tracking_key);
+                reply
+            }
+            Err(e) => {
+                self.in_flight_resends.lock().await.remove(&tracking_key);
+                return Err(e);
+            }
+        };
 
         // Parse the reply
         let reply: StartResendingEncryptedMessageReply = serde_cbor::value::from_value(Value::Map(reply_map))
@@ -728,6 +742,14 @@ impl ThinClient {
     /// * `Ok(())` on success
     /// * `Err(ThinClientError)` on failure
     pub async fn cancel_resending_encrypted_message(&self, envelope_hash: &[u8; 32]) -> Result<(), ThinClientError> {
+        // Remove from in-flight tracking so it won't be replayed on reconnect
+        self.in_flight_resends.lock().await.remove(&envelope_hash.to_vec());
+
+        // If disconnected, just remove from tracking — daemon has no state to cancel
+        if !self.is_connected() {
+            return Ok(());
+        }
+
         let query_id = Self::new_query_id();
 
         let request_inner = CancelResendingEncryptedMessageRequest {
@@ -818,6 +840,9 @@ impl ThinClient {
         courier_identity_hash: Option<&[u8]>,
         courier_queue_id: Option<&[u8]>
     ) -> Result<(), ThinClientError> {
+        // Compute write cap hash for in-flight tracking (matches daemon-side hash)
+        let tracking_key = Blake2b::<U32>::digest(write_cap).to_vec();
+
         let query_id = Self::new_query_id();
 
         let request_inner = StartResendingCopyCommandRequest {
@@ -833,7 +858,19 @@ impl ThinClient {
         let mut request = BTreeMap::new();
         request.insert(Value::Text("start_resending_copy_command".to_string()), request_value);
 
-        let reply_map = self.send_and_wait_direct(query_id, request).await?;
+        // Track in-flight request for replay on reconnect to new daemon instance
+        self.in_flight_resends.lock().await.insert(tracking_key.clone(), request.clone());
+
+        let reply_map = match self.send_and_wait_direct(query_id, request).await {
+            Ok(reply) => {
+                self.in_flight_resends.lock().await.remove(&tracking_key);
+                reply
+            }
+            Err(e) => {
+                self.in_flight_resends.lock().await.remove(&tracking_key);
+                return Err(e);
+            }
+        };
 
         let reply: StartResendingCopyCommandReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
@@ -857,6 +894,14 @@ impl ThinClient {
     /// * `Ok(())` on success
     /// * `Err(ThinClientError)` on failure
     pub async fn cancel_resending_copy_command(&self, write_cap_hash: &[u8; 32]) -> Result<(), ThinClientError> {
+        // Remove from in-flight tracking so it won't be replayed on reconnect
+        self.in_flight_resends.lock().await.remove(&write_cap_hash.to_vec());
+
+        // If disconnected, just remove from tracking — daemon has no state to cancel
+        if !self.is_connected() {
+            return Ok(());
+        }
+
         let query_id = Self::new_query_id();
 
         let request_inner = CancelResendingCopyCommandRequest {

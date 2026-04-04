@@ -84,6 +84,12 @@ pub struct ThinClient {
     drain_remove: mpsc::UnboundedSender<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
     // Response routing like Python implementation - keyed by query_id
     response_channels: Arc<Mutex<HashMap<Vec<u8>, oneshot::Sender<BTreeMap<Value, Value>>>>>,
+    // Instance token from the daemon for reconnect detection
+    daemon_instance_token: RwLock<Vec<u8>>,
+    // In-flight StartResending requests for replay on reconnect to new daemon
+    pub(crate) in_flight_resends: Mutex<HashMap<Vec<u8>, BTreeMap<Value, Value>>>,
+    // Track if daemon sent ShutdownEvent before disconnect
+    received_shutdown: AtomicBool,
 }
 
 
@@ -116,6 +122,9 @@ impl ThinClient {
                     drain_add: drain_add_tx.clone(),
                     drain_remove: drain_remove_tx.clone(),
                     response_channels: response_channels.clone(),
+                    daemon_instance_token: RwLock::new(Vec::new()),
+                    in_flight_resends: Mutex::new(HashMap::new()),
+                    received_shutdown: AtomicBool::new(false),
 		})
             }
             "UNIX" => {
@@ -141,6 +150,9 @@ impl ThinClient {
                     drain_add: drain_add_tx,
                     drain_remove: drain_remove_tx,
                     response_channels,
+                    daemon_instance_token: RwLock::new(Vec::new()),
+                    in_flight_resends: Mutex::new(HashMap::new()),
+                    received_shutdown: AtomicBool::new(false),
 		})
             }
 	    _ => {
@@ -291,7 +303,7 @@ impl ThinClient {
         Ok(response)
     }
 
-    fn parse_status(&self, event: &BTreeMap<Value, Value>) {
+    async fn parse_status(&self, event: &BTreeMap<Value, Value>) {
         let is_connected = event.get(&Value::Text("is_connected".to_string()))
             .and_then(|v| match v {
                 Value::Bool(b) => Some(*b),
@@ -302,10 +314,16 @@ impl ThinClient {
         // Update connection state
         self.is_connected.store(is_connected, Ordering::Relaxed);
 
+        // Extract and store instance token if present
+        if let Some(Value::Bytes(token)) = event.get(&Value::Text("instance_token".to_string())) {
+            let mut t = self.daemon_instance_token.write().await;
+            *t = token.clone();
+        }
+
         if is_connected {
-            debug!("✅ Daemon is connected to mixnet - full functionality available.");
+            debug!("Daemon is connected to mixnet - full functionality available.");
         } else {
-            debug!("📴 Daemon is not connected to mixnet - entering offline mode (channel operations will work).");
+            debug!("Daemon is not connected to mixnet - entering offline mode (channel operations will work).");
         }
     }
 
@@ -327,13 +345,19 @@ impl ThinClient {
 
     async fn handle_response(&self, response: BTreeMap<Value, Value>) {
         if response.is_empty() {
-            error!("❌ Received an empty response, ignoring");
+            error!("Received an empty response, ignoring");
+            return;
+        }
+
+        if response.get(&Value::Text("shutdown_event".to_string())).is_some() {
+            debug!("Received ShutdownEvent from daemon");
+            self.received_shutdown.store(true, Ordering::Relaxed);
             return;
         }
 
         if let Some(Value::Map(event)) = response.get(&Value::Text("connection_status_event".to_string())) {
-            debug!("🔄 Connection status event received.");
-            self.parse_status(event);
+            debug!("Connection status event received.");
+            self.parse_status(event).await;
             if let Some(cb) = self.config.on_connection_status.as_ref() {
                 cb(event);
             }
@@ -341,7 +365,7 @@ impl ThinClient {
         }
 
         if let Some(Value::Map(event)) = response.get(&Value::Text("new_pki_document_event".to_string())) {
-            debug!("📜 New PKI document event received.");
+            debug!("New PKI document event received.");
             self.parse_pki_doc(event).await;
             if let Some(cb) = self.config.on_new_pki_document.as_ref() {
                 cb(event);
@@ -350,7 +374,7 @@ impl ThinClient {
         }
 
         if let Some(Value::Map(event)) = response.get(&Value::Text("message_sent_event".to_string())) {
-            debug!("📨 Message sent event received.");
+            debug!("Message sent event received.");
             if let Some(cb) = self.config.on_message_sent.as_ref() {
                 cb(event);
             }
@@ -358,7 +382,7 @@ impl ThinClient {
         }
 
         if let Some(Value::Map(event)) = response.get(&Value::Text("message_reply_event".to_string())) {
-            debug!("📩 Message reply event received.");
+            debug!("Message reply event received.");
             if let Some(cb) = self.config.on_message_reply.as_ref() {
                 cb(event);
             }
@@ -387,22 +411,156 @@ impl ThinClient {
         debug!("Unhandled response (no matching query_id listener): {:?}", response.keys().collect::<Vec<_>>());
     }
 
-    async fn worker_loop(&self) {
-        debug!("Worker loop started");
+    /// Read messages from the daemon until disconnect or shutdown.
+    /// Returns (Option<error_string>, is_graceful).
+    /// If the returned Option is None, shutdown was requested.
+    async fn read_until_disconnect(&self) -> (Option<String>, bool) {
         while !self.shutdown.load(Ordering::Relaxed) {
             match self.recv().await {
                 Ok(response) => {
                     // Send all responses to event sink for distribution
                     if let Err(_) = self.event_sink.send(response.clone()) {
-                        debug!("Event sink channel closed, stopping worker loop");
-                        break;
+                        debug!("Event sink channel closed, stopping read loop");
+                        return (None, false);
                     }
                     self.handle_response(response).await;
-                },
-                Err(_) if self.shutdown.load(Ordering::Relaxed) => break,
-                Err(err) => error!("Error in recv: {}", err),
+                }
+                Err(_) if self.shutdown.load(Ordering::Relaxed) => {
+                    return (None, false);
+                }
+                Err(err) => {
+                    let graceful = self.received_shutdown.load(Ordering::Relaxed);
+                    return (Some(format!("{}", err)), graceful);
+                }
             }
         }
+        (None, false)
+    }
+
+    /// Create a new socket connection and replace the read/write halves.
+    async fn dial(&self) -> Result<(), String> {
+        match self.config.network.to_uppercase().as_str() {
+            "TCP" => {
+                let socket = TcpStream::connect(&self.config.address).await.map_err(|e| format!("{}", e))?;
+                let (read_half, write_half) = socket.into_split();
+                *self.read_half.lock().await = ReadHalf::Tcp(read_half);
+                *self.write_half.lock().await = WriteHalf::Tcp(write_half);
+                Ok(())
+            }
+            "UNIX" => {
+                let path = if self.config.address.starts_with('@') {
+                    format!("\0{}", &self.config.address[1..])
+                } else {
+                    self.config.address.clone()
+                };
+                let socket = UnixStream::connect(path).await.map_err(|e| format!("{}", e))?;
+                let (read_half, write_half) = socket.into_split();
+                *self.read_half.lock().await = ReadHalf::Unix(read_half);
+                *self.write_half.lock().await = WriteHalf::Unix(write_half);
+                Ok(())
+            }
+            _ => Err(format!("Unknown network type: {}", self.config.network)),
+        }
+    }
+
+    /// Read and dispatch a single handshake message from the daemon.
+    async fn recv_and_dispatch(&self) -> Result<(), String> {
+        let response = self.recv().await.map_err(|e| format!("{}", e))?;
+        let _ = self.event_sink.send(response.clone());
+        self.handle_response(response).await;
+        Ok(())
+    }
+
+    /// Attempt to reconnect to the daemon with exponential backoff.
+    /// Returns true on success, false if shutdown was requested.
+    async fn reconnect(&self) -> bool {
+        let mut delay = std::time::Duration::from_secs(1);
+        let max_delay = std::time::Duration::from_secs(60);
+
+        loop {
+            if self.shutdown.load(Ordering::Relaxed) {
+                return false;
+            }
+
+            tokio::time::sleep(delay).await;
+            if self.shutdown.load(Ordering::Relaxed) {
+                return false;
+            }
+
+            debug!("Attempting to reconnect to daemon at {}://{}", self.config.network, self.config.address);
+            if let Err(e) = self.dial().await {
+                error!("Reconnect failed: {}", e);
+                delay = std::cmp::min(delay * 2, max_delay);
+                continue;
+            }
+
+            // Handshake: ConnectionStatusEvent then NewPKIDocumentEvent
+            if let Err(e) = self.recv_and_dispatch().await {
+                error!("Reconnect handshake failed (ConnectionStatusEvent): {}", e);
+                delay = std::cmp::min(delay * 2, max_delay);
+                continue;
+            }
+            if let Err(e) = self.recv_and_dispatch().await {
+                error!("Reconnect handshake failed (NewPKIDocumentEvent): {}", e);
+                delay = std::cmp::min(delay * 2, max_delay);
+                continue;
+            }
+
+            debug!("Reconnected to daemon (connected={})", self.is_connected());
+            return true;
+        }
+    }
+
+    /// Replay in-flight resend requests after reconnecting to a new daemon instance.
+    async fn replay_in_flight_resends(&self) {
+        let resends = self.in_flight_resends.lock().await;
+        for (_key, request) in resends.iter() {
+            if let Err(e) = self.send_cbor_request(request.clone()).await {
+                error!("Failed to replay in-flight request: {}", e);
+            }
+        }
+    }
+
+    async fn worker_loop(&self) {
+        debug!("Worker loop started");
+
+        loop {
+            // Reset the shutdown-event flag for this connection
+            self.received_shutdown.store(false, Ordering::Relaxed);
+
+            let (disconnect_err, graceful) = self.read_until_disconnect().await;
+
+            // If None, shutdown was requested -- exit cleanly
+            if disconnect_err.is_none() {
+                debug!("Worker loop exiting due to shutdown.");
+                break;
+            }
+
+            let err_msg = disconnect_err.unwrap();
+            debug!("Disconnected from daemon (graceful={}): {}", graceful, err_msg);
+
+            // Save previous instance token before reconnecting
+            let prev_token = self.daemon_instance_token.read().await.clone();
+
+            // Invoke on_daemon_disconnected callback
+            if let Some(cb) = self.config.on_daemon_disconnected.as_ref() {
+                cb(graceful, Some(err_msg));
+            }
+
+            // Attempt reconnect with backoff
+            if !self.reconnect().await {
+                debug!("Worker loop exiting due to shutdown during reconnect.");
+                break;
+            }
+
+            // Compare instance tokens: if different, replay in-flight resends
+            let new_token = self.daemon_instance_token.read().await.clone();
+            if !prev_token.is_empty() && prev_token != new_token {
+                debug!("Daemon instance changed, replaying in-flight resends.");
+                self.replay_in_flight_resends().await;
+            }
+        }
+
         debug!("Worker loop exited.");
     }
 

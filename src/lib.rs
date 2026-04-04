@@ -392,6 +392,7 @@ pub struct Config {
     pub on_new_pki_document: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
     pub on_message_sent: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
     pub on_message_reply: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
+    pub on_daemon_disconnected: Option<Arc<dyn Fn(bool, Option<String>) + Send + Sync>>,
 }
 
 impl Config {
@@ -408,6 +409,7 @@ impl Config {
             on_new_pki_document: None,
             on_message_sent: None,
             on_message_reply: None,
+            on_daemon_disconnected: None,
         })
     }
 }
