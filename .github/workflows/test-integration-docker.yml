@@ -55,7 +55,7 @@ jobs:
 
       - name: Build and start the mixnet
         run: |
-          cd katzenpost/docker && make start wait
+          cd katzenpost/docker && make start wait serviceNodes=2 storageNodes=4
 
       - name: Brief pause to ensure mixnet is fully ready
         run: sleep 30
