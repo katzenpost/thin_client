@@ -870,7 +870,6 @@ class ThinClient:
         except cbor2.CBORDecodeValueError as e:
           self.logger.error(f"{e}")
           raise ValueError(f"{e}")
-        response = {k:v for k,v in response.items() if v}  # filter empty KV pairs
         if not (set(response.keys()) & {'new_pki_document_event'}):
             self.logger.debug(f"Received daemon response: [{len(raw_data)}] {type(response)} {response}")
         return response
@@ -1144,8 +1143,10 @@ class ThinClient:
             return
         if response.get("new_pki_document_event") is not None:
             self.logger.debug("new pki doc event")
-            self.parse_pki_doc(response["new_pki_document_event"])
-            await self.config.handle_new_pki_document_event(response["new_pki_document_event"])
+            event = response["new_pki_document_event"]
+            if event.get("payload") is not None:
+                self.parse_pki_doc(event)
+                await self.config.handle_new_pki_document_event(event)
             return
         if response.get("message_sent_event") is not None:
             self.logger.debug("message sent event")
