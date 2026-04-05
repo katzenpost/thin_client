@@ -39,6 +39,7 @@ REPLICA_ERROR_INTERNAL_ERROR = 7
 REPLICA_ERROR_INVALID_EPOCH = 8
 REPLICA_ERROR_REPLICATION_FAILED = 9
 REPLICA_ERROR_BOX_ALREADY_EXISTS = 10
+REPLICA_ERROR_TOMBSTONE = 11
 
 # Thin Client Error Codes (matching Go implementation)
 # These are error codes for thin client operations (separate from replica errors)
@@ -67,6 +68,7 @@ THIN_CLIENT_CAPABILITY_ALREADY_IN_USE = 21
 THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED = 22
 THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED = 23
 THIN_CLIENT_ERROR_START_RESENDING_CANCELLED = 24
+THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG = 25
 
 def thin_client_error_to_string(error_code: int) -> str:
     """Convert a thin client error code to a human-readable string."""
@@ -96,6 +98,7 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED: "MKEM decryption failed",
         THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED: "BACAP decryption failed",
         THIN_CLIENT_ERROR_START_RESENDING_CANCELLED: "Start resending cancelled",
+        THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG: "Invalid tombstone signature",
     }
     return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
 
@@ -148,6 +151,14 @@ class BoxAlreadyExistsError(ReplicaError):
     """Box already contains data. Pigeonhole writes are immutable."""
     pass
 
+class TombstoneError(ReplicaError):
+    """Box contains a tombstone (intentional deletion). This is not a failure."""
+    pass
+
+class InvalidTombstoneSignatureError(Exception):
+    """Tombstone signature verification failed (forgery or corruption)."""
+    pass
+
 class MKEMDecryptionFailedError(Exception):
     """MKEM envelope decryption failed with all replica keys."""
     pass
@@ -193,6 +204,8 @@ def error_code_to_exception(error_code: int) -> Exception:
         return ReplicationFailedError("replication failed")
     elif error_code == REPLICA_ERROR_BOX_ALREADY_EXISTS:  # 10
         return BoxAlreadyExistsError("box already exists")
+    elif error_code == REPLICA_ERROR_TOMBSTONE:  # 11
+        return TombstoneError("tombstone")
 
     # Thin client decryption error codes
     elif error_code == THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED:  # 22
@@ -203,10 +216,18 @@ def error_code_to_exception(error_code: int) -> Exception:
     # Thin client operation error codes
     elif error_code == THIN_CLIENT_ERROR_START_RESENDING_CANCELLED:  # 24
         return StartResendingCancelledError("start resending cancelled")
+    elif error_code == THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG:  # 25
+        return InvalidTombstoneSignatureError("invalid tombstone signature")
 
     # For other error codes, return a generic exception with the error string
     else:
         return Exception(thin_client_error_to_string(error_code))
+
+
+def is_expected_outcome(exc: Exception) -> bool:
+    """Returns True for exceptions that represent completed operations rather than failures.
+    These errors should not trigger retries."""
+    return isinstance(exc, (TombstoneError, BoxIDNotFoundError, BoxAlreadyExistsError))
 
 
 class ThinClientOfflineError(Exception):

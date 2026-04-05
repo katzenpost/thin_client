@@ -287,16 +287,14 @@ async fn test_tombstone_single_box() {
     bob_channel.refresh().expect("Failed to refresh");
     // Reset read index to re-read the same box
     let first_index = read_cap.start_index.clone();
-    let (tombstone_content, _) = bob_channel.read_box(&first_index).await
-        .expect("Failed to read tombstoned box");
-
-    // A tombstone is an empty payload with a valid signature
-    assert!(
-        tombstone_content.is_empty(),
-        "Expected tombstone (empty payload), got {} bytes",
-        tombstone_content.len()
-    );
-    println!("✓ Bob verified tombstone (content is empty)");
+    match bob_channel.read_box(&first_index).await {
+        Err(katzenpost_thin_client::persistent::PigeonholeDbError::ThinClient(
+            katzenpost_thin_client::ThinClientError::Tombstone
+        )) => {
+            println!("✓ Bob verified tombstone");
+        }
+        other => panic!("Expected Tombstone error, got: {:?}", other),
+    }
 
     println!("\n✅ Tombstone single box test passed!");
 }
@@ -355,17 +353,18 @@ async fn test_tombstone_range() {
     println!("\n--- Step 4: Verify all boxes are tombstoned ---");
     let mut current_index = first_index;
     for i in 0..num_messages {
-        let (content, next_idx) = bob_channel.read_box(&current_index).await
-            .expect("Failed to read box");
-        // A tombstone is an empty payload with a valid signature
-        assert!(
-            content.is_empty(),
-            "Box {} should be tombstoned (empty), got {} bytes", i + 1, content.len()
-        );
-        println!("✓ Box {} is tombstoned", i + 1);
+        match bob_channel.read_box(&current_index).await {
+            Err(katzenpost_thin_client::persistent::PigeonholeDbError::ThinClient(
+                katzenpost_thin_client::ThinClientError::Tombstone
+            )) => {
+                println!("✓ Box {} is tombstoned", i + 1);
+            }
+            other => panic!("Box {} should be tombstoned, got: {:?}", i + 1, other),
+        }
 
         if i < num_messages - 1 {
-            current_index = next_idx;
+            current_index = bob_thin.next_message_box_index(&current_index).await
+                .expect("Failed to advance index");
         }
     }
 

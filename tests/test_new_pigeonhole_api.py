@@ -1117,21 +1117,23 @@ async def test_tombstoning():
 
         # Step 4: Bob reads again and verifies tombstone
         print("\n--- Step 4: Bob reads again and verifies tombstone ---")
+        from katzenpost_thinclient import TombstoneError
         read_result2 = await bob_client.encrypt_read(
             keypair.read_cap, keypair.first_message_index
         )
-        bob_plaintext2 = (await bob_client.start_resending_encrypted_message(
-            read_cap=keypair.read_cap,
-            write_cap=None,
-            next_message_index=keypair.first_message_index,
-            reply_index=0,
-            envelope_descriptor=read_result2.envelope_descriptor,
-            message_ciphertext=read_result2.message_ciphertext,
-            envelope_hash=read_result2.envelope_hash
-        )).plaintext
-
-        assert len(bob_plaintext2) == 0, "Expected tombstone plaintext (empty)"
-        print("✓ Bob verified tombstone (empty payload)")
+        try:
+            await bob_client.start_resending_encrypted_message(
+                read_cap=keypair.read_cap,
+                write_cap=None,
+                next_message_index=keypair.first_message_index,
+                reply_index=0,
+                envelope_descriptor=read_result2.envelope_descriptor,
+                message_ciphertext=read_result2.message_ciphertext,
+                envelope_hash=read_result2.envelope_hash
+            )
+            assert False, "Expected TombstoneError"
+        except TombstoneError:
+            print("✓ Bob verified tombstone")
 
         print("\n✅ Tombstoning test passed!")
 

@@ -496,7 +496,7 @@ async fn test_tombstone_box() {
             .encrypt_read(&read_cap, &first_index).await
             .expect("Failed to encrypt read for tombstone check");
 
-        let tomb_result = bob.start_resending_encrypted_message(
+        match bob.start_resending_encrypted_message(
             Some(&read_cap),
             None,
             Some(&first_index),
@@ -504,14 +504,17 @@ async fn test_tombstone_box() {
             &tomb_read_result.envelope_descriptor,
             &tomb_read_result.message_ciphertext,
             &tomb_read_result.envelope_hash
-        ).await.expect("Failed to read tombstone");
-
-        if tomb_result.plaintext.is_empty() {
-            tombstone_verified = true;
-            println!("✓ Bob verified tombstone on attempt {}", attempt);
-            break;
+        ).await {
+            Err(katzenpost_thin_client::ThinClientError::Tombstone) => {
+                tombstone_verified = true;
+                println!("✓ Bob verified tombstone on attempt {}", attempt);
+                break;
+            }
+            Ok(_) => {
+                println!("  Still seeing original message, retrying...");
+            }
+            Err(e) => panic!("Unexpected error reading tombstone: {}", e),
         }
-        println!("  Still seeing original message ({} bytes), retrying...", tomb_result.plaintext.len());
     }
 
     assert!(tombstone_verified, "Tombstone not propagated after {} attempts", MAX_ATTEMPTS);

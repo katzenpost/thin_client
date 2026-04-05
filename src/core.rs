@@ -349,6 +349,14 @@ impl ThinClient {
             return;
         }
 
+        // Filter out null values — Go's CBOR encoder includes all struct fields,
+        // encoding nil pointers as CBOR null. Without filtering, the event checks
+        // below would match on null values and return early before reaching the
+        // query_id-based reply routing.
+        let response: BTreeMap<Value, Value> = response.into_iter()
+            .filter(|(_, v)| !matches!(v, Value::Null))
+            .collect();
+
         if response.get(&Value::Text("shutdown_event".to_string())).is_some() {
             debug!("Received ShutdownEvent from daemon");
             self.received_shutdown.store(true, Ordering::Relaxed);
@@ -404,6 +412,7 @@ impl ThinClient {
                             }
                         }
                     }
+                    debug!("Unrouted reply: {}", reply_type);
                 }
             }
         }

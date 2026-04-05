@@ -167,6 +167,10 @@ pub const THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED: u8 = 23;
 /// or StartResendingCopyCommand operation was cancelled before completion.
 pub const THIN_CLIENT_ERROR_START_RESENDING_CANCELLED: u8 = 24;
 
+/// ThinClientErrorInvalidTombstoneSig indicates that a replica claimed a box is
+/// tombstoned but the signature verification failed (forgery or corruption).
+pub const THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG: u8 = 25;
+
 /// Converts a thin client error code to a human-readable string.
 /// This function provides consistent error message formatting across the thin client
 /// protocol and is used for logging and error reporting.
@@ -197,6 +201,7 @@ pub fn thin_client_error_to_string(error_code: u8) -> &'static str {
         THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED => "MKEM decryption failed",
         THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED => "BACAP decryption failed",
         THIN_CLIENT_ERROR_START_RESENDING_CANCELLED => "Start resending cancelled",
+        THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG => "Invalid tombstone signature",
         _ => "Unknown thin client error code",
     }
 }

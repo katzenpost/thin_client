@@ -101,6 +101,9 @@ from .core import (
     InvalidEpochError,
     ReplicationFailedError,
     BoxAlreadyExistsError,
+    TombstoneError,
+    InvalidTombstoneSignatureError,
+    is_expected_outcome,
     # Thin client exceptions
     MKEMDecryptionFailedError,
     BACAPDecryptionFailedError,
@@ -269,6 +272,9 @@ __all__ = [
     'InvalidEpochError',
     'ReplicationFailedError',
     'BoxAlreadyExistsError',
+    'TombstoneError',
+    'InvalidTombstoneSignatureError',
+    'is_expected_outcome',
     # Thin client exceptions
     'MKEMDecryptionFailedError',
     'BACAPDecryptionFailedError',

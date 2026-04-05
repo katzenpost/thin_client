@@ -34,12 +34,16 @@ pub enum ThinClientError {
     ReplicationFailed,
     /// Box already exists / already written (error code 10)
     BoxAlreadyExists,
+    /// Box contains a tombstone - intentional deletion (error code 11)
+    Tombstone,
     /// MKEM decryption failed (error code 22)
     MkemDecryptionFailed,
     /// BACAP decryption failed (error code 23)
     BacapDecryptionFailed,
     /// Operation was cancelled (error code 24)
     StartResendingCancelled,
+    /// Tombstone signature verification failed (error code 25)
+    InvalidTombstoneSignature,
 
     Other(String),
 }
@@ -59,9 +63,11 @@ pub fn error_code_to_error(error_code: u8) -> ThinClientError {
         8 => ThinClientError::InvalidEpoch,
         9 => ThinClientError::ReplicationFailed,
         10 => ThinClientError::BoxAlreadyExists,
+        11 => ThinClientError::Tombstone,
         22 => ThinClientError::MkemDecryptionFailed,
         23 => ThinClientError::BacapDecryptionFailed,
         24 => ThinClientError::StartResendingCancelled,
+        25 => ThinClientError::InvalidTombstoneSignature,
         code => ThinClientError::Other(format!("unknown error code: {}", code)),
     }
 }
@@ -85,11 +91,21 @@ impl fmt::Display for ThinClientError {
             ThinClientError::InvalidEpoch => write!(f, "Invalid epoch"),
             ThinClientError::ReplicationFailed => write!(f, "Replication failed"),
             ThinClientError::BoxAlreadyExists => write!(f, "Box already exists"),
+            ThinClientError::Tombstone => write!(f, "Tombstone"),
             ThinClientError::MkemDecryptionFailed => write!(f, "MKEM decryption failed"),
             ThinClientError::BacapDecryptionFailed => write!(f, "BACAP decryption failed"),
             ThinClientError::StartResendingCancelled => write!(f, "Start resending cancelled"),
+            ThinClientError::InvalidTombstoneSignature => write!(f, "Invalid tombstone signature"),
             ThinClientError::Other(msg) => write!(f, "Error: {}", msg),
         }
+    }
+}
+
+impl ThinClientError {
+    /// Returns true for error codes that represent completed operations
+    /// rather than failures. These errors should not trigger retries.
+    pub fn is_expected_outcome(&self) -> bool {
+        matches!(self, ThinClientError::Tombstone | ThinClientError::BoxNotFound | ThinClientError::BoxAlreadyExists)
     }
 }
 
