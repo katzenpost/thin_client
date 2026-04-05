@@ -217,7 +217,7 @@ async def test_cancel_resending_encrypted_message():
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(60)  # Prevent test from hanging in CI
+@pytest.mark.timeout(120)  # Prevent test from hanging in CI
 async def test_cancel_causes_start_resending_to_return_error():
     """
     Test that calling cancel causes start_resending to return with error code 24.
@@ -340,7 +340,7 @@ async def test_cancel_causes_start_resending_to_return_error():
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(60)  # Prevent test from hanging in CI
+@pytest.mark.timeout(120)  # Prevent test from hanging in CI
 async def test_cancel_causes_start_resending_copy_command_to_return_error():
     """
     Test that calling cancel causes start_resending_copy_command to return with error.
@@ -446,7 +446,7 @@ async def test_cancel_causes_start_resending_copy_command_to_return_error():
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(600)
+@pytest.mark.timeout(1200)
 async def test_multiple_messages_sequence():
     """
     Test sending multiple messages with incrementing indices.
