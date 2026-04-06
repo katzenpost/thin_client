@@ -61,12 +61,16 @@ jobs:
         run: sleep 30
 
       - name: Run all Python tests (including channel API integration tests)
+        id: python-tests
+        continue-on-error: true
         timeout-minutes: 60
         run: |
           cd thinclient
           python -m pytest tests/ -vvv -s --tb=short --timeout=1200
 
       - name: Run Rust integration tests
+        id: rust-tests
+        continue-on-error: true
         timeout-minutes: 60
         run: |
           cd thinclient
@@ -84,3 +88,12 @@ jobs:
           name: mixnet-${{ github.run_id }}-${{ github.job }}
           path: |
             katzenpost/docker/voting_mixnet/*/*.log
+
+      - name: Check test results
+        if: always()
+        run: |
+          if [ "${{ steps.python-tests.outcome }}" != "success" ] || [ "${{ steps.rust-tests.outcome }}" != "success" ]; then
+            echo "Python tests: ${{ steps.python-tests.outcome }}"
+            echo "Rust tests: ${{ steps.rust-tests.outcome }}"
+            exit 1
+          fi
