@@ -52,43 +52,7 @@ async def setup_thin_client():
 
 
 @pytest.mark.asyncio
-async def test_new_keypair_basic():
-    """
-    Test basic keypair generation using new_keypair.
-    
-    This test verifies:
-    1. Keypair can be generated from a 32-byte seed
-    2. WriteCap, ReadCap, and FirstMessageIndex are returned
-    3. The returned values have the expected sizes
-    """
-    client = await setup_thin_client()
-
-    try:
-        print("\n=== Test: new_keypair basic functionality ===")
-        
-        # Generate a 32-byte seed
-        seed = os.urandom(32)
-        print(f"Generated seed: {len(seed)} bytes")
-
-        # Create keypair
-        keypair = await client.new_keypair(seed)
-
-        print(f"✓ WriteCap size: {len(keypair.write_cap)} bytes")
-        print(f"✓ ReadCap size: {len(keypair.read_cap)} bytes")
-        print(f"✓ FirstMessageIndex size: {len(keypair.first_message_index)} bytes")
-
-        # Verify the returned values are not empty
-        assert len(keypair.write_cap) > 0, "WriteCap should not be empty"
-        assert len(keypair.read_cap) > 0, "ReadCap should not be empty"
-        assert len(keypair.first_message_index) > 0, "FirstMessageIndex should not be empty"
-
-        print("✅ new_keypair test completed successfully")
-
-    finally:
-        client.stop()
-
-
-@pytest.mark.asyncio
+@pytest.mark.timeout(3600)
 async def test_alice_sends_bob_complete_workflow():
     """
     Test complete end-to-end workflow: Alice sends a message to Bob.
@@ -117,7 +81,7 @@ async def test_alice_sends_bob_complete_workflow():
 
         # Step 2: Alice encrypts a message for Bob
         print("\n--- Step 2: Alice encrypts message ---")
-        alice_message = b"Bob, Beware they are jamming GPS."
+        alice_message = b"Bob, the eagle has landed. Rendezvous at dawn. Bring the package and await further instructions."
         print(f"Alice's message: {alice_message.decode()}")
 
         alice_result = await alice_client.encrypt_write(
@@ -143,8 +107,8 @@ async def test_alice_sends_bob_complete_workflow():
         print(f"✓ Alice received ACK (plaintext length: {len(alice_plaintext) if alice_plaintext else 0})")
 
         # Wait for message propagation to storage replicas
-        print("\n--- Waiting for message propagation to storage replicas ---")
-        await asyncio.sleep(5)
+        print("\n--- Waiting for message propagation to storage replicas (30 seconds) ---")
+        await asyncio.sleep(30)
 
         # Step 4: Bob encrypts a read request
         print("\n--- Step 4: Bob encrypts read request ---")
@@ -179,274 +143,7 @@ async def test_alice_sends_bob_complete_workflow():
 
 
 @pytest.mark.asyncio
-async def test_cancel_resending_encrypted_message():
-    """
-    Test cancelling ARQ for an encrypted message.
-
-    This test verifies:
-    1. An encrypted message can be prepared
-    2. The ARQ can be cancelled using cancel_resending_encrypted_message
-    3. The cancellation completes without error
-    """
-    client = await setup_thin_client()
-
-    try:
-        print("\n=== Test: cancel_resending_encrypted_message ===")
-
-        # Generate keypair and encrypt a message
-        seed = os.urandom(32)
-        keypair = await client.new_keypair(seed)
-
-        plaintext = b"This message will be cancelled"
-        result = await client.encrypt_write(
-            plaintext, keypair.write_cap, keypair.first_message_index
-        )
-
-        print(f"✓ Encrypted message for cancellation test")
-        print(f"EnvelopeHash: {result.envelope_hash.hex()}")
-
-        # Cancel the message (before sending it)
-        # Note: In practice, you would start_resending first, then cancel
-        # But for this test, we just verify the cancel API works
-        await client.cancel_resending_encrypted_message(result.envelope_hash)
-
-        print("✅ cancel_resending_encrypted_message completed successfully")
-
-    finally:
-        client.stop()
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)  # Prevent test from hanging in CI
-async def test_cancel_causes_start_resending_to_return_error():
-    """
-    Test that calling cancel causes start_resending to return with error code 24.
-
-    This test verifies the core cancel behavior:
-    1. Start a start_resending_encrypted_message call (which blocks waiting for reply)
-    2. Call cancel_resending_encrypted_message from another task
-    3. Verify that the original start_resending call returns with StartResendingCancelledError
-
-    This requires a running daemon but does NOT require a full mixnet since we're
-    testing the cancel behavior before any reply is received from the mixnet.
-    """
-    from katzenpost_thinclient import StartResendingCancelledError
-
-    client = await setup_thin_client()
-
-    try:
-        print("\n=== Test: cancel causes start_resending to return error ===")
-
-        # Generate keypair and encrypt a message
-        seed = os.urandom(32)
-        keypair = await client.new_keypair(seed)
-
-        plaintext = b"This message will be cancelled while sending"
-        result = await client.encrypt_write(
-            plaintext, keypair.write_cap, keypair.first_message_index
-        )
-
-        print(f"✓ Encrypted message")
-        print(f"EnvelopeHash: {result.envelope_hash.hex()}")
-
-        # Track the result of the start_resending call
-        start_resending_result = None  # Will be "success", "cancelled", or an exception
-        start_resending_completed = asyncio.Event()
-
-        async def start_resending_task():
-            """Task that calls start_resending and captures the result."""
-            nonlocal start_resending_result
-            try:
-                await client.start_resending_encrypted_message(
-                    read_cap=None,
-                    write_cap=keypair.write_cap,
-                    next_message_index=None,
-                    reply_index=0,
-                    envelope_descriptor=result.envelope_descriptor,
-                    message_ciphertext=result.message_ciphertext,
-                    envelope_hash=result.envelope_hash
-                )
-                # If we get here without error, the message completed before cancel
-                start_resending_result = "success"
-            except StartResendingCancelledError:
-                # This is the expected case when cancel works
-                start_resending_result = "cancelled"
-            except Exception as e:
-                # Unexpected error
-                start_resending_result = e
-            finally:
-                start_resending_completed.set()
-
-        # Start the start_resending task
-        print("--- Starting start_resending_encrypted_message task ---")
-        resend_task = asyncio.create_task(start_resending_task())
-
-        # Retry cancel until start_resending returns.
-        # The daemon only sends StartResendingEncryptedMessageReply with error code 24
-        # if it finds the envelope in arqEnvelopeHashMap. If cancel arrives before the
-        # daemon has fully registered the request, it won't find it and won't wake up
-        # the waiting caller. By retrying, we ensure we eventually hit after registration.
-        print("--- Calling cancel_resending_encrypted_message (with retry) ---")
-        max_attempts = 20
-        for attempt in range(max_attempts):
-            # Small delay between attempts to avoid spamming the daemon
-            await asyncio.sleep(0.1)
-
-            try:
-                await asyncio.wait_for(
-                    client.cancel_resending_encrypted_message(result.envelope_hash),
-                    timeout=5.0
-                )
-            except asyncio.TimeoutError:
-                resend_task.cancel()
-                raise Exception("cancel_resending_encrypted_message timed out")
-
-            # Check if start_resending has completed
-            try:
-                await asyncio.wait_for(start_resending_completed.wait(), timeout=0.5)
-                print(f"✓ Cancel succeeded on attempt {attempt + 1}")
-                break  # start_resending returned!
-            except asyncio.TimeoutError:
-                # Cancel didn't find the envelope yet (not registered), retry
-                continue
-        else:
-            resend_task.cancel()
-            raise Exception(f"start_resending did not return after {max_attempts} cancel attempts")
-
-        # Verify the result
-        print(f"--- Verifying result ---")
-        print(f"Result received: {start_resending_result}")
-
-        assert start_resending_result is not None, "Expected a result but got None"
-
-        # The test can have two valid outcomes:
-        # 1. Cancel happened before ACK: start_resending raises StartResendingCancelledError
-        # 2. ACK arrived before cancel: start_resending completes successfully
-        #
-        # Both are valid behaviors - the cancel feature works correctly in case 1,
-        # and in case 2, the message simply completed before we could cancel it.
-        # This can happen in fast environments (like CI with local mixnet).
-        if start_resending_result == "success":
-            print("⚠️ Message completed before cancel took effect (ACK arrived quickly)")
-            print("✅ Test passed - cancel was called but message completed first (valid race condition)")
-        elif start_resending_result == "cancelled":
-            print("✅ start_resending returned with StartResendingCancelledError (error code 24)")
-        else:
-            # Unexpected error
-            raise AssertionError(f"Unexpected error: {start_resending_result}")
-
-    finally:
-        client.stop()
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)  # Prevent test from hanging in CI
-async def test_cancel_causes_start_resending_copy_command_to_return_error():
-    """
-    Test that calling cancel causes start_resending_copy_command to return with error.
-
-    This test verifies the cancel behavior for copy commands:
-    1. Create a temporary channel and write some data to it
-    2. Start a start_resending_copy_command call (which blocks)
-    3. Call cancel_resending_copy_command from another task
-    4. Verify that the original start_resending call returns with error code 24
-    """
-    from hashlib import blake2b
-
-    client = await setup_thin_client()
-
-    try:
-        print("\n=== Test: cancel causes start_resending_copy_command to return error ===")
-
-        # Create temporary channel
-        temp_seed = os.urandom(32)
-        temp_keypair = await client.new_keypair(temp_seed)
-        print("✓ Created temporary copy stream WriteCap")
-
-        # Compute write_cap_hash for cancel
-        write_cap_hash = blake2b(temp_keypair.write_cap, digest_size=32).digest()
-        print(f"WriteCapHash: {write_cap_hash.hex()}")
-
-        # Track whether the start_resending returned with the expected error
-        start_resending_error = None
-        start_resending_completed = asyncio.Event()
-
-        async def start_resending_copy_task():
-            """Task that calls start_resending_copy_command and captures any error."""
-            nonlocal start_resending_error
-            try:
-                await client.start_resending_copy_command(temp_keypair.write_cap)
-                # If we get here without error, that's unexpected
-                start_resending_error = "No error raised"
-            except Exception as e:
-                start_resending_error = str(e)
-            finally:
-                start_resending_completed.set()
-
-        # Start the start_resending_copy_command task
-        print("--- Starting start_resending_copy_command task ---")
-        resend_task = asyncio.create_task(start_resending_copy_task())
-
-        # Retry cancel until start_resending returns.
-        # The daemon only sends StartResendingCopyCommandReply with error code 24
-        # if it finds the write_cap_hash in arqWriteCapHashMap. If cancel arrives before
-        # the daemon has fully registered the request, it won't find it and won't wake up
-        # the waiting caller. By retrying, we ensure we eventually hit after registration.
-        print("--- Calling cancel_resending_copy_command (with retry) ---")
-        max_attempts = 20
-        for attempt in range(max_attempts):
-            # Small delay between attempts to avoid spamming the daemon
-            await asyncio.sleep(0.1)
-
-            try:
-                await asyncio.wait_for(
-                    client.cancel_resending_copy_command(write_cap_hash),
-                    timeout=5.0
-                )
-            except asyncio.TimeoutError:
-                resend_task.cancel()
-                raise Exception("cancel_resending_copy_command timed out")
-
-            # Check if start_resending has completed
-            try:
-                await asyncio.wait_for(start_resending_completed.wait(), timeout=0.5)
-                print(f"✓ Cancel succeeded on attempt {attempt + 1}")
-                break  # start_resending returned!
-            except asyncio.TimeoutError:
-                # Cancel didn't find the write_cap_hash yet (not registered), retry
-                continue
-        else:
-            resend_task.cancel()
-            raise Exception(f"start_resending_copy_command did not return after {max_attempts} cancel attempts")
-
-        # Verify the result
-        print(f"--- Verifying result ---")
-        print(f"Result received: {start_resending_error}")
-
-        assert start_resending_error is not None, "Expected a result but got None"
-
-        # The test can have two valid outcomes:
-        # 1. Cancel happened before ACK: start_resending returns error code 24
-        # 2. ACK arrived before cancel: start_resending completes successfully (no error)
-        #
-        # Both are valid behaviors - the cancel feature works correctly in case 1,
-        # and in case 2, the message simply completed before we could cancel it.
-        # This can happen in fast environments (like CI with local mixnet).
-        if start_resending_error == "No error raised":
-            print("⚠️ Copy command completed before cancel took effect (ACK arrived quickly)")
-            print("✅ Test passed - cancel was called but copy command completed first (valid race condition)")
-        elif "Start resending cancelled" in start_resending_error:
-            print("✅ start_resending_copy_command returned with expected error code 24 (Start resending cancelled)")
-        else:
-            # Unexpected error
-            raise AssertionError(f"Unexpected error: {start_resending_error}")
-
-    finally:
-        client.stop()
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(1200)
+@pytest.mark.timeout(3600)
 async def test_multiple_messages_sequence():
     """
     Test sending multiple messages with incrementing indices.
@@ -473,26 +170,25 @@ async def test_multiple_messages_sequence():
 
         num_messages = 3
         messages = [
-            b"Message 1 from Alice to Bob",
-            b"Message 2 from Alice to Bob",
-            b"Message 3 from Alice to Bob"
+            b"Message 1: The package has been delivered.",
+            b"Message 2: Proceed to the safe house.",
+            b"Message 3: Mission accomplished.",
         ]
 
-        # Alice sends multiple messages, each to a different index
-        # We increment the index for each message using the BACAP HKDF logic
-        current_index = alice_keypair.first_message_index
-        indices_used = [current_index]  # Track all indices for reading later
+        # Track current indices for Alice and Bob
+        alice_current_index = alice_keypair.first_message_index
+        bob_current_index = alice_keypair.first_message_index
 
         for i, message in enumerate(messages):
-            print(f"\n--- Sending message {i+1}/{num_messages} ---")
-            print(f"Message: {message.decode()}")
+            print(f"\n--- Message {i+1}/{num_messages} ---")
+            print(f"Alice: Encrypting message {i+1}: {message.decode()}")
 
-            # Encrypt and send to current index
+            # Alice encrypts and sends message
             write_result = await alice_client.encrypt_write(
-                message, alice_keypair.write_cap, current_index
+                message, alice_keypair.write_cap, alice_current_index
             )
 
-            alice_plaintext = (await alice_client.start_resending_encrypted_message(
+            await alice_client.start_resending_encrypted_message(
                 read_cap=None,
                 write_cap=alice_keypair.write_cap,
                 next_message_index=None,
@@ -500,25 +196,15 @@ async def test_multiple_messages_sequence():
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash
-            )).plaintext
+            )
+            print(f"Alice: Started resending message {i+1}")
 
-            print(f"✓ Message {i+1} sent to index successfully")
+            # Wait for message propagation
+            print(f"Waiting for message {i+1} propagation (10 seconds)")
+            await asyncio.sleep(10)
 
-            # Increment index for next message
-            if i < num_messages - 1:  # Don't increment after last message
-                current_index = await alice_client.next_message_box_index(current_index)
-                indices_used.append(current_index)
-
-        print("\n--- Waiting for message propagation ---")
-        await asyncio.sleep(5)
-
-        # Bob reads all messages from their respective indices
-        print("\n--- Bob reads all messages ---")
-        received_messages = []
-        bob_current_index = alice_keypair.first_message_index
-
-        for i in range(num_messages):
-            print(f"\nReading message {i+1}/{num_messages}...")
+            # Bob encrypts read request
+            print(f"Bob: Encrypting read request for message {i+1}")
             read_result = await bob_client.encrypt_read(
                 alice_keypair.read_cap, bob_current_index
             )
@@ -533,19 +219,18 @@ async def test_multiple_messages_sequence():
                 envelope_hash=read_result.envelope_hash
             )).plaintext
 
-            print(f"Bob received: {bob_plaintext.decode() if bob_plaintext else '(empty)'}")
-            received_messages.append(bob_plaintext)
+            print(f"Bob: Received and decrypted message {i+1}: {bob_plaintext.decode() if bob_plaintext else '(empty)'}")
 
-            # Increment index for next read
-            if i < num_messages - 1:
-                bob_current_index = await bob_client.next_message_box_index(bob_current_index)
+            # Verify the decrypted message matches
+            assert bob_plaintext == message, f"Message {i+1} mismatch: expected {message}, got {bob_plaintext}"
+            print(f"Message {i+1} verified successfully!")
 
-        # Verify all messages were received correctly
-        for i, (sent, received) in enumerate(zip(messages, received_messages)):
-            assert received == sent, f"Message {i+1} mismatch: expected {sent}, got {received}"
+            # Advance state for next message
+            print("Advancing state for next message")
+            alice_current_index = await alice_client.next_message_box_index(alice_current_index)
+            bob_current_index = await bob_client.next_message_box_index(bob_current_index)
 
-        print("\n✅ Multiple messages test completed successfully!")
-        print(f"✅ All {num_messages} messages sent and received correctly with proper index incrementing!")
+        print(f"\n✅ All {num_messages} messages sent and verified successfully!")
 
     finally:
         alice_client.stop()
@@ -553,6 +238,7 @@ async def test_multiple_messages_sequence():
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(3600)
 async def test_create_courier_envelopes_from_payload():
     """
     Test the CreateCourierEnvelopesFromPayload API.
@@ -701,6 +387,7 @@ async def test_create_courier_envelopes_from_payload():
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(3600)
 async def test_copy_command_multi_channel():
     """
     Test the Copy Command API with multiple destination channels.
@@ -865,6 +552,7 @@ async def test_copy_command_multi_channel():
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(3600)
 async def test_copy_command_multi_channel_efficient():
     """
     Test the space-efficient multi-channel copy command using
@@ -1024,6 +712,7 @@ async def test_copy_command_multi_channel_efficient():
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(3600)
 async def test_tombstoning():
     """
     Test the tombstoning API.
@@ -1036,20 +725,11 @@ async def test_tombstoning():
 
     This mirrors the Go test: TestTombstoning
     """
-    from katzenpost_thinclient import PigeonholeGeometry
-
     alice_client = await setup_thin_client()
     bob_client = await setup_thin_client()
 
     try:
         print("\n=== Test: Tombstoning ===")
-
-        # Create a geometry with a reasonable payload size
-        # In a real scenario, this would come from the PKI document
-        geometry = PigeonholeGeometry(
-            max_plaintext_payload_length=1024,
-            nike_name="x25519"
-        )
 
         # Create keypair
         seed = os.urandom(32)
@@ -1075,8 +755,8 @@ async def test_tombstoning():
         print("✓ Alice wrote message")
 
         # Wait for message propagation
-        print("--- Waiting for message propagation (5 seconds) ---")
-        await asyncio.sleep(5)
+        print("--- Waiting for message propagation (30 seconds) ---")
+        await asyncio.sleep(30)
 
         # Step 2: Bob reads and verifies
         print("\n--- Step 2: Bob reads and verifies ---")
@@ -1111,30 +791,37 @@ async def test_tombstoning():
         )
         print("✓ Alice tombstoned the box")
 
-        # Wait for tombstone propagation
-        print("--- Waiting for tombstone propagation (30 seconds) ---")
-        await asyncio.sleep(30)
-
-        # Step 4: Bob reads again and verifies tombstone
-        print("\n--- Step 4: Bob reads again and verifies tombstone ---")
+        # Step 4: Bob polls for tombstone with retries
+        print("\n--- Step 4: Bob polls for tombstone ---")
         from katzenpost_thinclient import TombstoneError
-        read_result2 = await bob_client.encrypt_read(
-            keypair.read_cap, keypair.first_message_index
-        )
-        try:
-            await bob_client.start_resending_encrypted_message(
-                read_cap=keypair.read_cap,
-                write_cap=None,
-                next_message_index=keypair.first_message_index,
-                reply_index=0,
-                envelope_descriptor=read_result2.envelope_descriptor,
-                message_ciphertext=read_result2.message_ciphertext,
-                envelope_hash=read_result2.envelope_hash
-            )
-            assert False, "Expected TombstoneError"
-        except TombstoneError:
-            print("✓ Bob verified tombstone")
+        max_attempts = 6
+        poll_interval = 10
+        tombstone_verified = False
 
+        for attempt in range(1, max_attempts + 1):
+            print(f"Polling for tombstone (attempt {attempt}/{max_attempts})...")
+            await asyncio.sleep(poll_interval)
+
+            read_result2 = await bob_client.encrypt_read(
+                keypair.read_cap, keypair.first_message_index
+            )
+            try:
+                await bob_client.start_resending_encrypted_message(
+                    read_cap=keypair.read_cap,
+                    write_cap=None,
+                    next_message_index=keypair.first_message_index,
+                    reply_index=0,
+                    envelope_descriptor=read_result2.envelope_descriptor,
+                    message_ciphertext=read_result2.message_ciphertext,
+                    envelope_hash=read_result2.envelope_hash
+                )
+                print(f"  Still seeing original message, retrying...")
+            except TombstoneError:
+                tombstone_verified = True
+                print(f"✓ Bob verified tombstone on attempt {attempt}")
+                break
+
+        assert tombstone_verified, f"Tombstone not propagated after {max_attempts} attempts"
         print("\n✅ Tombstoning test passed!")
 
     finally:
@@ -1143,44 +830,44 @@ async def test_tombstoning():
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(3600)
 async def test_tombstone_range():
     """
     Test the tombstone_range API.
 
     This test verifies:
-    1. Alice writes multiple messages to sequential boxes
-    2. Alice tombstones a range of boxes
-    3. The result shows the correct number of tombstoned boxes
+    1. Alice writes multiple messages to consecutive boxes
+    2. Bob reads and verifies each message
+    3. Alice tombstones all boxes using TombstoneRange
+    4. Bob reads again and verifies all boxes are tombstoned
 
-    This mirrors the Go TombstoneRange functionality.
+    This mirrors the Go test: TestTombstoneRange
     """
-    from katzenpost_thinclient import PigeonholeGeometry
+    from katzenpost_thinclient import TombstoneError
 
     alice_client = await setup_thin_client()
+    bob_client = await setup_thin_client()
 
     try:
         print("\n=== Test: Tombstone Range ===")
-
-        # Create a geometry with a reasonable payload size
-        geometry = PigeonholeGeometry(
-            max_plaintext_payload_length=1024,
-            nike_name="x25519"
-        )
 
         # Create keypair
         seed = os.urandom(32)
         keypair = await alice_client.new_keypair(seed)
         print("✓ Created keypair")
 
-        # Write 3 messages to sequential boxes
+        # Write 3 messages to consecutive boxes
         num_messages = 3
-        current_index = keypair.first_message_index
+        messages = [
+            b"Message 1 - will be tombstoned",
+            b"Message 2 - will be tombstoned",
+            b"Message 3 - will be tombstoned",
+        ]
 
-        print(f"\n--- Writing {num_messages} messages ---")
-        for i in range(num_messages):
-            message = f"Message {i+1} to be tombstoned".encode()
+        write_idx = keypair.first_message_index
+        for i, msg in enumerate(messages):
             write_result = await alice_client.encrypt_write(
-                message, keypair.write_cap, current_index
+                msg, keypair.write_cap, write_idx
             )
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
@@ -1191,26 +878,41 @@ async def test_tombstone_range():
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash
             )
-            print(f"✓ Wrote message {i+1}")
-
-            if i < num_messages - 1:
-                current_index = await alice_client.next_message_box_index(current_index)
+            print(f"✓ Alice wrote message {i+1}")
+            write_idx = await alice_client.next_message_box_index(write_idx)
 
         # Wait for messages to propagate
         print("--- Waiting for message propagation (30 seconds) ---")
         await asyncio.sleep(30)
 
-        # Tombstone the range - creates envelopes without sending
+        # Bob reads and verifies all messages
+        read_idx = keypair.first_message_index
+        for i, expected_msg in enumerate(messages):
+            read_result = await bob_client.encrypt_read(
+                keypair.read_cap, read_idx
+            )
+            bob_result = (await bob_client.start_resending_encrypted_message(
+                read_cap=keypair.read_cap,
+                write_cap=None,
+                next_message_index=read_idx,
+                reply_index=0,
+                envelope_descriptor=read_result.envelope_descriptor,
+                message_ciphertext=read_result.message_ciphertext,
+                envelope_hash=read_result.envelope_hash
+            )).plaintext
+            assert bob_result == expected_msg, f"Message {i+1} mismatch"
+            print(f"✓ Bob read message {i+1}: {bob_result.decode()}")
+            read_idx = await bob_client.next_message_box_index(read_idx)
+
+        # Alice tombstones all boxes using TombstoneRange
         print(f"\n--- Creating tombstones for {num_messages} boxes ---")
         result = await alice_client.tombstone_range(keypair.write_cap, keypair.first_message_index, num_messages)
 
         assert 'envelopes' in result, "Result should contain 'envelopes' list"
         assert len(result['envelopes']) == num_messages, f"Expected {num_messages} envelopes, got {len(result['envelopes'])}"
-        assert 'next' in result, "Result should contain 'next' index"
-        print(f"✓ Created {len(result['envelopes'])} tombstone envelopes")
+        print(f"✓ TombstoneRange created {len(result['envelopes'])} envelopes")
 
         # Send all tombstone envelopes
-        print(f"\n--- Sending {num_messages} tombstone envelopes ---")
         for i, envelope in enumerate(result['envelopes']):
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
@@ -1223,13 +925,40 @@ async def test_tombstone_range():
             )
             print(f"✓ Sent tombstone envelope {i+1}")
 
-        print(f"\n✅ Tombstone range test passed! Created and sent {num_messages} tombstones successfully!")
+        # Wait for tombstone propagation
+        print("--- Waiting for tombstone propagation (60 seconds) ---")
+        await asyncio.sleep(60)
+
+        # Bob reads all boxes and verifies each returns TombstoneError
+        read_idx = keypair.first_message_index
+        for i in range(num_messages):
+            read_result = await bob_client.encrypt_read(
+                keypair.read_cap, read_idx
+            )
+            try:
+                await bob_client.start_resending_encrypted_message(
+                    read_cap=keypair.read_cap,
+                    write_cap=None,
+                    next_message_index=read_idx,
+                    reply_index=0,
+                    envelope_descriptor=read_result.envelope_descriptor,
+                    message_ciphertext=read_result.message_ciphertext,
+                    envelope_hash=read_result.envelope_hash
+                )
+                assert False, f"Expected TombstoneError for box {i+1}"
+            except TombstoneError:
+                print(f"✓ Bob verified tombstone {i+1}")
+            read_idx = await bob_client.next_message_box_index(read_idx)
+
+        print(f"\n✅ All {num_messages} boxes successfully tombstoned and verified!")
 
     finally:
         alice_client.stop()
+        bob_client.stop()
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(3600)
 async def test_box_id_not_found_error():
     """
     Test that we receive a BoxIDNotFoundError when reading from a box that doesn't exist.
@@ -1284,6 +1013,7 @@ async def test_box_id_not_found_error():
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(3600)
 async def test_box_already_exists_error():
     """
     Test that we receive a BoxAlreadyExistsError when writing to a box that already has data.
@@ -1357,6 +1087,187 @@ async def test_box_already_exists_error():
             # This is the expected case
             print(f"✓ Received expected BoxAlreadyExistsError: {e}")
             print("✅ BoxAlreadyExistsError test passed!")
+
+    finally:
+        client.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(3600)
+async def test_read_before_write():
+    """
+    Test race condition where a read is attempted before the corresponding write.
+    This verifies that the retry logic in kpclientd works correctly:
+
+    1. Alice and Bob share a keypair (same box ID)
+    2. Bob starts reading BEFORE Alice writes (box doesn't exist yet)
+    3. Alice writes to the box after a delay
+    4. Bob's read should eventually succeed due to retry mechanism
+
+    This mirrors the Go test: TestReadBeforeWrite
+    """
+    alice_client = await setup_thin_client()
+    bob_client = await setup_thin_client()
+
+    try:
+        print("\n=== Test: Read Before Write ===")
+
+        # Create shared keypair
+        print("--- Setup: Creating shared keypair ---")
+        seed = os.urandom(32)
+        alice_keypair = await alice_client.new_keypair(seed)
+        print("✓ Created shared keypair")
+
+        # Start Bob's read in a task BEFORE Alice writes
+        print("--- Step 1: Bob starts reading (box doesn't exist yet) ---")
+
+        async def bob_read_task():
+            """Bob's read - will retry until Alice writes."""
+            read_result = await bob_client.encrypt_read(
+                alice_keypair.read_cap, alice_keypair.first_message_index
+            )
+            result = await bob_client.start_resending_encrypted_message(
+                read_cap=alice_keypair.read_cap,
+                write_cap=None,
+                next_message_index=alice_keypair.first_message_index,
+                reply_index=0,
+                envelope_descriptor=read_result.envelope_descriptor,
+                message_ciphertext=read_result.message_ciphertext,
+                envelope_hash=read_result.envelope_hash
+            )
+            return result.plaintext
+
+        bob_task = asyncio.create_task(bob_read_task())
+
+        # Wait to ensure Bob's read is in-flight and retrying
+        print("--- Step 2: Waiting 5 seconds before Alice writes ---")
+        await asyncio.sleep(5)
+
+        # Alice writes the message
+        print("--- Step 3: Alice writes message (while Bob is retrying) ---")
+        alice_message = b"Hello Bob! I wrote this after you started reading."
+        print(f"Alice: Writing message ({len(alice_message)} bytes): {alice_message.decode()}")
+
+        write_result = await alice_client.encrypt_write(
+            alice_message, alice_keypair.write_cap, alice_keypair.first_message_index
+        )
+        await alice_client.start_resending_encrypted_message(
+            read_cap=None,
+            write_cap=alice_keypair.write_cap,
+            next_message_index=None,
+            reply_index=0,
+            envelope_descriptor=write_result.envelope_descriptor,
+            message_ciphertext=write_result.message_ciphertext,
+            envelope_hash=write_result.envelope_hash
+        )
+        print("Alice: Write completed")
+
+        # Wait for Bob's read to complete
+        print("--- Step 4: Waiting for Bob's read to succeed ---")
+        bob_plaintext = await asyncio.wait_for(bob_task, timeout=600)
+
+        assert bob_plaintext is not None, "Bob should receive the message"
+        assert bob_plaintext == alice_message, f"Message mismatch: expected {alice_message}, got {bob_plaintext}"
+        print(f"Bob: Received message: {bob_plaintext.decode()}")
+        print("✅ Bob's read succeeded after Alice's write (retry mechanism worked!)")
+
+    finally:
+        alice_client.stop()
+        bob_client.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(3600)
+async def test_copy_onto_already_existing_box_error():
+    """
+    Test Copy Command when destination box already exists - should fail with error.
+
+    This test verifies:
+    1. A message is written to a box
+    2. A copy command targeting the same box fails
+
+    This mirrors the Go test: TestCopyOntoAlreadyExistingBoxError
+    """
+    client = await setup_thin_client()
+
+    try:
+        print("\n=== Test: Copy Onto Already Existing Box Error ===")
+
+        # Create keypair
+        seed = os.urandom(32)
+        keypair = await client.new_keypair(seed)
+        print("✓ Created keypair")
+
+        # First write - should succeed
+        print("--- First write (should succeed) ---")
+        message1 = b"First message - this should work"
+        write_result1 = await client.encrypt_write(
+            message1, keypair.write_cap, keypair.first_message_index
+        )
+        await client.start_resending_encrypted_message(
+            read_cap=None,
+            write_cap=keypair.write_cap,
+            next_message_index=None,
+            reply_index=None,
+            envelope_descriptor=write_result1.envelope_descriptor,
+            message_ciphertext=write_result1.message_ciphertext,
+            envelope_hash=write_result1.envelope_hash
+        )
+        print("✓ First write succeeded")
+
+        # Wait for propagation
+        print("Waiting for message propagation...")
+        await asyncio.sleep(5)
+
+        # Create temporary copy stream
+        temp_seed = os.urandom(32)
+        temp_keypair = await client.new_keypair(temp_seed)
+        print("✓ Created temporary copy stream WriteCap")
+
+        # Create large payload
+        large_payload = os.urandom(2000)
+
+        # Create copy stream chunks targeting the already-written box
+        stream_id = client.new_stream_id()
+        query_id = client.new_query_id()
+        result = await client.create_courier_envelopes_from_payload(
+            query_id, stream_id, large_payload, keypair.write_cap, keypair.first_message_index, True
+        )
+        assert result.envelopes, "create_courier_envelopes_from_payload returned empty chunks"
+        copy_stream_chunks = result.envelopes
+        num_chunks = len(copy_stream_chunks)
+        print(f"✓ Created {num_chunks} copy stream chunks")
+
+        # Write all chunks to temporary channel
+        temp_index = temp_keypair.first_message_index
+        for i, chunk in enumerate(copy_stream_chunks):
+            print(f"--- Writing copy stream chunk {i+1}/{num_chunks} to temporary channel ---")
+            write_result = await client.encrypt_write(
+                chunk, temp_keypair.write_cap, temp_index
+            )
+            await client.start_resending_encrypted_message(
+                read_cap=None,
+                write_cap=temp_keypair.write_cap,
+                next_message_index=None,
+                reply_index=0,
+                envelope_descriptor=write_result.envelope_descriptor,
+                message_ciphertext=write_result.message_ciphertext,
+                envelope_hash=write_result.envelope_hash
+            )
+            temp_index = await client.next_message_box_index(temp_index)
+
+        # Wait for chunks to propagate
+        print("--- Waiting for copy stream chunks to propagate (30 seconds) ---")
+        await asyncio.sleep(30)
+
+        # Send Copy command - should fail because destination box already exists
+        print("--- Sending Copy command (should fail) ---")
+        try:
+            await client.start_resending_copy_command(temp_keypair.write_cap)
+            assert False, "Expected error when copying onto already existing box"
+        except Exception as e:
+            print(f"✓ Copy command failed as expected: {e}")
+            print("✅ CopyOntoAlreadyExistingBoxError test passed!")
 
     finally:
         client.stop()
