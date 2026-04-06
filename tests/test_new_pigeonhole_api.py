@@ -239,6 +239,87 @@ async def test_multiple_messages_sequence():
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(3600)
+async def test_multiple_messages_bulk():
+    """
+    Test sending multiple messages in bulk: all writes first, then all reads.
+
+    Unlike test_multiple_messages_sequence (which sends one, reads one, repeats),
+    this test sends all 3 messages before reading any. This exercises multiple
+    concurrent ARQ retry operations on the daemon — the pattern that was broken
+    when arqResendCh had a buffer of 2 and silently dropped resends.
+    """
+    alice_client = await setup_thin_client()
+    bob_client = await setup_thin_client()
+
+    try:
+        print("\n=== Test: Multiple messages bulk (all writes, then all reads) ===")
+
+        # Alice creates keypair
+        alice_seed = os.urandom(32)
+        alice_keypair = await alice_client.new_keypair(alice_seed)
+        print("✓ Alice created keypair")
+
+        num_messages = 3
+        messages = [
+            b"Message 1: The package has been delivered.",
+            b"Message 2: Proceed to the safe house.",
+            b"Message 3: Mission accomplished.",
+        ]
+
+        # Alice sends ALL messages first
+        alice_current_index = alice_keypair.first_message_index
+        for i, message in enumerate(messages):
+            print(f"\nAlice: Sending message {i+1}/{num_messages}: {message.decode()}")
+            write_result = await alice_client.encrypt_write(
+                message, alice_keypair.write_cap, alice_current_index
+            )
+            await alice_client.start_resending_encrypted_message(
+                read_cap=None,
+                write_cap=alice_keypair.write_cap,
+                next_message_index=None,
+                reply_index=0,
+                envelope_descriptor=write_result.envelope_descriptor,
+                message_ciphertext=write_result.message_ciphertext,
+                envelope_hash=write_result.envelope_hash
+            )
+            print(f"✓ Alice sent message {i+1}")
+            alice_current_index = await alice_client.next_message_box_index(alice_current_index)
+
+        # Wait for propagation
+        print("\nWaiting for message propagation (30 seconds)")
+        await asyncio.sleep(30)
+
+        # Bob reads ALL messages
+        bob_current_index = alice_keypair.first_message_index
+        for i in range(num_messages):
+            print(f"\nBob: Reading message {i+1}/{num_messages}")
+            read_result = await bob_client.encrypt_read(
+                alice_keypair.read_cap, bob_current_index
+            )
+            bob_plaintext = (await bob_client.start_resending_encrypted_message(
+                read_cap=alice_keypair.read_cap,
+                write_cap=None,
+                next_message_index=bob_current_index,
+                reply_index=0,
+                envelope_descriptor=read_result.envelope_descriptor,
+                message_ciphertext=read_result.message_ciphertext,
+                envelope_hash=read_result.envelope_hash
+            )).plaintext
+
+            print(f"Bob: Received message {i+1}: {bob_plaintext.decode() if bob_plaintext else '(empty)'}")
+            assert bob_plaintext == messages[i], f"Message {i+1} mismatch: expected {messages[i]}, got {bob_plaintext}"
+            print(f"✓ Message {i+1} verified!")
+            bob_current_index = await bob_client.next_message_box_index(bob_current_index)
+
+        print(f"\n✅ All {num_messages} messages sent in bulk and verified successfully!")
+
+    finally:
+        alice_client.stop()
+        bob_client.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(3600)
 async def test_create_courier_envelopes_from_payload():
     """
     Test the CreateCourierEnvelopesFromPayload API.
