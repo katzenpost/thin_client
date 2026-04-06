@@ -23,6 +23,11 @@ use crate::error::ThinClientError;
 use crate::{Config, ServiceDescriptor, PigeonholeGeometry};
 use crate::helpers::find_services;
 
+/// Request to close the thin client connection.
+/// Tells the daemon to clean up ARQ state for this connection.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ThinCloseRequest {}
+
 /// The size in bytes of a SURB (Single-Use Reply Block) identifier.
 const SURB_ID_SIZE: usize = 16;
 
@@ -177,10 +182,19 @@ impl ThinClient {
         }
 
         /// Stop our async worker task and disconnect the thin client.
+        /// Sends a thin_close message to the daemon so it can clean up
+        /// ARQ state for this connection before disconnecting.
         pub async fn stop(&self) {
         debug!("Stopping ThinClient...");
 
         self.shutdown.store(true, Ordering::Relaxed);
+
+        // Send thin_close to the daemon before shutting down the socket.
+        // Best effort — the socket may already be closed.
+        let close_value = serde_cbor::value::to_value(&ThinCloseRequest {}).unwrap();
+        let mut close_req = BTreeMap::new();
+        close_req.insert(Value::Text("thin_close".to_string()), close_value);
+        let _ = self.send_cbor_request(close_req).await;
 
         let mut write_half = self.write_half.lock().await;
 
