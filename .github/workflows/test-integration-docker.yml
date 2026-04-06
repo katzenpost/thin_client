@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: katzenpost/katzenpost
-          ref: 78fe33f4f2e7b42ad2b2c5f4aed9b4faef0c14a6
+          ref: 7705b49eedd66c827f3b0a3cf189883d15229d28
           path: katzenpost
 
       - name: Set up Docker Buildx
@@ -55,7 +55,7 @@ jobs:
 
       - name: Build and start the mixnet
         run: |
-          cd katzenpost/docker && make start wait serviceNodes=2 storageNodes=4
+          cd katzenpost/docker && make start wait
 
       - name: Brief pause to ensure mixnet is fully ready
         run: sleep 30
