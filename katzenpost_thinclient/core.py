@@ -817,9 +817,19 @@ class ThinClient:
     def stop(self) -> None:
         """
         Gracefully shut down the client and close its socket.
+        Sends a thin_close message to the daemon so it can clean up
+        ARQ state for this connection before disconnecting.
         """
         self.logger.debug("closing connection to daemon")
         self._stopping = True  # Set flag to suppress expected BrokenPipeError
+        # Send thin_close to daemon so it cleans up ARQ state for this AppID.
+        # Without this, stale ARQ entries poll forever and crowd out new requests.
+        try:
+            close_msg = cbor2.dumps({"thin_close": {}})
+            length_prefix = struct.pack('>I', len(close_msg))
+            self.socket.sendall(length_prefix + close_msg)
+        except Exception:
+            pass  # Best effort — socket may already be closed
         self.socket.close()
         self.task.cancel()
 
