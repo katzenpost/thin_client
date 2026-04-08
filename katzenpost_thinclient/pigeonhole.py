@@ -681,65 +681,44 @@ async def cancel_resending_copy_command(self, write_cap_hash: bytes) -> None:
 
 async def create_courier_envelopes_from_payload(
     self,
-    query_id: bytes,
-    stream_id: bytes,
     payload: bytes,
     dest_write_cap: bytes,
     dest_start_index: bytes,
+    is_start: bool,
     is_last: bool
 ) -> "CreateEnvelopesResult":
     """
     Creates multiple CourierEnvelopes from a payload of any size.
 
-    The payload is automatically chunked and each chunk is wrapped in a
-    CourierEnvelope. Each returned chunk is a serialized CopyStreamElement
-    ready to be written to a box.
+    This method is stateless — no daemon state is kept between calls. Each call
+    creates a fresh encoder, encodes all envelopes, flushes, and returns. The
+    caller controls the copy stream boundaries via is_start and is_last flags.
 
-    Multiple calls can be made with the same stream_id to build up a stream
-    incrementally. The first call creates a new encoder (first element gets
-    IsStart=true). The final call should have is_last=True (last element
-    gets IsFinal=true).
-
-    The buffer in the result contains the current encoder buffer which
-    you should persist for crash recovery. On restart, use `set_stream_buffer`
-    to restore the state before continuing the stream.
+    Multiple calls can target the same destination stream by using next_dest_index
+    from the result as the dest_start_index for the next call.
 
     Args:
-        query_id: 16-byte query identifier for correlating requests and replies.
-        stream_id: 16-byte identifier for the encoder instance. All calls for
-                  the same stream must use the same stream ID.
-        payload: The data to be encoded into courier envelopes.
+        payload: The data to be encoded into courier envelopes (max 10MB).
         dest_write_cap: Write capability for the destination channel.
         dest_start_index: Starting index in the destination channel.
-        is_last: Whether this is the last payload in the sequence. When True,
-                the final CopyStreamElement will have IsFinal=true and the
-                encoder instance will be removed.
+        is_start: Whether this is the first call (sets IsStart flag on first element).
+        is_last: Whether this is the last call (sets IsFinal flag on last element).
 
     Returns:
-        CreateEnvelopesResult: Contains envelopes and buffer state for crash recovery.
+        CreateEnvelopesResult: Contains envelopes and next_dest_index.
 
     Raises:
         Exception: If the envelope creation fails.
-
-    Example:
-        >>> query_id = client.new_query_id()
-        >>> stream_id = client.new_stream_id()
-        >>> result = await client.create_courier_envelopes_from_payload(
-        ...     query_id, stream_id, payload, dest_write_cap, dest_start_index, is_last=False)
-        >>> # Persist buffer for crash recovery
-        >>> save_to_disk(stream_id, result.buffer)
-        >>> for env in result.envelopes:
-        ...     # Write each envelope to the copy stream
-        ...     pass
     """
+    query_id = self.new_query_id()
 
     request = {
         "create_courier_envelopes_from_payload": {
             "query_id": query_id,
-            "stream_id": stream_id,
             "payload": payload,
             "dest_write_cap": dest_write_cap,
             "dest_start_index": dest_start_index,
+            "is_start": is_start,
             "is_last": is_last
         }
     }
@@ -756,7 +735,7 @@ async def create_courier_envelopes_from_payload(
 
     return CreateEnvelopesResult(
         envelopes=reply.get("envelopes", []),
-        buffer=reply.get("buffer", b"")
+        next_dest_index=reply.get("next_dest_index", None)
     )
 
 
@@ -833,17 +812,25 @@ async def create_courier_envelopes_from_multi_payload(
 
     return CreateEnvelopesResult(
         envelopes=reply.get("envelopes", []),
-        buffer=reply.get("buffer", b"")
+        buffer=reply.get("buffer", b""),
+        next_dest_indices=reply.get("next_dest_indices", None)
     )
 
 
 @dataclass
 class CreateEnvelopesResult:
-    """Result of creating courier envelopes, including envelopes and buffer for crash recovery."""
+    """Result of creating courier envelopes."""
     envelopes: "List[bytes]"
     """The serialized CopyStreamElements to send to the network."""
-    buffer: bytes
-    """The buffered data that hasn't been output yet. Persist this for crash recovery."""
+    buffer: bytes = b""
+    """The buffered data that hasn't been output yet. Persist this for crash recovery.
+    Only populated by create_courier_envelopes_from_multi_payload."""
+    next_dest_index: "Optional[bytes]" = None
+    """The next destination message box index after all boxes consumed by this call.
+    Only populated by create_courier_envelopes_from_payload."""
+    next_dest_indices: "Optional[List[bytes]]" = None
+    """The next destination indices for each destination, in request order.
+    Only populated by create_courier_envelopes_from_multi_payload."""
 
 
 async def set_stream_buffer(

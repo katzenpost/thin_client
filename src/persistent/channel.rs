@@ -951,18 +951,16 @@ impl CopyStreamBuilder {
         dest_start_index: &[u8],
         is_last: bool,
     ) -> Result<usize> {
+        let is_start = self.total_boxes == 0;
         let result = self.client.create_courier_envelopes_from_payload(
-            &self.stream_id,
             payload,
             dest_write_cap,
             dest_start_index,
+            is_start,
             is_last,
         ).await?;
 
         let chunk_count = result.envelopes.len();
-
-        // Save the buffer for crash recovery
-        self.buffer = result.buffer;
 
         for chunk in result.envelopes {
             let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } = self

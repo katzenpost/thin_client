@@ -364,10 +364,8 @@ async def test_create_courier_envelopes_from_payload():
 
         # Step 4: Create copy stream chunks from the large payload
         print("\n--- Step 4: Creating copy stream chunks from large payload ---")
-        query_id = alice_client.new_query_id()
-        stream_id = alice_client.new_stream_id()
         result = await alice_client.create_courier_envelopes_from_payload(
-            query_id, stream_id, large_payload, dest_keypair.write_cap, dest_keypair.first_message_index, True  # is_last
+            large_payload, dest_keypair.write_cap, dest_keypair.first_message_index, True, True  # is_start, is_last
         )
         assert result.envelopes, "create_courier_envelopes_from_payload returned empty chunks"
         copy_stream_chunks = result.envelopes
@@ -516,21 +514,19 @@ async def test_copy_command_multi_channel():
         payload2 = b"This is the confidential data for Channel 2. Handle with care and discretion."
         print(f"✓ Alice created payload2 for Channel 2 ({len(payload2)} bytes)")
 
-        # Step 4: Create copy stream chunks using same streamID but different WriteCaps
+        # Step 4: Create copy stream chunks for both channels
         print("\n--- Step 4: Creating copy stream chunks for both channels ---")
-        query_id = alice_client.new_query_id()
-        stream_id = alice_client.new_stream_id()
 
-        # First call: payload1 -> channel 1 (is_last=False)
+        # First call: payload1 -> channel 1 (is_start=True, is_last=False)
         result1 = await alice_client.create_courier_envelopes_from_payload(
-            query_id, stream_id, payload1, chan1_keypair.write_cap, chan1_keypair.first_message_index, False
+            payload1, chan1_keypair.write_cap, chan1_keypair.first_message_index, True, False
         )
         assert result1.envelopes, "create_courier_envelopes_from_payload returned empty chunks for channel 1"
         print(f"✓ Alice created {len(result1.envelopes)} chunks for Channel 1")
 
-        # Second call: payload2 -> channel 2 (is_last=True)
+        # Second call: payload2 -> channel 2 (is_start=False, is_last=True)
         result2 = await alice_client.create_courier_envelopes_from_payload(
-            query_id, stream_id, payload2, chan2_keypair.write_cap, chan2_keypair.first_message_index, True
+            payload2, chan2_keypair.write_cap, chan2_keypair.first_message_index, False, True
         )
         assert result2.envelopes, "create_courier_envelopes_from_payload returned empty chunks for channel 2"
         print(f"✓ Alice created {len(result2.envelopes)} chunks for Channel 2")
@@ -1309,10 +1305,8 @@ async def test_copy_onto_already_existing_box_error():
         large_payload = os.urandom(2000)
 
         # Create copy stream chunks targeting the already-written box
-        stream_id = client.new_stream_id()
-        query_id = client.new_query_id()
         result = await client.create_courier_envelopes_from_payload(
-            query_id, stream_id, large_payload, keypair.write_cap, keypair.first_message_index, True
+            large_payload, keypair.write_cap, keypair.first_message_index, True, True
         )
         assert result.envelopes, "create_courier_envelopes_from_payload returned empty chunks"
         copy_stream_chunks = result.envelopes
@@ -1352,3 +1346,228 @@ async def test_copy_onto_already_existing_box_error():
 
     finally:
         client.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(3600)
+async def test_from_payload_multi_call():
+    """
+    Test calling create_courier_envelopes_from_payload multiple times to send
+    a large payload to a single destination stream.
+
+    Exercises the stateless API: no stream_id, explicit is_start/is_last flags,
+    and next_dest_index returned in the result so the caller never does index math.
+    """
+    alice_client = await setup_thin_client()
+    bob_client = await setup_thin_client()
+
+    try:
+        print("\n=== Test: FromPayload Multi-Call ===")
+
+        # Create destination channel
+        dest_seed = os.urandom(32)
+        dest_keypair = await alice_client.new_keypair(dest_seed)
+
+        # Create temp copy stream channel
+        temp_seed = os.urandom(32)
+        temp_keypair = await alice_client.new_keypair(temp_seed)
+
+        # Create payload large enough to split into 3 chunks (each ~2000 bytes)
+        chunk_size = 2000
+        full_payload = os.urandom(3 * chunk_size)
+        chunk1 = full_payload[:chunk_size]
+        chunk2 = full_payload[chunk_size:2 * chunk_size]
+        chunk3 = full_payload[2 * chunk_size:]
+
+        # Call create_courier_envelopes_from_payload 3 times with new stateless API
+        all_temp_elements = []
+        dest_index = dest_keypair.first_message_index
+
+        # First call: is_start=True, is_last=False
+        result1 = await alice_client.create_courier_envelopes_from_payload(
+            chunk1, dest_keypair.write_cap, dest_index, True, False)
+        assert result1.envelopes
+        assert result1.next_dest_index is not None
+        all_temp_elements.extend(result1.envelopes)
+        print(f"Call 1: {len(result1.envelopes)} temp elements")
+
+        # Second call: is_start=False, is_last=False — uses next_dest_index from reply
+        result2 = await alice_client.create_courier_envelopes_from_payload(
+            chunk2, dest_keypair.write_cap, result1.next_dest_index, False, False)
+        assert result2.envelopes
+        assert result2.next_dest_index is not None
+        all_temp_elements.extend(result2.envelopes)
+        print(f"Call 2: {len(result2.envelopes)} temp elements")
+
+        # Third call: is_start=False, is_last=True
+        result3 = await alice_client.create_courier_envelopes_from_payload(
+            chunk3, dest_keypair.write_cap, result2.next_dest_index, False, True)
+        assert result3.envelopes
+        assert result3.next_dest_index is not None
+        all_temp_elements.extend(result3.envelopes)
+        print(f"Call 3: {len(result3.envelopes)} temp elements")
+
+        # Write all temp stream elements
+        temp_index = temp_keypair.first_message_index
+        for i, elem in enumerate(all_temp_elements):
+            write_result = await alice_client.encrypt_write(
+                elem, temp_keypair.write_cap, temp_index)
+            await alice_client.start_resending_encrypted_message(
+                read_cap=None, write_cap=temp_keypair.write_cap,
+                next_message_index=None, reply_index=0,
+                envelope_descriptor=write_result.envelope_descriptor,
+                message_ciphertext=write_result.message_ciphertext,
+                envelope_hash=write_result.envelope_hash)
+            temp_index = await alice_client.next_message_box_index(temp_index)
+            print(f"Wrote temp element {i+1}/{len(all_temp_elements)}")
+
+        print("Waiting for temp stream to propagate (30 seconds)")
+        await asyncio.sleep(30)
+
+        # Send copy command
+        await alice_client.start_resending_copy_command(temp_keypair.write_cap)
+        print("Copy command completed")
+
+        # Bob reads all destination boxes and reconstructs the payload
+        bob_index = dest_keypair.first_message_index
+        reconstructed = b""
+        while len(reconstructed) < len(full_payload):
+            read_result = await bob_client.encrypt_read(dest_keypair.read_cap, bob_index)
+            msg_result = await bob_client.start_resending_encrypted_message(
+                read_cap=dest_keypair.read_cap, write_cap=None,
+                next_message_index=bob_index, reply_index=0,
+                envelope_descriptor=read_result.envelope_descriptor,
+                message_ciphertext=read_result.message_ciphertext,
+                envelope_hash=read_result.envelope_hash)
+            assert msg_result.plaintext
+            reconstructed += msg_result.plaintext
+            bob_index = await bob_client.next_message_box_index(bob_index)
+
+        assert reconstructed == full_payload, "Reconstructed payload doesn't match original"
+        print("✅ FromPayload multi-call test passed!")
+
+    finally:
+        alice_client.stop()
+        bob_client.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(3600)
+async def test_from_multi_payload_multi_call():
+    """
+    Test calling create_courier_envelopes_from_multi_payload multiple times,
+    writing to two destination channels across two calls.
+
+    Exercises the stateful API with next_dest_indices in the result so the caller
+    can continue writing to the same destinations without index math.
+    """
+    alice_client = await setup_thin_client()
+    bob_client = await setup_thin_client()
+
+    try:
+        print("\n=== Test: FromMultiPayload Multi-Call ===")
+
+        # Create two destination channels
+        chan1_keypair = await alice_client.new_keypair(os.urandom(32))
+        chan2_keypair = await alice_client.new_keypair(os.urandom(32))
+
+        # Create temp copy stream channel
+        temp_keypair = await alice_client.new_keypair(os.urandom(32))
+
+        stream_id = alice_client.new_stream_id()
+
+        # Create payloads — use small payloads that fit in one box each
+        payload1a = b"First batch of data for channel 1 - testing multi-call"
+        payload2a = b"First batch of data for channel 2 - testing multi-call"
+        payload1b = b"Second batch of data for channel 1 - multi-call works"
+        payload2b = b"Second batch of data for channel 2 - multi-call works"
+
+        # First call: two destinations, is_last=False
+        result1 = await alice_client.create_courier_envelopes_from_multi_payload(
+            stream_id, [
+                {"payload": payload1a, "write_cap": chan1_keypair.write_cap,
+                 "start_index": chan1_keypair.first_message_index},
+                {"payload": payload2a, "write_cap": chan2_keypair.write_cap,
+                 "start_index": chan2_keypair.first_message_index},
+            ], False)
+        assert result1.envelopes
+        assert result1.next_dest_indices is not None
+        assert len(result1.next_dest_indices) == 2
+        print(f"Call 1: {len(result1.envelopes)} temp elements")
+
+        # Second call: same destinations, continue from next_dest_indices, is_last=True
+        result2 = await alice_client.create_courier_envelopes_from_multi_payload(
+            stream_id, [
+                {"payload": payload1b, "write_cap": chan1_keypair.write_cap,
+                 "start_index": result1.next_dest_indices[0]},
+                {"payload": payload2b, "write_cap": chan2_keypair.write_cap,
+                 "start_index": result1.next_dest_indices[1]},
+            ], True)
+        assert result2.envelopes
+        assert result2.next_dest_indices is not None
+        assert len(result2.next_dest_indices) == 2
+        print(f"Call 2: {len(result2.envelopes)} temp elements")
+
+        # Write all temp stream elements
+        all_elements = result1.envelopes + result2.envelopes
+        temp_index = temp_keypair.first_message_index
+        for i, elem in enumerate(all_elements):
+            write_result = await alice_client.encrypt_write(
+                elem, temp_keypair.write_cap, temp_index)
+            await alice_client.start_resending_encrypted_message(
+                read_cap=None, write_cap=temp_keypair.write_cap,
+                next_message_index=None, reply_index=0,
+                envelope_descriptor=write_result.envelope_descriptor,
+                message_ciphertext=write_result.message_ciphertext,
+                envelope_hash=write_result.envelope_hash)
+            temp_index = await alice_client.next_message_box_index(temp_index)
+            print(f"Wrote temp element {i+1}/{len(all_elements)}")
+
+        print("Waiting for temp stream to propagate (30 seconds)")
+        await asyncio.sleep(30)
+
+        # Send copy command
+        await alice_client.start_resending_copy_command(temp_keypair.write_cap)
+        print("Copy command completed")
+
+        # Bob reads from channel 1 — expects payload1a + payload1b
+        expected_chan1 = payload1a + payload1b
+        bob_index = chan1_keypair.first_message_index
+        chan1_data = b""
+        while len(chan1_data) < len(expected_chan1):
+            read_result = await bob_client.encrypt_read(chan1_keypair.read_cap, bob_index)
+            msg_result = await bob_client.start_resending_encrypted_message(
+                read_cap=chan1_keypair.read_cap, write_cap=None,
+                next_message_index=bob_index, reply_index=0,
+                envelope_descriptor=read_result.envelope_descriptor,
+                message_ciphertext=read_result.message_ciphertext,
+                envelope_hash=read_result.envelope_hash)
+            assert msg_result.plaintext
+            chan1_data += msg_result.plaintext
+            bob_index = await bob_client.next_message_box_index(bob_index)
+        assert chan1_data == expected_chan1, "Channel 1 data doesn't match"
+        print("Channel 1 verified")
+
+        # Bob reads from channel 2 — expects payload2a + payload2b
+        expected_chan2 = payload2a + payload2b
+        bob_index = chan2_keypair.first_message_index
+        chan2_data = b""
+        while len(chan2_data) < len(expected_chan2):
+            read_result = await bob_client.encrypt_read(chan2_keypair.read_cap, bob_index)
+            msg_result = await bob_client.start_resending_encrypted_message(
+                read_cap=chan2_keypair.read_cap, write_cap=None,
+                next_message_index=bob_index, reply_index=0,
+                envelope_descriptor=read_result.envelope_descriptor,
+                message_ciphertext=read_result.message_ciphertext,
+                envelope_hash=read_result.envelope_hash)
+            assert msg_result.plaintext
+            chan2_data += msg_result.plaintext
+            bob_index = await bob_client.next_message_box_index(bob_index)
+        assert chan2_data == expected_chan2, "Channel 2 data doesn't match"
+        print("Channel 2 verified")
+
+        print("✅ FromMultiPayload multi-call test passed!")
+
+    finally:
+        alice_client.stop()
+        bob_client.stop()

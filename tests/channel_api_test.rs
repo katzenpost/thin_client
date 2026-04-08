@@ -198,13 +198,12 @@ async fn test_create_courier_envelopes_from_payload() {
 
     // Step 4: Create copy stream chunks from the payload
     println!("\n--- Step 4: Creating copy stream chunks ---");
-    let stream_id = ThinClient::new_stream_id();
     let copy_stream_result = alice_client.create_courier_envelopes_from_payload(
-        &stream_id,
         &large_payload,
         &dest_write_cap,
         &dest_first_index,
-        true // is_last
+        true,  // is_start
+        true,  // is_last
     ).await.expect("Failed to create courier envelopes from payload");
 
     assert!(!copy_stream_result.envelopes.is_empty(), "Should have at least one chunk");
@@ -646,4 +645,256 @@ async fn test_box_id_not_found_error() {
             panic!("Expected BoxNotFound error but got success with plaintext len: {}", result.plaintext.len());
         }
     }
+}
+
+/// Test calling create_courier_envelopes_from_payload multiple times
+/// to send a large payload to a single destination stream.
+///
+/// Exercises the stateless API: no stream_id, explicit is_start/is_last flags,
+/// and next_dest_index returned in the result so the caller never does index math.
+#[tokio::test]
+async fn test_from_payload_multi_call() {
+    println!("\n=== Test: FromPayload Multi-Call ===");
+
+    let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
+    let bob_client = setup_thin_client().await.expect("Failed to setup Bob client");
+
+    // Create destination channel
+    let dest_seed: [u8; 32] = rand::random();
+    let KeypairResult { write_cap: dest_write_cap, read_cap: dest_read_cap, first_message_index: dest_first_index } =
+        alice_client.new_keypair(&dest_seed).await
+            .expect("Failed to create destination keypair");
+
+    // Create temp copy stream channel
+    let temp_seed: [u8; 32] = rand::random();
+    let KeypairResult { write_cap: temp_write_cap, read_cap: _temp_read_cap, first_message_index: temp_first_index } =
+        alice_client.new_keypair(&temp_seed).await
+            .expect("Failed to create temp keypair");
+
+    // Create payload large enough to split into 3 chunks
+    let chunk_size = 2000;
+    let full_payload: Vec<u8> = (0..3 * chunk_size).map(|_| rand::random::<u8>()).collect();
+    let chunk1 = &full_payload[..chunk_size];
+    let chunk2 = &full_payload[chunk_size..2 * chunk_size];
+    let chunk3 = &full_payload[2 * chunk_size..];
+
+    // Call create_courier_envelopes_from_payload 3 times with stateless API
+    let mut all_temp_elements: Vec<Vec<u8>> = Vec::new();
+
+    // First call: is_start=true, is_last=false
+    let result1 = alice_client.create_courier_envelopes_from_payload(
+        chunk1, &dest_write_cap, &dest_first_index, true, false,
+    ).await.expect("Call 1 failed");
+    assert!(!result1.envelopes.is_empty());
+    assert!(result1.next_dest_index.is_some(), "Call 1 should return next_dest_index");
+    all_temp_elements.extend(result1.envelopes);
+    println!("Call 1: {} temp elements", all_temp_elements.len());
+
+    // Second call: is_start=false, is_last=false — uses next_dest_index from reply
+    let result2 = alice_client.create_courier_envelopes_from_payload(
+        chunk2, &dest_write_cap, result1.next_dest_index.as_ref().unwrap(), false, false,
+    ).await.expect("Call 2 failed");
+    assert!(!result2.envelopes.is_empty());
+    assert!(result2.next_dest_index.is_some(), "Call 2 should return next_dest_index");
+    let result2_count = result2.envelopes.len();
+    all_temp_elements.extend(result2.envelopes);
+    println!("Call 2: {} new temp elements", result2_count);
+
+    // Third call: is_start=false, is_last=true
+    let result3 = alice_client.create_courier_envelopes_from_payload(
+        chunk3, &dest_write_cap, result2.next_dest_index.as_ref().unwrap(), false, true,
+    ).await.expect("Call 3 failed");
+    assert!(!result3.envelopes.is_empty());
+    assert!(result3.next_dest_index.is_some(), "Call 3 should return next_dest_index");
+    let result3_count = result3.envelopes.len();
+    all_temp_elements.extend(result3.envelopes);
+    println!("Call 3: {} new temp elements", result3_count);
+
+    // Write all temp stream elements to temp channel
+    let mut temp_index = temp_first_index.clone();
+    for (i, elem) in all_temp_elements.iter().enumerate() {
+        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+            alice_client.encrypt_write(elem, &temp_write_cap, &temp_index).await
+                .expect("Failed to encrypt chunk");
+
+        let _ = alice_client.start_resending_encrypted_message(
+            None, Some(&temp_write_cap), None, Some(0),
+            &env_desc, &ciphertext, &env_hash,
+        ).await.expect("Failed to send chunk via ARQ");
+
+        temp_index = alice_client.next_message_box_index(&temp_index).await
+            .expect("Failed to get next index");
+        println!("  Wrote temp element {}/{}", i + 1, all_temp_elements.len());
+    }
+
+    println!("Waiting for temp stream to propagate (30 seconds)");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+
+    // Send copy command
+    alice_client.start_resending_copy_command(&temp_write_cap, None, None).await
+        .expect("Failed to send copy command");
+    println!("Copy command completed");
+
+    println!("Waiting for copy command to execute (30 seconds)");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+
+    // Bob reads all destination boxes and reconstructs the payload
+    let mut bob_index = dest_first_index.clone();
+    let mut reconstructed = Vec::new();
+    while reconstructed.len() < full_payload.len() {
+        let read_result = bob_client.encrypt_read(&dest_read_cap, &bob_index).await
+            .expect("Failed to encrypt read");
+        let msg_result = bob_client.start_resending_encrypted_message(
+            Some(&dest_read_cap), None, Some(&bob_index), Some(0),
+            &read_result.envelope_descriptor,
+            &read_result.message_ciphertext,
+            &read_result.envelope_hash,
+        ).await.expect("Failed to retrieve message");
+        assert!(!msg_result.plaintext.is_empty());
+        reconstructed.extend_from_slice(&msg_result.plaintext);
+        bob_index = bob_client.next_message_box_index(&bob_index).await
+            .expect("Failed to get next index");
+    }
+
+    assert_eq!(reconstructed, full_payload, "Reconstructed payload doesn't match original");
+    println!("✅ FromPayload multi-call test passed!");
+}
+
+/// Test calling create_courier_envelopes_from_multi_payload multiple times,
+/// writing to two destination channels across two calls.
+///
+/// Exercises the stateful API with next_dest_indices in the result so the caller
+/// can continue writing to the same destinations without index math.
+#[tokio::test]
+async fn test_from_multi_payload_multi_call() {
+    println!("\n=== Test: FromMultiPayload Multi-Call ===");
+
+    let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
+    let bob_client = setup_thin_client().await.expect("Failed to setup Bob client");
+
+    // Create two destination channels
+    let chan1_seed: [u8; 32] = rand::random();
+    let KeypairResult { write_cap: chan1_write_cap, read_cap: chan1_read_cap, first_message_index: chan1_first_index } =
+        alice_client.new_keypair(&chan1_seed).await
+            .expect("Failed to create channel 1 keypair");
+
+    let chan2_seed: [u8; 32] = rand::random();
+    let KeypairResult { write_cap: chan2_write_cap, read_cap: chan2_read_cap, first_message_index: chan2_first_index } =
+        alice_client.new_keypair(&chan2_seed).await
+            .expect("Failed to create channel 2 keypair");
+
+    // Create temp copy stream channel
+    let temp_seed: [u8; 32] = rand::random();
+    let KeypairResult { write_cap: temp_write_cap, read_cap: _temp_read_cap, first_message_index: temp_first_index } =
+        alice_client.new_keypair(&temp_seed).await
+            .expect("Failed to create temp keypair");
+
+    let stream_id = ThinClient::new_stream_id();
+
+    // Create payloads — small enough to fit in one box each
+    let payload1a = b"First batch of data for channel 1 - testing multi-call".to_vec();
+    let payload2a = b"First batch of data for channel 2 - testing multi-call".to_vec();
+    let payload1b = b"Second batch of data for channel 1 - multi-call works".to_vec();
+    let payload2b = b"Second batch of data for channel 2 - multi-call works".to_vec();
+
+    // First call: two destinations, is_last=false
+    let destinations1 = vec![
+        (payload1a.as_slice(), chan1_write_cap.as_slice(), chan1_first_index.as_slice()),
+        (payload2a.as_slice(), chan2_write_cap.as_slice(), chan2_first_index.as_slice()),
+    ];
+    let result1 = alice_client.create_courier_envelopes_from_multi_payload(
+        &stream_id, destinations1, false,
+    ).await.expect("Multi-payload call 1 failed");
+    assert!(!result1.envelopes.is_empty());
+    assert!(result1.next_dest_indices.is_some(), "Call 1 should return next_dest_indices");
+    let next_indices = result1.next_dest_indices.as_ref().unwrap();
+    assert_eq!(next_indices.len(), 2, "Should have 2 next_dest_indices");
+    println!("Call 1: {} temp elements", result1.envelopes.len());
+
+    // Second call: same destinations, continue from next_dest_indices, is_last=true
+    let destinations2 = vec![
+        (payload1b.as_slice(), chan1_write_cap.as_slice(), next_indices[0].as_slice()),
+        (payload2b.as_slice(), chan2_write_cap.as_slice(), next_indices[1].as_slice()),
+    ];
+    let result2 = alice_client.create_courier_envelopes_from_multi_payload(
+        &stream_id, destinations2, true,
+    ).await.expect("Multi-payload call 2 failed");
+    assert!(!result2.envelopes.is_empty());
+    assert!(result2.next_dest_indices.is_some(), "Call 2 should return next_dest_indices");
+    assert_eq!(result2.next_dest_indices.as_ref().unwrap().len(), 2);
+    println!("Call 2: {} temp elements", result2.envelopes.len());
+
+    // Write all temp stream elements
+    let mut all_elements = result1.envelopes.clone();
+    all_elements.extend(result2.envelopes.clone());
+    let mut temp_index = temp_first_index.clone();
+    for (i, elem) in all_elements.iter().enumerate() {
+        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+            alice_client.encrypt_write(elem, &temp_write_cap, &temp_index).await
+                .expect("Failed to encrypt chunk");
+
+        let _ = alice_client.start_resending_encrypted_message(
+            None, Some(&temp_write_cap), None, Some(0),
+            &env_desc, &ciphertext, &env_hash,
+        ).await.expect("Failed to send chunk via ARQ");
+
+        temp_index = alice_client.next_message_box_index(&temp_index).await
+            .expect("Failed to get next index");
+        println!("  Wrote temp element {}/{}", i + 1, all_elements.len());
+    }
+
+    println!("Waiting for temp stream to propagate (30 seconds)");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+
+    // Send copy command
+    alice_client.start_resending_copy_command(&temp_write_cap, None, None).await
+        .expect("Failed to send copy command");
+    println!("Copy command completed");
+
+    println!("Waiting for copy command to execute (30 seconds)");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+
+    // Bob reads from channel 1 — expects payload1a + payload1b
+    let expected_chan1 = [payload1a.as_slice(), payload1b.as_slice()].concat();
+    let mut bob_index = chan1_first_index.clone();
+    let mut chan1_data = Vec::new();
+    while chan1_data.len() < expected_chan1.len() {
+        let read_result = bob_client.encrypt_read(&chan1_read_cap, &bob_index).await
+            .expect("Failed to encrypt read for channel 1");
+        let msg_result = bob_client.start_resending_encrypted_message(
+            Some(&chan1_read_cap), None, Some(&bob_index), Some(0),
+            &read_result.envelope_descriptor,
+            &read_result.message_ciphertext,
+            &read_result.envelope_hash,
+        ).await.expect("Failed to retrieve from channel 1");
+        assert!(!msg_result.plaintext.is_empty());
+        chan1_data.extend_from_slice(&msg_result.plaintext);
+        bob_index = bob_client.next_message_box_index(&bob_index).await
+            .expect("Failed to get next index");
+    }
+    assert_eq!(chan1_data, expected_chan1, "Channel 1 data doesn't match");
+    println!("Channel 1 verified");
+
+    // Bob reads from channel 2 — expects payload2a + payload2b
+    let expected_chan2 = [payload2a.as_slice(), payload2b.as_slice()].concat();
+    let mut bob_index = chan2_first_index.clone();
+    let mut chan2_data = Vec::new();
+    while chan2_data.len() < expected_chan2.len() {
+        let read_result = bob_client.encrypt_read(&chan2_read_cap, &bob_index).await
+            .expect("Failed to encrypt read for channel 2");
+        let msg_result = bob_client.start_resending_encrypted_message(
+            Some(&chan2_read_cap), None, Some(&bob_index), Some(0),
+            &read_result.envelope_descriptor,
+            &read_result.message_ciphertext,
+            &read_result.envelope_hash,
+        ).await.expect("Failed to retrieve from channel 2");
+        assert!(!msg_result.plaintext.is_empty());
+        chan2_data.extend_from_slice(&msg_result.plaintext);
+        bob_index = bob_client.next_message_box_index(&bob_index).await
+            .expect("Failed to get next index");
+    }
+    assert_eq!(chan2_data, expected_chan2, "Channel 2 data doesn't match");
+    println!("Channel 2 verified");
+
+    println!("✅ FromMultiPayload multi-call test passed!");
 }

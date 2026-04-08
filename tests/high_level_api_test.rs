@@ -407,29 +407,27 @@ async fn test_stream_buffer_returned_from_payload() {
     let write_cap = alice_channel.write_cap().expect("Channel should have write cap").to_vec();
     let start_index = alice_channel.write_index().expect("Channel should have write index").to_vec();
 
-    // Create envelopes with is_last=false to trigger buffering
-    let stream_id = ThinClient::new_stream_id();
+    // Create envelopes with is_last=false (stateless API, no stream_id)
     let payload = b"Test payload data for buffering".to_vec();
 
     let result = alice_thin.create_courier_envelopes_from_payload(
-        &stream_id,
         &payload,
         &write_cap,
         &start_index,
-        false,  // is_last=false triggers buffering
+        true,   // is_start
+        false,  // is_last=false
     ).await.expect("Failed to create envelopes");
 
     println!("✓ Got {} envelopes", result.envelopes.len());
-    println!("✓ Buffer: {} bytes", result.buffer.len());
+    assert!(result.next_dest_index.is_some(), "Should return next_dest_index");
+    println!("✓ next_dest_index returned");
 
-    // The buffer should be available for persistence
-    // (actual buffer contents depend on payload size vs geometry)
-    println!("\n✅ Buffer returned from payload test passed!");
+    println!("\n✅ Stateless payload test passed!");
 }
 
 #[tokio::test]
-async fn test_stream_buffer_recovery_workflow() {
-    println!("\n=== Test: Stream buffer crash recovery workflow ===");
+async fn test_stateless_payload_multi_call_next_index() {
+    println!("\n=== Test: Stateless FromPayload multi-call with next_dest_index chaining ===");
 
     let (alice_thin, _bob_thin) = setup_clients().await.expect("Failed to setup clients");
 
@@ -438,59 +436,41 @@ async fn test_stream_buffer_recovery_workflow() {
     let alice = katzenpost_thin_client::persistent::PigeonholeClient::new_in_memory(alice_thin.clone())
         .expect("Failed to create Alice's PigeonholeClient");
 
-    let alice_channel = alice.create_channel("recovery-test").await
+    let alice_channel = alice.create_channel("multi-call-test").await
         .expect("Failed to create channel");
     let write_cap = alice_channel.write_cap().expect("Channel should have write cap").to_vec();
     let start_index = alice_channel.write_index().expect("Channel should have write index").to_vec();
     println!("✓ Channel created");
 
-    // Step 2: Start a stream with is_last=false (simulating partial write)
-    println!("\n--- Step 2: Start streaming with is_last=false ---");
-    let stream_id = ThinClient::new_stream_id();
-    let first_payload = b"First chunk of data for crash recovery test".to_vec();
-
-    let result = alice_thin.create_courier_envelopes_from_payload(
-        &stream_id,
+    // Step 2: First call with is_start=true, is_last=false
+    println!("\n--- Step 2: First call (is_start=true, is_last=false) ---");
+    let first_payload = b"First chunk of data for multi-call test".to_vec();
+    let result1 = alice_thin.create_courier_envelopes_from_payload(
         &first_payload,
         &write_cap,
         &start_index,
-        false,  // is_last=false, so buffer will be retained
-    ).await.expect("Failed to create envelopes");
-    println!("✓ First chunk written with is_last=false");
-    println!("  Envelopes: {}, Buffer: {} bytes",
-        result.envelopes.len(), result.buffer.len());
+        true,   // is_start
+        false,  // is_last
+    ).await.expect("First call failed");
+    assert!(result1.next_dest_index.is_some(), "Should return next_dest_index");
+    println!("✓ First call: {} envelopes, next_dest_index returned",
+        result1.envelopes.len());
 
-    // Step 3: Save the buffer (simulating checkpoint before crash)
-    println!("\n--- Step 3: Checkpoint - save buffer ---");
-    let saved_buffer = result.buffer.clone();
-    println!("✓ Saved buffer: {} bytes", saved_buffer.len());
-
-    // Step 4: Simulate restart by setting buffer on a "new" stream
-    // In real crash recovery, this would be a new client instance
-    println!("\n--- Step 4: Restore buffer (simulating restart) ---");
-    let new_stream_id = ThinClient::new_stream_id();
-    alice_thin.set_stream_buffer(
-        &new_stream_id,
-        saved_buffer.clone(),
-    ).await.expect("Failed to restore stream buffer");
-    println!("✓ Buffer restored to new stream");
-
-    // Step 5: Continue the stream with more data and finish
-    println!("\n--- Step 5: Continue stream and finalize ---");
+    // Step 3: Second call with is_start=false, is_last=true, using next_dest_index
+    println!("\n--- Step 3: Second call (is_start=false, is_last=true) ---");
     let second_payload = b"Second chunk completing the stream".to_vec();
-    let final_result = alice_thin.create_courier_envelopes_from_payload(
-        &new_stream_id,
+    let result2 = alice_thin.create_courier_envelopes_from_payload(
         &second_payload,
         &write_cap,
-        &start_index,
-        true,  // is_last=true to finalize
-    ).await.expect("Failed to finalize stream");
+        result1.next_dest_index.as_ref().unwrap(),
+        false,  // is_start
+        true,   // is_last
+    ).await.expect("Second call failed");
+    assert!(result2.next_dest_index.is_some(), "Should return next_dest_index");
+    println!("✓ Second call: {} envelopes, next_dest_index returned",
+        result2.envelopes.len());
 
-    println!("✓ Stream finalized with {} envelopes", final_result.envelopes.len());
-    println!("✓ Final buffer: {} bytes (should be 0 after flush)",
-        final_result.buffer.len());
-
-    println!("\n✅ Stream buffer crash recovery workflow test passed!");
+    println!("\n✅ Stateless multi-call with next_dest_index chaining test passed!");
 }
 
 #[tokio::test]

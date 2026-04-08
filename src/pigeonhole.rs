@@ -258,27 +258,25 @@ struct CreateCourierEnvelopesFromPayloadRequest {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
     #[serde(with = "serde_bytes")]
-    stream_id: Vec<u8>,
-    #[serde(with = "serde_bytes")]
     payload: Vec<u8>,
     #[serde(with = "serde_bytes")]
     dest_write_cap: Vec<u8>,
     #[serde(with = "serde_bytes")]
     dest_start_index: Vec<u8>,
+    is_start: bool,
     is_last: bool,
 }
 
-/// Reply containing the created courier envelopes and buffer state.
+/// Reply containing the created courier envelopes and next destination index.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CreateCourierEnvelopesFromPayloadReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
     /// Envelopes is None when the daemon returns an error.
     envelopes: Option<Vec<serde_bytes::ByteBuf>>,
-    /// Buffer contains any data buffered by the encoder that hasn't been output yet.
-    /// None when the daemon returns an error.
+    /// Next destination message box index after all boxes consumed by this call.
     #[serde(default, with = "optional_bytes")]
-    buffer: Option<Vec<u8>>,
+    next_dest_index: Option<Vec<u8>>,
     #[serde(default)]
     error_code: u8,
 }
@@ -316,6 +314,9 @@ struct CreateCourierEnvelopesFromPayloadsReply {
     /// None when the daemon returns an error.
     #[serde(default, with = "optional_bytes")]
     buffer: Option<Vec<u8>>,
+    /// Next destination indices for each destination, in request order.
+    #[serde(default)]
+    next_dest_indices: Option<Vec<serde_bytes::ByteBuf>>,
     #[serde(default)]
     error_code: u8,
 }
@@ -363,13 +364,20 @@ pub struct EncryptWriteResult {
     pub envelope_hash: [u8; 32],
 }
 
-/// Result of creating courier envelopes, including the envelopes and buffer for crash recovery.
+/// Result of creating courier envelopes.
 #[derive(Debug, Clone)]
 pub struct CreateEnvelopesResult {
     /// The serialized CopyStreamElements to send to the network.
     pub envelopes: Vec<Vec<u8>>,
     /// The buffered data that hasn't been output yet. Persist this for crash recovery.
+    /// Only populated by create_courier_envelopes_from_multi_payload.
     pub buffer: Vec<u8>,
+    /// The next destination message box index after all boxes consumed by this call.
+    /// Only populated by create_courier_envelopes_from_payload.
+    pub next_dest_index: Option<Vec<u8>>,
+    /// The next destination indices for each destination, in request order.
+    /// Only populated by create_courier_envelopes_from_multi_payload.
+    pub next_dest_indices: Option<Vec<Vec<u8>>>,
 }
 
 // ========================================================================
@@ -963,20 +971,20 @@ impl ThinClient {
     /// * `Err(ThinClientError)` on failure
     pub async fn create_courier_envelopes_from_payload(
         &self,
-        stream_id: &[u8; 16],
         payload: &[u8],
         dest_write_cap: &[u8],
         dest_start_index: &[u8],
+        is_start: bool,
         is_last: bool
     ) -> Result<CreateEnvelopesResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = CreateCourierEnvelopesFromPayloadRequest {
             query_id: query_id.clone(),
-            stream_id: stream_id.to_vec(),
             payload: payload.to_vec(),
             dest_write_cap: dest_write_cap.to_vec(),
             dest_start_index: dest_start_index.to_vec(),
+            is_start,
             is_last,
         };
 
@@ -997,7 +1005,9 @@ impl ThinClient {
 
         Ok(CreateEnvelopesResult {
             envelopes: reply.envelopes.unwrap_or_default().into_iter().map(|b| b.into_vec()).collect(),
-            buffer: reply.buffer.unwrap_or_default(),
+            buffer: Vec::new(),
+            next_dest_index: reply.next_dest_index,
+            next_dest_indices: None,
         })
     }
 
@@ -1065,6 +1075,8 @@ impl ThinClient {
         Ok(CreateEnvelopesResult {
             envelopes: reply.envelopes.unwrap_or_default().into_iter().map(|b| b.into_vec()).collect(),
             buffer: reply.buffer.unwrap_or_default(),
+            next_dest_index: None,
+            next_dest_indices: reply.next_dest_indices.map(|v| v.into_iter().map(|b| b.into_vec()).collect()),
         })
     }
 
