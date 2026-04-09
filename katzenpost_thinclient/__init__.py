@@ -126,19 +126,6 @@ from .core import (
     blake2_256_sum,
 )
 
-# Import legacy channel API classes and methods
-from .legacy import (
-    WriteChannelReply,
-    ReadChannelReply,
-    create_write_channel,
-    create_read_channel,
-    write_channel,
-    read_channel,
-    read_channel_with_retry,
-    _send_channel_query_and_wait_for_message_id,
-    close_channel,
-)
-
 # Import new pigeonhole API methods and result types
 from .pigeonhole import (
     stream_id,
@@ -165,15 +152,6 @@ from .pigeonhole import (
     StartResendingResult,
 )
 
-
-# Attach legacy channel API methods to ThinClient
-ThinClient.create_write_channel = create_write_channel
-ThinClient.create_read_channel = create_read_channel
-ThinClient.write_channel = write_channel
-ThinClient.read_channel = read_channel
-ThinClient.read_channel_with_retry = read_channel_with_retry
-ThinClient._send_channel_query_and_wait_for_message_id = _send_channel_query_and_wait_for_message_id
-ThinClient.close_channel = close_channel
 
 # Attach new pigeonhole API methods to ThinClient
 ThinClient.stream_id = stream_id
@@ -204,9 +182,6 @@ __all__ = [
     'Geometry',
     'PigeonholeGeometry',
     'ServiceDescriptor',
-    # Legacy channel reply classes
-    'WriteChannelReply',
-    'ReadChannelReply',
     # Pigeonhole result dataclasses
     'KeypairResult',
     'EncryptReadResult',
