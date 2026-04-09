@@ -654,6 +654,7 @@ class ThinClient:
         self._received_shutdown : bool = False  # Track if daemon sent ShutdownEvent before disconnect
         self._daemon_instance_token : "bytes|None" = None  # Daemon instance token for reconnect detection
         self._in_flight_resends : Dict[bytes, Dict[str, Any]] = {}  # envelope_hash -> request dict
+        self.instance_token : bytes = os.urandom(16)  # Client instance token for session resumption
 
         # Mutexes to serialize socket send/recv operations:
         self._send_lock = asyncio.Lock()
@@ -738,10 +739,23 @@ class ThinClient:
         await self.handle_response(response)
 
         # 2nd message is always a new pki doc event
-        #response = await self.recv(loop)
-        #assert response is not None
-        #assert response["new_pki_document_event"] is not None, response
-        #await self.handle_response(response)
+        response = await self.recv(loop)
+        assert response is not None
+        assert response["new_pki_document_event"] is not None, response
+        await self.handle_response(response)
+
+        # 3rd: send SessionToken and read SessionTokenReply
+        session_token_req = cbor2.dumps({
+            "session_token": {
+                "client_instance_token": self.instance_token,
+            }
+        })
+        length_prefix = struct.pack('>I', len(session_token_req))
+        await self._send_all(length_prefix + session_token_req)
+
+        session_reply = await self.recv(loop)
+        assert session_reply.get("session_token_reply") is not None, f"expected session_token_reply, got {session_reply}"
+        self.logger.debug(f"Session token reply: resumed={session_reply['session_token_reply'].get('resumed')}")
 
         # Start the read loop as a background task
         self.logger.debug("starting read loop")
@@ -817,6 +831,17 @@ class ThinClient:
             self.socket.sendall(length_prefix + close_msg)
         except Exception:
             pass  # Best effort — socket may already be closed
+        self.socket.close()
+        self.task.cancel()
+
+    def disconnect(self) -> None:
+        """
+        Close the connection without sending thin_close.
+        The daemon preserves all state for this client's app ID, allowing
+        the client to reconnect and resume with the same session token.
+        """
+        self.logger.debug("disconnecting from daemon (preserving state)")
+        self._stopping = True
         self.socket.close()
         self.task.cancel()
 
@@ -902,7 +927,22 @@ class ThinClient:
                         self.parse_pki_doc(response2["new_pki_document_event"])
                         await self.config.handle_new_pki_document_event(response2["new_pki_document_event"])
 
-                self.logger.info(f"Reconnected to daemon (connected={self._is_connected})")
+                # Handshake: send SessionToken and read SessionTokenReply
+                session_token_req = cbor2.dumps({
+                    "session_token": {
+                        "client_instance_token": self.instance_token,
+                    }
+                })
+                length_prefix = struct.pack('>I', len(session_token_req))
+                await self._send_all(length_prefix + session_token_req)
+
+                response3 = await self.recv(loop)
+                if response3.get("session_token_reply") is None:
+                    self.logger.error("Reconnect handshake failed: expected session_token_reply")
+                    self.socket.close()
+                    continue
+                resumed = response3["session_token_reply"].get("resumed", False)
+                self.logger.info(f"Reconnected to daemon (connected={self._is_connected}, resumed={resumed})")
                 return
 
             except (BrokenPipeError, ConnectionResetError, OSError, asyncio.CancelledError) as e:

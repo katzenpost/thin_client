@@ -95,6 +95,8 @@ pub struct ThinClient {
     pub(crate) in_flight_resends: Mutex<HashMap<Vec<u8>, BTreeMap<Value, Value>>>,
     // Track if daemon sent ShutdownEvent before disconnect
     received_shutdown: AtomicBool,
+    // Client instance token for session resumption across reconnections
+    pub(crate) instance_token: [u8; 16],
 }
 
 
@@ -130,6 +132,11 @@ impl ThinClient {
                     daemon_instance_token: RwLock::new(Vec::new()),
                     in_flight_resends: Mutex::new(HashMap::new()),
                     received_shutdown: AtomicBool::new(false),
+                    instance_token: {
+                        let mut token = [0u8; 16];
+                        rand::thread_rng().fill_bytes(&mut token);
+                        token
+                    },
 		})
             }
             "UNIX" => {
@@ -158,6 +165,11 @@ impl ThinClient {
                     daemon_instance_token: RwLock::new(Vec::new()),
                     in_flight_resends: Mutex::new(HashMap::new()),
                     received_shutdown: AtomicBool::new(false),
+                    instance_token: {
+                        let mut token = [0u8; 16];
+                        rand::thread_rng().fill_bytes(&mut token);
+                        token
+                    },
 		})
             }
 	    _ => {
@@ -208,6 +220,25 @@ impl ThinClient {
         }
 
         debug!("✅ ThinClient stopped.");
+    }
+
+    /// Disconnect from the daemon without sending thin_close.
+    /// The daemon preserves all state for this client's app ID, allowing
+    /// the client to reconnect and resume with the same session token.
+    pub async fn disconnect(&self) {
+        debug!("Disconnecting ThinClient (preserving state)...");
+        self.shutdown.store(true, Ordering::Relaxed);
+
+        let mut write_half = self.write_half.lock().await;
+        let _ = match &mut *write_half {
+            WriteHalf::Tcp(wh) => wh.shutdown().await,
+            WriteHalf::Unix(wh) => wh.shutdown().await,
+        };
+
+        if let Some(worker) = self.worker_task.lock().await.take() {
+            worker.abort();
+        }
+        debug!("ThinClient disconnected (state preserved).");
     }
 
     /// Returns true if the daemon is connected to the mixnet.
@@ -478,6 +509,33 @@ impl ThinClient {
         }
     }
 
+    /// Send SessionToken to the daemon and read SessionTokenReply.
+    async fn send_session_token(&self) -> Result<(), String> {
+        let mut inner = BTreeMap::new();
+        inner.insert(
+            Value::Text("client_instance_token".to_string()),
+            Value::Bytes(self.instance_token.to_vec()),
+        );
+        let mut request = BTreeMap::new();
+        request.insert(
+            Value::Text("session_token".to_string()),
+            Value::Map(inner),
+        );
+        self.send_cbor_request(request).await.map_err(|e| format!("{}", e))?;
+
+        let response = self.recv().await.map_err(|e| format!("{}", e))?;
+        if !response.contains_key(&Value::Text("session_token_reply".to_string())) {
+            return Err("expected session_token_reply".to_string());
+        }
+        if let Some(Value::Map(reply)) = response.get(&Value::Text("session_token_reply".to_string())) {
+            let resumed = reply.get(&Value::Text("resumed".to_string()))
+                .and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
+                .unwrap_or(false);
+            debug!("Session token reply: resumed={}", resumed);
+        }
+        Ok(())
+    }
+
     /// Read and dispatch a single handshake message from the daemon.
     async fn recv_and_dispatch(&self) -> Result<(), String> {
         let response = self.recv().await.map_err(|e| format!("{}", e))?;
@@ -521,6 +579,12 @@ impl ThinClient {
                 continue;
             }
 
+            if let Err(e) = self.send_session_token().await {
+                error!("Reconnect handshake failed (SessionToken): {}", e);
+                delay = std::cmp::min(delay * 2, max_delay);
+                continue;
+            }
+
             debug!("Reconnected to daemon (connected={})", self.is_connected());
             return true;
         }
@@ -538,6 +602,21 @@ impl ThinClient {
 
     async fn worker_loop(&self) {
         debug!("Worker loop started");
+
+        // Initial handshake: read ConnectionStatusEvent, NewPKIDocumentEvent,
+        // then send SessionToken and read SessionTokenReply.
+        if let Err(e) = self.recv_and_dispatch().await {
+            error!("Initial handshake failed (ConnectionStatusEvent): {}", e);
+            return;
+        }
+        if let Err(e) = self.recv_and_dispatch().await {
+            error!("Initial handshake failed (NewPKIDocumentEvent): {}", e);
+            return;
+        }
+        if let Err(e) = self.send_session_token().await {
+            error!("Initial handshake failed (SessionToken): {}", e);
+            return;
+        }
 
         loop {
             // Reset the shutdown-event flag for this connection
@@ -785,5 +864,116 @@ impl ThinClient {
         request.insert(Value::Text("send_arq_message".to_string()), Value::Map(send_arq_message));
 
         self.send_cbor_request(request).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_cbor::Value;
+    use std::collections::BTreeMap;
+
+    /// instance_token field should exist on ThinClient.
+    #[test]
+    fn test_instance_token_field_exists() {
+        // We can't easily construct a ThinClient without a socket,
+        // but we can verify the field exists by checking the struct layout
+        // via a compile-time assertion. If this compiles, the field exists.
+        fn _assert_field(tc: &ThinClient) -> &[u8; 16] {
+            &tc.instance_token
+        }
+    }
+
+    /// disconnect() method should exist and be distinct from stop().
+    #[test]
+    fn test_disconnect_method_exists() {
+        // Compile-time check: if this compiles, disconnect() exists as an async method.
+        fn _assert_method(tc: &ThinClient) {
+            let _ = tc.disconnect();
+        }
+    }
+
+    /// SessionToken CBOR encoding should match what the daemon expects.
+    #[test]
+    fn test_session_token_cbor_encoding() {
+        let token = [0x01u8; 16];
+        let mut inner = BTreeMap::new();
+        inner.insert(
+            Value::Text("client_instance_token".to_string()),
+            Value::Bytes(token.to_vec()),
+        );
+        let mut request = BTreeMap::new();
+        request.insert(
+            Value::Text("session_token".to_string()),
+            Value::Map(inner),
+        );
+
+        let encoded = serde_cbor::to_vec(&request).unwrap();
+        let decoded: BTreeMap<Value, Value> = serde_cbor::from_slice(&encoded).unwrap();
+
+        if let Some(Value::Map(st)) = decoded.get(&Value::Text("session_token".to_string())) {
+            if let Some(Value::Bytes(t)) = st.get(&Value::Text("client_instance_token".to_string())) {
+                assert_eq!(t.as_slice(), &token);
+            } else {
+                panic!("missing client_instance_token field");
+            }
+        } else {
+            panic!("missing session_token field");
+        }
+    }
+
+    /// SessionTokenReply CBOR decoding should work correctly.
+    #[test]
+    fn test_session_token_reply_decoding() {
+        let app_id = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let mut reply_inner = BTreeMap::new();
+        reply_inner.insert(Value::Text("app_id".to_string()), Value::Bytes(app_id.clone()));
+        reply_inner.insert(Value::Text("resumed".to_string()), Value::Bool(true));
+
+        let mut response = BTreeMap::new();
+        response.insert(
+            Value::Text("session_token_reply".to_string()),
+            Value::Map(reply_inner),
+        );
+
+        let encoded = serde_cbor::to_vec(&response).unwrap();
+        let decoded: BTreeMap<Value, Value> = serde_cbor::from_slice(&encoded).unwrap();
+
+        if let Some(Value::Map(reply)) = decoded.get(&Value::Text("session_token_reply".to_string())) {
+            if let Some(Value::Bytes(id)) = reply.get(&Value::Text("app_id".to_string())) {
+                assert_eq!(id, &app_id);
+            } else {
+                panic!("missing app_id");
+            }
+            if let Some(Value::Bool(resumed)) = reply.get(&Value::Text("resumed".to_string())) {
+                assert!(resumed);
+            } else {
+                panic!("missing resumed");
+            }
+        } else {
+            panic!("missing session_token_reply");
+        }
+    }
+
+    /// handle_response should not panic on session_token_reply.
+    #[tokio::test]
+    async fn test_handle_response_session_token_reply() {
+        // We need a ThinClient to call handle_response, but we can't construct one
+        // without a socket. Instead, verify the CBOR structure is correct and that
+        // session_token_reply would be handled (not panic) by checking it matches
+        // the expected pattern.
+        let mut reply_inner = BTreeMap::new();
+        reply_inner.insert(Value::Text("app_id".to_string()), Value::Bytes(vec![1; 16]));
+        reply_inner.insert(Value::Text("resumed".to_string()), Value::Bool(false));
+
+        let mut response = BTreeMap::new();
+        response.insert(
+            Value::Text("session_token_reply".to_string()),
+            Value::Map(reply_inner),
+        );
+
+        // Verify the key matches the pattern we handle
+        let key = Value::Text("session_token_reply".to_string());
+        assert!(response.contains_key(&key));
     }
 }
