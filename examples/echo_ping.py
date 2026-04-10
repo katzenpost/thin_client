@@ -21,8 +21,7 @@ async def main():
     payload = "hello"
     dest = service_desc.to_destination()
 
-    await client.send_reliable_message(surb_id, payload, dest[0], dest[1])
-    await client.await_message_reply()
+    await client.send_message(surb_id, payload, dest[0], dest[1])
 
     payload2 = state.reply_message['payload']
     payload2 = payload2[0:len(payload)]

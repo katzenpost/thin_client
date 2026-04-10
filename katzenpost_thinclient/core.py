@@ -1299,51 +1299,6 @@ class ThinClient:
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
 
-    async def send_reliable_message(self, message_id:bytes, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
-        """
-        Send a reliable message using an ARQ mechanism and message ID.
-        This method requires mixnet connectivity.
-
-        Args:
-            message_id (bytes): Message ID for reply correlation.
-            payload (bytes or str): Message payload.
-            dest_node (bytes): Destination node identity hash.
-            dest_queue (bytes): Destination recipient queue ID.
-
-        Raises:
-            ThinClientOfflineError: If in offline mode (daemon not connected to mixnet).
-        """
-        # Check if we're in offline mode
-        if not self._is_connected:
-            raise ThinClientOfflineError("cannot send reliable message in offline mode - daemon not connected to mixnet")
-
-        if not isinstance(payload, bytes):
-            payload = payload.encode('utf-8')  # Encoding the string to bytes
-
-        # Create the SendARQMessage structure
-        send_arq_message = {
-            "id": message_id,
-            "with_surb": True,
-            "surbid": None,  # ARQ messages don't use SURB IDs directly
-            "destination_id_hash": dest_node,
-            "recipient_queue_id": dest_queue,
-            "payload": payload,
-        }
-
-        # Wrap in the new Request structure
-        request = {
-            "send_arq_message": send_arq_message
-        }
-
-        cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
-        length_prefixed_request = length_prefix + cbor_request
-        try:
-            await self._send_all(length_prefixed_request)
-            self.logger.info("Message sent successfully.")
-        except Exception as e:
-            self.logger.error(f"Error sending message: {e}")
-
     def pretty_print_pki_doc(self, doc: "Dict[str,Any]") -> None:
         """
         Pretty-print a parsed PKI document with fully decoded CBOR nodes.
@@ -1379,9 +1334,4 @@ class ThinClient:
         new_doc['Topology'] = topology
         pretty_print_obj(new_doc)
 
-    async def await_message_reply(self) -> None:
-        """
-        Asynchronously block until a reply is received from the daemon.
-        """
-        await self.reply_received_event.wait()
 

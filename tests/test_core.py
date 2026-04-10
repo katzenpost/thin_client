@@ -59,7 +59,7 @@ async def test_thin_client_send_receive_integration_test():
 
         await client.send_message(surb_id, payload, dest[0], dest[1])
 
-        await client.await_message_reply()
+        await client.reply_received_event.wait()
 
         global reply_message
         payload2 = reply_message['payload'][:len(payload)]

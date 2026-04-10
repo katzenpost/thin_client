@@ -41,8 +41,6 @@ async def main():
     surb_id = client.new_surb_id()
     await client.send_message(surb_id, "hello mixnet", *service.to_destination())
 
-    await client.await_message_reply()
-
 asyncio.run(main())
 ```
 """
