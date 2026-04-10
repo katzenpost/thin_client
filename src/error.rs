@@ -45,6 +45,7 @@ pub enum ThinClientError {
     /// Tombstone signature verification failed (error code 25)
     InvalidTombstoneSignature,
 
+    Timeout(String),
     Other(String),
 }
 
@@ -96,6 +97,7 @@ impl fmt::Display for ThinClientError {
             ThinClientError::BacapDecryptionFailed => write!(f, "BACAP decryption failed"),
             ThinClientError::StartResendingCancelled => write!(f, "Start resending cancelled"),
             ThinClientError::InvalidTombstoneSignature => write!(f, "Invalid tombstone signature"),
+            ThinClientError::Timeout(msg) => write!(f, "Timeout: {}", msg),
             ThinClientError::Other(msg) => write!(f, "Error: {}", msg),
         }
     }

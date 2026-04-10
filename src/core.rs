@@ -834,6 +834,56 @@ impl ThinClient {
         self.send_cbor_request(request).await
     }
 
+    /// Send a message and block until a reply is received or timeout.
+    ///
+    /// This method provides a synchronous request-response pattern by
+    /// automatically generating a SURB ID, sending the message, and
+    /// waiting for the reply. It blocks until either a reply is received
+    /// or the timeout expires.
+    pub async fn blocking_send_message(
+	&self,
+	payload: &[u8],
+	dest_node: Vec<u8>,
+	dest_queue: Vec<u8>,
+	timeout: std::time::Duration,
+    ) -> Result<Vec<u8>, ThinClientError> {
+        if !self.is_connected() {
+            return Err(ThinClientError::OfflineMode("cannot send message in offline mode - daemon not connected to mixnet".to_string()));
+        }
+
+        let surb_id = Self::new_surb_id();
+        let mut event_sink = self.event_sink();
+
+        self.send_message(surb_id.clone(), payload, dest_node, dest_queue).await?;
+
+        let result = tokio::time::timeout(timeout, async {
+            loop {
+                match event_sink.recv().await {
+                    Some(event) => {
+                        if let Some(Value::Map(reply)) = event.get(&Value::Text("message_reply_event".to_string())) {
+                            if let Some(Value::Bytes(reply_surb_id)) = reply.get(&Value::Text("surbid".to_string())) {
+                                if *reply_surb_id == surb_id {
+                                    if let Some(Value::Bytes(payload)) = reply.get(&Value::Text("payload".to_string())) {
+                                        return Ok(payload.clone());
+                                    }
+                                }
+                            }
+                        }
+                        // Not our reply, keep waiting
+                    }
+                    None => {
+                        return Err(ThinClientError::OfflineMode("event sink closed".to_string()));
+                    }
+                }
+            }
+        }).await;
+
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(ThinClientError::Timeout("blocking_send_message timed out waiting for reply".to_string())),
+        }
+    }
+
 }
 
 #[cfg(test)]
