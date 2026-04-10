@@ -60,21 +60,44 @@ jobs:
       - name: Brief pause to ensure mixnet is fully ready
         run: sleep 30
 
-      - name: Run all Python tests (including channel API integration tests)
-        id: python-tests
-        continue-on-error: true
+      - name: Run Python and Rust integration tests in parallel
+        id: parallel-tests
         timeout-minutes: 60
         run: |
           cd thinclient
-          python -m pytest tests/ -vvv -s --tb=short --timeout=1200
 
-      - name: Run Rust integration tests
-        id: rust-tests
-        continue-on-error: true
-        timeout-minutes: 60
-        run: |
-          cd thinclient
-          cargo test --test '*' -- --nocapture --test-threads=1
+          # Run Python tests in background
+          python -m pytest tests/ -vvv -s --tb=short --timeout=1200 \
+            > /tmp/python-test-output.txt 2>&1 &
+          PYTHON_PID=$!
+
+          # Run Rust tests in background
+          cargo test --test '*' -- --nocapture --test-threads=1 \
+            > /tmp/rust-test-output.txt 2>&1 &
+          RUST_PID=$!
+
+          # Wait for both and capture exit codes
+          PYTHON_RC=0
+          RUST_RC=0
+          wait $PYTHON_PID || PYTHON_RC=$?
+          wait $RUST_PID || RUST_RC=$?
+
+          # Print outputs
+          echo "=== Python test output ==="
+          cat /tmp/python-test-output.txt
+          echo ""
+          echo "=== Rust test output ==="
+          cat /tmp/rust-test-output.txt
+          echo ""
+
+          # Report results
+          echo "Python tests exit code: $PYTHON_RC"
+          echo "Rust tests exit code: $RUST_RC"
+
+          # Fail if either failed
+          if [ $PYTHON_RC -ne 0 ] || [ $RUST_RC -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Stop the mixnet
         if: always()
@@ -88,12 +111,3 @@ jobs:
           name: mixnet-${{ github.run_id }}-${{ github.job }}
           path: |
             katzenpost/docker/voting_mixnet/*/*.log
-
-      - name: Check test results
-        if: always()
-        run: |
-          if [ "${{ steps.python-tests.outcome }}" != "success" ] || [ "${{ steps.rust-tests.outcome }}" != "success" ]; then
-            echo "Python tests: ${{ steps.python-tests.outcome }}"
-            echo "Rust tests: ${{ steps.rust-tests.outcome }}"
-            exit 1
-          fi
