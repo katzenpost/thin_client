@@ -834,37 +834,6 @@ impl ThinClient {
         self.send_cbor_request(request).await
     }
 
-    /// This method takes a message payload, a destination node,
-    /// destination queue ID and a message ID and reliably sends a message.
-    /// This uses a simple ARQ to resend the message if a reply wasn't received.
-    /// The given message ID will be used to identify the reply since a SURB ID
-    /// can only be used once. This method requires mixnet connectivity.
-    pub async fn send_reliable_message(
-	&self,
-	message_id: Vec<u8>,
-	payload: &[u8],
-	dest_node: Vec<u8>,
-	dest_queue: Vec<u8>
-    ) -> Result<(), ThinClientError> {
-        // Check if we're in offline mode
-        if !self.is_connected() {
-            return Err(ThinClientError::OfflineMode("cannot send reliable message in offline mode - daemon not connected to mixnet".to_string()));
-        }
-        // Create the SendARQMessage structure
-        let mut send_arq_message = BTreeMap::new();
-        send_arq_message.insert(Value::Text("id".to_string()), Value::Bytes(message_id));
-        send_arq_message.insert(Value::Text("with_surb".to_string()), Value::Bool(true));
-        send_arq_message.insert(Value::Text("surbid".to_string()), Value::Null); // ARQ messages don't use SURB IDs directly
-        send_arq_message.insert(Value::Text("destination_id_hash".to_string()), Value::Bytes(dest_node));
-        send_arq_message.insert(Value::Text("recipient_queue_id".to_string()), Value::Bytes(dest_queue));
-        send_arq_message.insert(Value::Text("payload".to_string()), Value::Bytes(payload.to_vec()));
-
-        // Wrap in the new Request structure
-        let mut request = BTreeMap::new();
-        request.insert(Value::Text("send_arq_message".to_string()), Value::Map(send_arq_message));
-
-        self.send_cbor_request(request).await
-    }
 }
 
 #[cfg(test)]

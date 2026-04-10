@@ -647,6 +647,7 @@ class ThinClient:
             RuntimeError: If the network type is not recognized or config is incomplete.
         """
         self.pki_doc : Dict[Any,Any] | None = None
+        self._pki_doc_cache : Dict[int, Dict[Any,Any]] = {}  # epoch -> parsed PKI doc
         self.config = config
         self.reply_received_event = asyncio.Event()
         self._is_connected : bool = False  # Track connection state
@@ -1056,6 +1057,29 @@ class ThinClient:
         """
         return self.pki_doc
 
+    def pki_document_for_epoch(self, epoch:int) -> "Dict[str,Any]":
+        """
+        Return the cached PKI document for a specific epoch.
+
+        Falls back to the current document if the requested epoch
+        is not cached. Raises if no document is available at all.
+
+        Args:
+            epoch (int): The epoch number.
+
+        Returns:
+            dict: Parsed PKI document for the given epoch.
+
+        Raises:
+            Exception: If no PKI document is available.
+        """
+        doc = self._pki_doc_cache.get(epoch)
+        if doc is not None:
+            return doc
+        if self.pki_doc is not None:
+            return self.pki_doc
+        raise Exception("no PKI document available for the requested epoch")
+
     def parse_pki_doc(self, event: "Dict[str,Any]") -> None:
         """
         Parse and store a new PKI document received from the daemon.
@@ -1065,6 +1089,18 @@ class ThinClient:
         assert event["payload"] is not None
         raw_pki_doc = cbor2.loads(event["payload"])
         self.pki_doc = raw_pki_doc
+
+        epoch = raw_pki_doc.get("Epoch")
+        if epoch is not None:
+            self._pki_doc_cache[epoch] = raw_pki_doc
+            self.logger.debug("Cached PKI document for epoch %d", epoch)
+            max_cached_epochs = 5
+            if len(self._pki_doc_cache) > max_cached_epochs:
+                oldest_epoch = epoch - max_cached_epochs
+                stale = [e for e in self._pki_doc_cache if e < oldest_epoch]
+                for e in stale:
+                    del self._pki_doc_cache[e]
+
         self.logger.debug("parse pki doc success")
 
     def get_services(self, capability:str) -> "List[ServiceDescriptor]":
@@ -1100,6 +1136,79 @@ class ThinClient:
         """
         service_descriptors = self.get_services(service_name)
         return random.choice(service_descriptors)
+
+    def get_all_couriers(self) -> "List[Tuple[bytes, bytes]]":
+        """
+        Return all available courier services from the current PKI document.
+
+        Returns:
+            list[tuple[bytes, bytes]]: List of (identity_hash, queue_id) tuples.
+
+        Raises:
+            Exception: If no couriers are available.
+        """
+        services = self.get_services("courier")
+        couriers = []
+        for svc in services:
+            identity_hash = blake2_256_sum(svc.mix_descriptor['IdentityKey'])
+            couriers.append((identity_hash, svc.recipient_queue_id))
+        return couriers
+
+    def get_distinct_couriers(self, n:int) -> "List[Tuple[bytes, bytes]]":
+        """
+        Return N distinct random couriers from the current PKI document.
+
+        Args:
+            n (int): Number of distinct couriers to return.
+
+        Returns:
+            list[tuple[bytes, bytes]]: List of (identity_hash, queue_id) tuples.
+
+        Raises:
+            Exception: If fewer than N couriers are available.
+        """
+        couriers = self.get_all_couriers()
+        if len(couriers) < n:
+            raise Exception("not enough couriers available")
+        return random.sample(couriers, n)
+
+    async def blocking_send_message(self, payload:bytes|str, dest_node:bytes, dest_queue:bytes, timeout_seconds:float=30.0) -> bytes:
+        """
+        Send a message and block until a reply is received or timeout.
+
+        Args:
+            payload (bytes or str): Message payload.
+            dest_node (bytes): Destination node identity hash.
+            dest_queue (bytes): Destination recipient queue ID.
+            timeout_seconds (float): Timeout in seconds (default 30).
+
+        Returns:
+            bytes: Reply payload from the destination service.
+
+        Raises:
+            ThinClientOfflineError: If in offline mode.
+            asyncio.TimeoutError: If no reply within timeout.
+        """
+        if not self._is_connected:
+            raise ThinClientOfflineError("cannot send message in offline mode - daemon not connected to mixnet")
+
+        surb_id = self.new_surb_id()
+        reply_future = asyncio.get_event_loop().create_future()
+
+        original_handler = self.config.on_message_reply
+
+        async def capture_reply(event):
+            if event.get("surbid") == surb_id and not reply_future.done():
+                reply_future.set_result(event.get("payload"))
+            if original_handler:
+                await original_handler(event)
+
+        self.config.on_message_reply = capture_reply
+        try:
+            await self.send_message(surb_id, payload, dest_node, dest_queue)
+            return await asyncio.wait_for(reply_future, timeout=timeout_seconds)
+        finally:
+            self.config.on_message_reply = original_handler
 
     @staticmethod
     def new_message_id() -> bytes:
