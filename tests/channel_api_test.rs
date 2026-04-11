@@ -16,7 +16,6 @@
 //! 10. create_courier_envelopes_from_multi_payload - Chunk multiple payloads efficiently
 //!
 //! Helper functions:
-//! - tombstone_box - Create a tombstone (empty payload with valid signature)
 //! - tombstone_range - Create tombstones for a range of boxes
 //!
 //! These tests require a running mixnet with client daemon for integration testing.
@@ -81,7 +80,7 @@ async fn test_alice_sends_bob_complete_workflow() {
 
     // Alice encrypts and sends a message
     let message = b"Hello Bob, this is Alice!";
-    let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+    let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
         alice_client
             .encrypt_write(message, &alice_write_cap, &first_index).await
             .expect("Failed to encrypt write");
@@ -213,7 +212,7 @@ async fn test_create_courier_envelopes_from_payload() {
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
     let mut temp_index = temp_first_index.clone();
     for (i, chunk) in copy_stream_result.envelopes.iter().enumerate() {
-        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
             alice_client
                 .encrypt_write(chunk, &temp_write_cap, &temp_index).await
                 .expect("Failed to encrypt chunk");
@@ -330,7 +329,7 @@ async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
     let mut temp_index = temp_first_index.clone();
     for (i, chunk) in result.envelopes.iter().enumerate() {
-        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
             alice_client
                 .encrypt_write(chunk, &temp_write_cap, &temp_index).await
                 .expect("Failed to encrypt chunk");
@@ -425,7 +424,7 @@ async fn test_tombstone_box() {
 
     // Step 1: Alice writes a message
     let message = b"Secret message that will be tombstoned";
-    let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+    let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
         alice
             .encrypt_write(message, &write_cap, &first_index).await
             .expect("Failed to encrypt write");
@@ -463,12 +462,14 @@ async fn test_tombstone_box() {
     assert_eq!(read_result.plaintext, message, "Message mismatch");
     println!("✓ Bob read message: {:?}", String::from_utf8_lossy(&read_result.plaintext));
 
-    // Step 3: Alice tombstones the box
-    let (tomb_ciphertext, tomb_env_desc, tomb_env_hash) = alice
-        .tombstone_box(&write_cap, &first_index).await
-        .expect("Failed to create tombstone");
+    // Step 3: Alice tombstones the box using tombstone_range with max_count=1
+    let tomb_result = alice
+        .tombstone_range(&write_cap, &first_index, 1).await;
+    assert!(tomb_result.error.is_none(), "tombstone_range failed: {:?}", tomb_result.error);
+    assert_eq!(tomb_result.envelopes.len(), 1, "Expected 1 tombstone envelope");
+    let tomb_env = &tomb_result.envelopes[0];
 
-    let tomb_env_hash_arr: [u8; 32] = tomb_env_hash.try_into()
+    let tomb_env_hash_arr: [u8; 32] = tomb_env.envelope_hash.clone().try_into()
         .expect("envelope_hash should be 32 bytes");
 
     alice.start_resending_encrypted_message(
@@ -476,8 +477,8 @@ async fn test_tombstone_box() {
         Some(&write_cap),
         None,
         None,  // reply_index is nil for tombstone writes
-        &tomb_env_desc,
-        &tomb_ciphertext,
+        &tomb_env.envelope_descriptor,
+        &tomb_env.message_ciphertext,
         &tomb_env_hash_arr
     ).await.expect("Failed to send tombstone");
     println!("✓ Alice tombstoned the box");
@@ -543,7 +544,7 @@ async fn test_tombstone_range() {
     println!("\n--- Writing {} messages ---", num_messages);
     for i in 0..num_messages {
         let message = format!("Message {} to be tombstoned", i + 1);
-        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
             alice_client
                 .encrypt_write(message.as_bytes(), &write_cap, &current_index).await
                 .expect("Failed to encrypt write");
@@ -713,7 +714,7 @@ async fn test_from_payload_multi_call() {
     // Write all temp stream elements to temp channel
     let mut temp_index = temp_first_index.clone();
     for (i, elem) in all_temp_elements.iter().enumerate() {
-        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
             alice_client.encrypt_write(elem, &temp_write_cap, &temp_index).await
                 .expect("Failed to encrypt chunk");
 
@@ -829,7 +830,7 @@ async fn test_from_multi_payload_multi_call() {
     all_elements.extend(result2.envelopes.clone());
     let mut temp_index = temp_first_index.clone();
     for (i, elem) in all_elements.iter().enumerate() {
-        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } =
+        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
             alice_client.encrypt_write(elem, &temp_write_cap, &temp_index).await
                 .expect("Failed to encrypt chunk");
 

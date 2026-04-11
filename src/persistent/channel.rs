@@ -8,7 +8,7 @@ use std::sync::Arc;
 use rand::RngCore;
 
 use crate::core::ThinClient;
-use crate::pigeonhole::{TombstoneRangeResult, EncryptReadResult, EncryptWriteResult, KeypairResult};
+use crate::pigeonhole::{TombstoneRangeResult, KeypairResult};
 use super::db::Database;
 use super::error::{PigeonholeDbError, Result};
 use super::models::{Channel as ChannelModel, ReadCapability, ReceivedMessage};
@@ -233,7 +233,7 @@ impl ChannelHandle {
             PigeonholeDbError::Other("Cannot write on a read-only channel".to_string())
         })?;
 
-        let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
+        let result = self
             .client
             .encrypt_write(plaintext, write_cap, box_index)
             .await?;
@@ -244,14 +244,13 @@ impl ChannelHandle {
                 Some(write_cap),
                 None,
                 Some(0),
-                &envelope_descriptor,
-                &message_ciphertext,
-                &envelope_hash,
+                &result.envelope_descriptor,
+                &result.message_ciphertext,
+                &result.envelope_hash,
             )
             .await?;
 
-        let next_index = self.client.next_message_box_index(box_index).await?;
-        Ok(next_index)
+        Ok(result.next_message_box_index)
     }
 
     /// Write a single box payload at a specific index, returning BoxAlreadyExists as error.
@@ -273,7 +272,7 @@ impl ChannelHandle {
             PigeonholeDbError::Other("Cannot write on a read-only channel".to_string())
         })?;
 
-        let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
+        let result = self
             .client
             .encrypt_write(plaintext, write_cap, box_index)
             .await?;
@@ -284,14 +283,13 @@ impl ChannelHandle {
                 Some(write_cap),
                 None,
                 Some(0),
-                &envelope_descriptor,
-                &message_ciphertext,
-                &envelope_hash,
+                &result.envelope_descriptor,
+                &result.message_ciphertext,
+                &result.envelope_hash,
             )
             .await?;
 
-        let next_index = self.client.next_message_box_index(box_index).await?;
-        Ok(next_index)
+        Ok(result.next_message_box_index)
     }
 
     /// Read a single box payload at a specific index (low-level).
@@ -309,7 +307,7 @@ impl ChannelHandle {
     /// # Errors
     /// Returns an error if the read operation fails.
     pub async fn read_box(&self, box_index: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        let EncryptReadResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
+        let encrypt_result = self
             .client
             .encrypt_read(&self.channel.read_cap, box_index)
             .await?;
@@ -321,14 +319,13 @@ impl ChannelHandle {
                 None,
                 Some(box_index),
                 Some(0),
-                &envelope_descriptor,
-                &message_ciphertext,
-                &envelope_hash,
+                &encrypt_result.envelope_descriptor,
+                &encrypt_result.message_ciphertext,
+                &encrypt_result.envelope_hash,
             )
             .await?;
 
-        let next_index = self.client.next_message_box_index(box_index).await?;
-        Ok((result.plaintext, next_index))
+        Ok((result.plaintext, encrypt_result.next_message_box_index))
     }
 
     /// Read a single box without automatic retries on BoxIDNotFound.
@@ -348,7 +345,7 @@ impl ChannelHandle {
     /// # Errors
     /// Returns `BoxIDNotFoundError` immediately if box doesn't exist.
     pub async fn read_box_no_retry(&self, box_index: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        let EncryptReadResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
+        let encrypt_result = self
             .client
             .encrypt_read(&self.channel.read_cap, box_index)
             .await?;
@@ -360,14 +357,13 @@ impl ChannelHandle {
                 None,
                 Some(box_index),
                 Some(0),
-                &envelope_descriptor,
-                &message_ciphertext,
-                &envelope_hash,
+                &encrypt_result.envelope_descriptor,
+                &encrypt_result.message_ciphertext,
+                &encrypt_result.envelope_hash,
             )
             .await?;
 
-        let next_index = self.client.next_message_box_index(box_index).await?;
-        Ok((result.plaintext, next_index))
+        Ok((result.plaintext, encrypt_result.next_message_box_index))
     }
 
     // ========================================================================
@@ -398,7 +394,7 @@ impl ChannelHandle {
             PigeonholeDbError::Other("Cannot send on a read-only channel".to_string())
         })?;
 
-        let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
+        let encrypt_result = self
             .client
             .encrypt_write(plaintext, write_cap, &self.channel.write_index)
             .await?;
@@ -406,9 +402,9 @@ impl ChannelHandle {
         let pending = self.db.create_pending_message(
             self.channel.id,
             plaintext,
-            &message_ciphertext,
-            &envelope_descriptor,
-            &envelope_hash,
+            &encrypt_result.message_ciphertext,
+            &encrypt_result.envelope_descriptor,
+            &encrypt_result.envelope_hash,
             &self.channel.write_index,
         )?;
 
@@ -421,15 +417,15 @@ impl ChannelHandle {
                 Some(write_cap),
                 None,
                 Some(0),
-                &envelope_descriptor,
-                &message_ciphertext,
-                &envelope_hash,
+                &encrypt_result.envelope_descriptor,
+                &encrypt_result.message_ciphertext,
+                &encrypt_result.envelope_hash,
             )
             .await;
 
         match result {
             Ok(_) => {
-                let next_index = self.client.next_message_box_index(&self.channel.write_index).await?;
+                let next_index = encrypt_result.next_message_box_index;
                 self.db.update_write_index(self.channel.id, &next_index)?;
                 self.db.delete_pending_message(pending.id)?;
                 self.channel.write_index = next_index;
@@ -457,7 +453,7 @@ impl ChannelHandle {
             PigeonholeDbError::Other("Cannot send on a read-only channel".to_string())
         })?;
 
-        let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
+        let encrypt_result = self
             .client
             .encrypt_write(plaintext, write_cap, &self.channel.write_index)
             .await?;
@@ -465,9 +461,9 @@ impl ChannelHandle {
         let pending = self.db.create_pending_message(
             self.channel.id,
             plaintext,
-            &message_ciphertext,
-            &envelope_descriptor,
-            &envelope_hash,
+            &encrypt_result.message_ciphertext,
+            &encrypt_result.envelope_descriptor,
+            &encrypt_result.envelope_hash,
             &self.channel.write_index,
         )?;
 
@@ -480,15 +476,15 @@ impl ChannelHandle {
                 Some(write_cap),
                 None,
                 Some(0),
-                &envelope_descriptor,
-                &message_ciphertext,
-                &envelope_hash,
+                &encrypt_result.envelope_descriptor,
+                &encrypt_result.message_ciphertext,
+                &encrypt_result.envelope_hash,
             )
             .await;
 
         match result {
             Ok(_) => {
-                let next_index = self.client.next_message_box_index(&self.channel.write_index).await?;
+                let next_index = encrypt_result.next_message_box_index;
                 self.db.update_write_index(self.channel.id, &next_index)?;
                 self.db.delete_pending_message(pending.id)?;
                 self.channel.write_index = next_index;
@@ -512,7 +508,7 @@ impl ChannelHandle {
     /// # Errors
     /// Returns an error if the read operation fails.
     pub async fn receive(&mut self) -> Result<Vec<u8>> {
-        let EncryptReadResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
+        let encrypt_result = self
             .client
             .encrypt_read(&self.channel.read_cap, &self.channel.read_index)
             .await?;
@@ -524,9 +520,9 @@ impl ChannelHandle {
                 None,
                 Some(&self.channel.read_index.clone()),
                 Some(0),
-                &envelope_descriptor,
-                &message_ciphertext,
-                &envelope_hash,
+                &encrypt_result.envelope_descriptor,
+                &encrypt_result.message_ciphertext,
+                &encrypt_result.envelope_hash,
             )
             .await?;
 
@@ -536,7 +532,7 @@ impl ChannelHandle {
             &self.channel.read_index,
         )?;
 
-        let next_index = self.client.next_message_box_index(&self.channel.read_index).await?;
+        let next_index = encrypt_result.next_message_box_index;
         self.db.update_read_index(self.channel.id, &next_index)?;
         self.channel.read_index = next_index;
 
@@ -557,7 +553,7 @@ impl ChannelHandle {
     /// # Errors
     /// Returns `BoxIDNotFoundError` immediately if no message exists.
     pub async fn receive_no_retry(&mut self) -> Result<Vec<u8>> {
-        let EncryptReadResult { message_ciphertext, envelope_descriptor, envelope_hash } = self
+        let encrypt_result = self
             .client
             .encrypt_read(&self.channel.read_cap, &self.channel.read_index)
             .await?;
@@ -569,9 +565,9 @@ impl ChannelHandle {
                 None,
                 Some(&self.channel.read_index.clone()),
                 Some(0),
-                &envelope_descriptor,
-                &message_ciphertext,
-                &envelope_hash,
+                &encrypt_result.envelope_descriptor,
+                &encrypt_result.message_ciphertext,
+                &encrypt_result.envelope_hash,
             )
             .await?;
 
@@ -581,7 +577,7 @@ impl ChannelHandle {
             &self.channel.read_index,
         )?;
 
-        let next_index = self.client.next_message_box_index(&self.channel.read_index).await?;
+        let next_index = encrypt_result.next_message_box_index;
         self.db.update_read_index(self.channel.id, &next_index)?;
         self.channel.read_index = next_index;
 
@@ -619,14 +615,11 @@ impl ChannelHandle {
             PigeonholeDbError::Other("Cannot tombstone on a read-only channel".to_string())
         })?;
 
-        // Create and send the tombstone
-        let (ciphertext, env_desc, env_hash) = self
+        // Create and send the tombstone (empty plaintext)
+        let encrypt_result = self
             .client
-            .tombstone_box(write_cap, &self.channel.write_index)
+            .encrypt_write(&[], write_cap, &self.channel.write_index)
             .await?;
-
-        let mut hash_arr = [0u8; 32];
-        hash_arr.copy_from_slice(&env_hash);
 
         self.client
             .start_resending_encrypted_message(
@@ -634,14 +627,14 @@ impl ChannelHandle {
                 Some(write_cap),
                 None,
                 None, // No reply expected for tombstone
-                &env_desc,
-                &ciphertext,
-                &hash_arr,
+                &encrypt_result.envelope_descriptor,
+                &encrypt_result.message_ciphertext,
+                &encrypt_result.envelope_hash,
             )
             .await?;
 
         // Update write index
-        let next_index = self.client.next_message_box_index(&self.channel.write_index).await?;
+        let next_index = encrypt_result.next_message_box_index;
         self.db.update_write_index(self.channel.id, &next_index)?;
         self.channel.write_index = next_index;
 
@@ -724,14 +717,11 @@ impl ChannelHandle {
             PigeonholeDbError::Other("Cannot tombstone on a read-only channel".to_string())
         })?;
 
-        // Create and send the tombstone
-        let (ciphertext, env_desc, env_hash) = self
+        // Create and send the tombstone (empty plaintext)
+        let encrypt_result = self
             .client
-            .tombstone_box(write_cap, box_index)
+            .encrypt_write(&[], write_cap, box_index)
             .await?;
-
-        let mut hash_arr = [0u8; 32];
-        hash_arr.copy_from_slice(&env_hash);
 
         self.client
             .start_resending_encrypted_message(
@@ -739,9 +729,9 @@ impl ChannelHandle {
                 Some(write_cap),
                 None,
                 None, // No reply expected for tombstone
-                &env_desc,
-                &ciphertext,
-                &hash_arr,
+                &encrypt_result.envelope_descriptor,
+                &encrypt_result.message_ciphertext,
+                &encrypt_result.envelope_hash,
             )
             .await?;
 
@@ -963,7 +953,7 @@ impl CopyStreamBuilder {
         let chunk_count = result.envelopes.len();
 
         for chunk in result.envelopes {
-            let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } = self
+            let encrypt_result = self
                 .client
                 .encrypt_write(&chunk, &self.temp_write_cap, &self.temp_index)
                 .await?;
@@ -974,13 +964,13 @@ impl CopyStreamBuilder {
                     Some(&self.temp_write_cap),
                     None,
                     Some(0),
-                    &env_desc,
-                    &ciphertext,
-                    &env_hash,
+                    &encrypt_result.envelope_descriptor,
+                    &encrypt_result.message_ciphertext,
+                    &encrypt_result.envelope_hash,
                 )
                 .await?;
 
-            self.temp_index = self.client.next_message_box_index(&self.temp_index).await?;
+            self.temp_index = encrypt_result.next_message_box_index;
         }
 
         self.total_boxes += chunk_count;
@@ -1020,7 +1010,7 @@ impl CopyStreamBuilder {
         self.buffer = result.buffer;
 
         for chunk in result.envelopes {
-            let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash } = self
+            let encrypt_result = self
                 .client
                 .encrypt_write(&chunk, &self.temp_write_cap, &self.temp_index)
                 .await?;
@@ -1031,13 +1021,13 @@ impl CopyStreamBuilder {
                     Some(&self.temp_write_cap),
                     None,
                     Some(0),
-                    &env_desc,
-                    &ciphertext,
-                    &env_hash,
+                    &encrypt_result.envelope_descriptor,
+                    &encrypt_result.message_ciphertext,
+                    &encrypt_result.envelope_hash,
                 )
                 .await?;
 
-            self.temp_index = self.client.next_message_box_index(&self.temp_index).await?;
+            self.temp_index = encrypt_result.next_message_box_index;
         }
 
         self.total_boxes += chunk_count;

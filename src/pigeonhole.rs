@@ -92,6 +92,8 @@ struct EncryptReadReply {
     envelope_descriptor: Option<Vec<u8>>,
     #[serde(default, with = "optional_bytes")]
     envelope_hash: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    next_message_box_index: Option<Vec<u8>>,
     #[serde(default)]
     error_code: u8,
 }
@@ -120,6 +122,8 @@ struct EncryptWriteReply {
     envelope_descriptor: Option<Vec<u8>>,
     #[serde(default, with = "optional_bytes")]
     envelope_hash: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    next_message_box_index: Option<Vec<u8>>,
     #[serde(default)]
     error_code: u8,
 }
@@ -134,7 +138,7 @@ struct StartResendingEncryptedMessageRequest {
     #[serde(skip_serializing_if = "Option::is_none", with = "optional_bytes")]
     write_cap: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none", with = "optional_bytes")]
-    next_message_index: Option<Vec<u8>>,
+    message_box_index: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reply_index: Option<u8>,
     #[serde(with = "serde_bytes")]
@@ -354,6 +358,7 @@ pub struct EncryptReadResult {
     pub message_ciphertext: Vec<u8>,
     pub envelope_descriptor: Vec<u8>,
     pub envelope_hash: [u8; 32],
+    pub next_message_box_index: Vec<u8>,
 }
 
 /// Result from encrypt_write containing the encrypted write request.
@@ -362,6 +367,7 @@ pub struct EncryptWriteResult {
     pub message_ciphertext: Vec<u8>,
     pub envelope_descriptor: Vec<u8>,
     pub envelope_hash: [u8; 32],
+    pub next_message_box_index: Vec<u8>,
 }
 
 /// Result of creating courier envelopes.
@@ -471,6 +477,7 @@ impl ThinClient {
         let message_ciphertext = reply.message_ciphertext.ok_or_else(|| ThinClientError::Other("encrypt_read: message_ciphertext is None".to_string()))?;
         let envelope_descriptor = reply.envelope_descriptor.ok_or_else(|| ThinClientError::Other("encrypt_read: envelope_descriptor is None".to_string()))?;
         let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_read: envelope_hash is None".to_string()))?;
+        let next_message_box_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("encrypt_read: next_message_box_index is None".to_string()))?;
 
         let mut envelope_hash = [0u8; 32];
         envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
@@ -479,6 +486,7 @@ impl ThinClient {
             message_ciphertext,
             envelope_descriptor,
             envelope_hash,
+            next_message_box_index,
         })
     }
 
@@ -538,6 +546,7 @@ impl ThinClient {
         let message_ciphertext = reply.message_ciphertext.ok_or_else(|| ThinClientError::Other("encrypt_write: message_ciphertext is None".to_string()))?;
         let envelope_descriptor = reply.envelope_descriptor.ok_or_else(|| ThinClientError::Other("encrypt_write: envelope_descriptor is None".to_string()))?;
         let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_write: envelope_hash is None".to_string()))?;
+        let next_message_box_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("encrypt_write: next_message_box_index is None".to_string()))?;
 
         let mut envelope_hash = [0u8; 32];
         envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
@@ -546,6 +555,7 @@ impl ThinClient {
             message_ciphertext,
             envelope_descriptor,
             envelope_hash,
+            next_message_box_index,
         })
     }
 
@@ -570,7 +580,7 @@ impl ThinClient {
     /// # Arguments
     /// * `read_cap` - Optional read capability (for read operations)
     /// * `write_cap` - Optional write capability (for write operations)
-    /// * `next_message_index` - Optional next message index (for read operations)
+    /// * `message_box_index` - Current message box index being operated on (for read operations)
     /// * `reply_index` - Reply index for the operation (None for tombstone writes)
     /// * `envelope_descriptor` - Envelope descriptor from encrypt_read/encrypt_write
     /// * `message_ciphertext` - Encrypted message from encrypt_read/encrypt_write
@@ -585,7 +595,7 @@ impl ThinClient {
         &self,
         read_cap: Option<&[u8]>,
         write_cap: Option<&[u8]>,
-        next_message_index: Option<&[u8]>,
+        message_box_index: Option<&[u8]>,
         reply_index: Option<u8>,
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
@@ -594,7 +604,7 @@ impl ThinClient {
         self.start_resending_encrypted_message_with_options(
             read_cap,
             write_cap,
-            next_message_index,
+            message_box_index,
             reply_index,
             envelope_descriptor,
             message_ciphertext,
@@ -620,7 +630,7 @@ impl ThinClient {
         &self,
         read_cap: Option<&[u8]>,
         write_cap: Option<&[u8]>,
-        next_message_index: Option<&[u8]>,
+        message_box_index: Option<&[u8]>,
         reply_index: Option<u8>,
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
@@ -629,7 +639,7 @@ impl ThinClient {
         self.start_resending_encrypted_message_with_options(
             read_cap,
             write_cap,
-            next_message_index,
+            message_box_index,
             reply_index,
             envelope_descriptor,
             message_ciphertext,
@@ -655,7 +665,7 @@ impl ThinClient {
         &self,
         read_cap: Option<&[u8]>,
         write_cap: Option<&[u8]>,
-        next_message_index: Option<&[u8]>,
+        message_box_index: Option<&[u8]>,
         reply_index: Option<u8>,
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
@@ -664,7 +674,7 @@ impl ThinClient {
         self.start_resending_encrypted_message_with_options(
             read_cap,
             write_cap,
-            next_message_index,
+            message_box_index,
             reply_index,
             envelope_descriptor,
             message_ciphertext,
@@ -679,7 +689,7 @@ impl ThinClient {
         &self,
         read_cap: Option<&[u8]>,
         write_cap: Option<&[u8]>,
-        next_message_index: Option<&[u8]>,
+        message_box_index: Option<&[u8]>,
         reply_index: Option<u8>,
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
@@ -693,7 +703,7 @@ impl ThinClient {
             query_id: query_id.clone(),
             read_cap: read_cap.map(|rc| rc.to_vec()),
             write_cap: write_cap.map(|wc| wc.to_vec()),
-            next_message_index: next_message_index.map(|nmi| nmi.to_vec()),
+            message_box_index: message_box_index.map(|mbi| mbi.to_vec()),
             reply_index,
             envelope_descriptor: envelope_descriptor.to_vec(),
             message_ciphertext: message_ciphertext.to_vec(),
@@ -1149,43 +1159,6 @@ impl ThinClient {
         Ok(())
     }
 
-    /// Create an encrypted tombstone for a single pigeonhole box.
-    ///
-    /// This method creates an encrypted zero-filled payload for overwriting
-    /// the specified box. The caller must send the returned values via
-    /// start_resending_encrypted_message to complete the tombstone operation.
-    ///
-    /// # Arguments
-    /// * `geometry` - Pigeonhole geometry defining payload size
-    /// * `write_cap` - Write capability for the box
-    /// * `box_index` - Index of the box to tombstone
-    ///
-    /// # Returns
-    /// * `Ok((ciphertext, envelope_descriptor, envelope_hash))` on success
-    /// * `Err(ThinClientError)` on failure
-    /// Create a tombstone for a single pigeonhole box.
-    ///
-    /// This method creates a tombstone (empty payload with signature) for deleting
-    /// the specified box. The caller must send the returned values via
-    /// `start_resending_encrypted_message` to complete the tombstone operation.
-    ///
-    /// # Arguments
-    /// * `write_cap` - Write capability for the box
-    /// * `box_index` - Index of the box to tombstone
-    ///
-    /// # Returns
-    /// * `Ok((ciphertext, envelope_descriptor, envelope_hash))` on success
-    /// * `Err(ThinClientError)` on failure
-    pub async fn tombstone_box(
-        &self,
-        write_cap: &[u8],
-        box_index: &[u8]
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ThinClientError> {
-        // Tombstones are created by sending an empty plaintext to encrypt_write
-        // The daemon will detect this and sign an empty payload instead of encrypting
-        let result = self.encrypt_write(&[], write_cap, box_index).await?;
-        Ok((result.message_ciphertext, result.envelope_descriptor, result.envelope_hash.to_vec()))
-    }
 }
 
 /// A single tombstone envelope ready to be sent.
@@ -1248,14 +1221,15 @@ impl ThinClient {
         let mut envelopes: Vec<TombstoneEnvelope> = Vec::with_capacity(max_count as usize);
 
         while (envelopes.len() as u32) < max_count {
-            match self.tombstone_box(write_cap, &cur).await {
-                Ok((ciphertext, env_desc, env_hash)) => {
+            match self.encrypt_write(&[], write_cap, &cur).await {
+                Ok(result) => {
                     envelopes.push(TombstoneEnvelope {
-                        message_ciphertext: ciphertext,
-                        envelope_descriptor: env_desc,
-                        envelope_hash: env_hash,
+                        message_ciphertext: result.message_ciphertext,
+                        envelope_descriptor: result.envelope_descriptor,
+                        envelope_hash: result.envelope_hash.to_vec(),
                         box_index: cur.clone(),
                     });
+                    cur = result.next_message_box_index;
                 }
                 Err(e) => {
                     let count = envelopes.len();
@@ -1263,17 +1237,6 @@ impl ThinClient {
                         envelopes,
                         next: cur,
                         error: Some(format!("Error creating tombstone at index {}: {:?}", count, e)),
-                    };
-                }
-            }
-
-            match self.next_message_box_index(&cur).await {
-                Ok(next) => cur = next,
-                Err(e) => {
-                    return TombstoneRangeResult {
-                        envelopes,
-                        next: cur,
-                        error: Some(format!("Error getting next index after creating tombstone: {:?}", e)),
                     };
                 }
             }
