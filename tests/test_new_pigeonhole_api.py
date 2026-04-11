@@ -96,7 +96,7 @@ async def test_alice_sends_bob_complete_workflow():
         alice_plaintext = (await alice_client.start_resending_encrypted_message(
             read_cap=None,  # None for write operations
             write_cap=alice_keypair.write_cap,
-            next_message_index=None,  # Not needed for writes
+            message_box_index=None,  # Not needed for writes
             reply_index=reply_index,
             envelope_descriptor=alice_result.envelope_descriptor,
             message_ciphertext=alice_result.message_ciphertext,
@@ -122,7 +122,7 @@ async def test_alice_sends_bob_complete_workflow():
         bob_plaintext = (await bob_client.start_resending_encrypted_message(
             read_cap=alice_keypair.read_cap,
             write_cap=None,  # None for read operations
-            next_message_index=alice_keypair.first_message_index,
+            message_box_index=alice_keypair.first_message_index,
             reply_index=reply_index,
             envelope_descriptor=bob_result.envelope_descriptor,
             message_ciphertext=bob_result.message_ciphertext,
@@ -191,7 +191,7 @@ async def test_multiple_messages_sequence():
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
                 write_cap=alice_keypair.write_cap,
-                next_message_index=None,
+                message_box_index=None,
                 reply_index=0,
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
@@ -212,7 +212,7 @@ async def test_multiple_messages_sequence():
             bob_plaintext = (await bob_client.start_resending_encrypted_message(
                 read_cap=alice_keypair.read_cap,
                 write_cap=None,
-                next_message_index=bob_current_index,
+                message_box_index=bob_current_index,
                 reply_index=0,
                 envelope_descriptor=read_result.envelope_descriptor,
                 message_ciphertext=read_result.message_ciphertext,
@@ -225,10 +225,10 @@ async def test_multiple_messages_sequence():
             assert bob_plaintext == message, f"Message {i+1} mismatch: expected {message}, got {bob_plaintext}"
             print(f"Message {i+1} verified successfully!")
 
-            # Advance state for next message
+            # Advance state for next message using next_message_box_index from results
             print("Advancing state for next message")
-            alice_current_index = await alice_client.next_message_box_index(alice_current_index)
-            bob_current_index = await bob_client.next_message_box_index(bob_current_index)
+            alice_current_index = write_result.next_message_box_index
+            bob_current_index = read_result.next_message_box_index
 
         print(f"\n✅ All {num_messages} messages sent and verified successfully!")
 
@@ -276,14 +276,14 @@ async def test_multiple_messages_bulk():
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
                 write_cap=alice_keypair.write_cap,
-                next_message_index=None,
+                message_box_index=None,
                 reply_index=0,
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash
             )
             print(f"✓ Alice sent message {i+1}")
-            alice_current_index = await alice_client.next_message_box_index(alice_current_index)
+            alice_current_index = write_result.next_message_box_index
 
         # Wait for propagation
         print("\nWaiting for message propagation (30 seconds)")
@@ -299,7 +299,7 @@ async def test_multiple_messages_bulk():
             bob_plaintext = (await bob_client.start_resending_encrypted_message(
                 read_cap=alice_keypair.read_cap,
                 write_cap=None,
-                next_message_index=bob_current_index,
+                message_box_index=bob_current_index,
                 reply_index=0,
                 envelope_descriptor=read_result.envelope_descriptor,
                 message_ciphertext=read_result.message_ciphertext,
@@ -309,7 +309,7 @@ async def test_multiple_messages_bulk():
             print(f"Bob: Received message {i+1}: {bob_plaintext.decode() if bob_plaintext else '(empty)'}")
             assert bob_plaintext == messages[i], f"Message {i+1} mismatch: expected {messages[i]}, got {bob_plaintext}"
             print(f"✓ Message {i+1} verified!")
-            bob_current_index = await bob_client.next_message_box_index(bob_current_index)
+            bob_current_index = read_result.next_message_box_index
 
         print(f"\n✅ All {num_messages} messages sent in bulk and verified successfully!")
 
@@ -389,7 +389,7 @@ async def test_create_courier_envelopes_from_payload():
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
                 write_cap=temp_keypair.write_cap,
-                next_message_index=None,
+                message_box_index=None,
                 reply_index=0,
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
@@ -430,7 +430,7 @@ async def test_create_courier_envelopes_from_payload():
             bob_plaintext = (await bob_client.start_resending_encrypted_message(
                 read_cap=dest_keypair.read_cap,
                 write_cap=None,
-                next_message_index=bob_index,
+                message_box_index=bob_index,
                 reply_index=0,
                 envelope_descriptor=read_result.envelope_descriptor,
                 message_ciphertext=read_result.message_ciphertext,
@@ -552,7 +552,7 @@ async def test_copy_command_multi_channel():
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
                 write_cap=temp_keypair.write_cap,
-                next_message_index=None,
+                message_box_index=None,
                 reply_index=0,
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
@@ -585,7 +585,7 @@ async def test_copy_command_multi_channel():
         bob1_plaintext = (await bob_client.start_resending_encrypted_message(
             read_cap=chan1_keypair.read_cap,
             write_cap=None,
-            next_message_index=chan1_keypair.first_message_index,
+            message_box_index=chan1_keypair.first_message_index,
             reply_index=0,
             envelope_descriptor=bob1_read_result.envelope_descriptor,
             message_ciphertext=bob1_read_result.message_ciphertext,
@@ -608,7 +608,7 @@ async def test_copy_command_multi_channel():
         bob2_plaintext = (await bob_client.start_resending_encrypted_message(
             read_cap=chan2_keypair.read_cap,
             write_cap=None,
-            next_message_index=chan2_keypair.first_message_index,
+            message_box_index=chan2_keypair.first_message_index,
             reply_index=0,
             envelope_descriptor=bob2_read_result.envelope_descriptor,
             message_ciphertext=bob2_read_result.message_ciphertext,
@@ -718,7 +718,7 @@ async def test_copy_command_multi_channel_efficient():
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
                 write_cap=temp_keypair.write_cap,
-                next_message_index=None,
+                message_box_index=None,
                 reply_index=0,
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
@@ -750,7 +750,7 @@ async def test_copy_command_multi_channel_efficient():
         bob1_plaintext = (await bob_client.start_resending_encrypted_message(
             read_cap=chan1_keypair.read_cap,
             write_cap=None,
-            next_message_index=chan1_keypair.first_message_index,
+            message_box_index=chan1_keypair.first_message_index,
             reply_index=0,
             envelope_descriptor=bob1_read_result.envelope_descriptor,
             message_ciphertext=bob1_read_result.message_ciphertext,
@@ -770,7 +770,7 @@ async def test_copy_command_multi_channel_efficient():
         bob2_plaintext = (await bob_client.start_resending_encrypted_message(
             read_cap=chan2_keypair.read_cap,
             write_cap=None,
-            next_message_index=chan2_keypair.first_message_index,
+            message_box_index=chan2_keypair.first_message_index,
             reply_index=0,
             envelope_descriptor=bob2_read_result.envelope_descriptor,
             message_ciphertext=bob2_read_result.message_ciphertext,
@@ -823,7 +823,7 @@ async def test_tombstoning():
         await alice_client.start_resending_encrypted_message(
             read_cap=None,
             write_cap=keypair.write_cap,
-            next_message_index=None,
+            message_box_index=None,
             reply_index=0,
             envelope_descriptor=write_result.envelope_descriptor,
             message_ciphertext=write_result.message_ciphertext,
@@ -843,7 +843,7 @@ async def test_tombstoning():
         bob_plaintext = (await bob_client.start_resending_encrypted_message(
             read_cap=keypair.read_cap,
             write_cap=None,
-            next_message_index=keypair.first_message_index,
+            message_box_index=keypair.first_message_index,
             reply_index=0,
             envelope_descriptor=read_result.envelope_descriptor,
             message_ciphertext=read_result.message_ciphertext,
@@ -852,19 +852,21 @@ async def test_tombstoning():
         assert bob_plaintext == message, f"Message mismatch: expected {message}, got {bob_plaintext}"
         print(f"✓ Bob read message: {bob_plaintext.decode()}")
 
-        # Step 3: Alice tombstones the box
+        # Step 3: Alice tombstones the box using tombstone_range with max_count=1
         print("\n--- Step 3: Alice tombstones the box ---")
-        tomb_result = await alice_client.tombstone_box(
-            keypair.write_cap, keypair.first_message_index
+        tomb_range_result = await alice_client.tombstone_range(
+            keypair.write_cap, keypair.first_message_index, 1
         )
+        assert len(tomb_range_result.envelopes) == 1, "Expected 1 tombstone envelope"
+        tomb_env = tomb_range_result.envelopes[0]
         await alice_client.start_resending_encrypted_message(
             read_cap=None,
             write_cap=keypair.write_cap,
-            next_message_index=None,
+            message_box_index=None,
             reply_index=None,
-            envelope_descriptor=tomb_result.envelope_descriptor,
-            message_ciphertext=tomb_result.message_ciphertext,
-            envelope_hash=tomb_result.envelope_hash
+            envelope_descriptor=tomb_env.envelope_descriptor,
+            message_ciphertext=tomb_env.message_ciphertext,
+            envelope_hash=tomb_env.envelope_hash
         )
         print("✓ Alice tombstoned the box")
 
@@ -886,7 +888,7 @@ async def test_tombstoning():
                 await bob_client.start_resending_encrypted_message(
                     read_cap=keypair.read_cap,
                     write_cap=None,
-                    next_message_index=keypair.first_message_index,
+                    message_box_index=keypair.first_message_index,
                     reply_index=0,
                     envelope_descriptor=read_result2.envelope_descriptor,
                     message_ciphertext=read_result2.message_ciphertext,
@@ -949,7 +951,7 @@ async def test_tombstone_range():
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
                 write_cap=keypair.write_cap,
-                next_message_index=None,
+                message_box_index=None,
                 reply_index=0,
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
@@ -971,7 +973,7 @@ async def test_tombstone_range():
             bob_result = (await bob_client.start_resending_encrypted_message(
                 read_cap=keypair.read_cap,
                 write_cap=None,
-                next_message_index=read_idx,
+                message_box_index=read_idx,
                 reply_index=0,
                 envelope_descriptor=read_result.envelope_descriptor,
                 message_ciphertext=read_result.message_ciphertext,
@@ -985,20 +987,20 @@ async def test_tombstone_range():
         print(f"\n--- Creating tombstones for {num_messages} boxes ---")
         result = await alice_client.tombstone_range(keypair.write_cap, keypair.first_message_index, num_messages)
 
-        assert 'envelopes' in result, "Result should contain 'envelopes' list"
-        assert len(result['envelopes']) == num_messages, f"Expected {num_messages} envelopes, got {len(result['envelopes'])}"
-        print(f"✓ TombstoneRange created {len(result['envelopes'])} envelopes")
+        assert len(result.envelopes) == num_messages, f"Expected {num_messages} envelopes, got {len(result.envelopes)}"
+        assert result.next is not None, "Result should contain 'next' index"
+        print(f"✓ TombstoneRange created {len(result.envelopes)} envelopes")
 
         # Send all tombstone envelopes
-        for i, envelope in enumerate(result['envelopes']):
+        for i, envelope in enumerate(result.envelopes):
             await alice_client.start_resending_encrypted_message(
                 read_cap=None,
                 write_cap=keypair.write_cap,
-                next_message_index=None,
+                message_box_index=None,
                 reply_index=None,
-                envelope_descriptor=envelope['envelope_descriptor'],
-                message_ciphertext=envelope['message_ciphertext'],
-                envelope_hash=envelope['envelope_hash']
+                envelope_descriptor=envelope.envelope_descriptor,
+                message_ciphertext=envelope.message_ciphertext,
+                envelope_hash=envelope.envelope_hash
             )
             print(f"✓ Sent tombstone envelope {i+1}")
 
@@ -1016,7 +1018,7 @@ async def test_tombstone_range():
                 await bob_client.start_resending_encrypted_message(
                     read_cap=keypair.read_cap,
                     write_cap=None,
-                    next_message_index=read_idx,
+                    message_box_index=read_idx,
                     reply_index=0,
                     envelope_descriptor=read_result.envelope_descriptor,
                     message_ciphertext=read_result.message_ciphertext,
@@ -1072,7 +1074,7 @@ async def test_box_id_not_found_error():
             await client.start_resending_encrypted_message_no_retry(
                 read_cap=keypair.read_cap,
                 write_cap=None,
-                next_message_index=keypair.first_message_index,
+                message_box_index=keypair.first_message_index,
                 reply_index=0,
                 envelope_descriptor=read_result.envelope_descriptor,
                 message_ciphertext=read_result.message_ciphertext,
@@ -1125,7 +1127,7 @@ async def test_box_already_exists_error():
         await client.start_resending_encrypted_message(
             read_cap=None,
             write_cap=keypair.write_cap,
-            next_message_index=None,
+            message_box_index=None,
             reply_index=None,
             envelope_descriptor=write_result1.envelope_descriptor,
             message_ciphertext=write_result1.message_ciphertext,
@@ -1152,7 +1154,7 @@ async def test_box_already_exists_error():
             await client.start_resending_encrypted_message_return_box_exists(
                 read_cap=None,
                 write_cap=keypair.write_cap,
-                next_message_index=None,
+                message_box_index=None,
                 reply_index=None,
                 envelope_descriptor=write_result2.envelope_descriptor,
                 message_ciphertext=write_result2.message_ciphertext,
@@ -1206,7 +1208,7 @@ async def test_read_before_write():
             result = await bob_client.start_resending_encrypted_message(
                 read_cap=alice_keypair.read_cap,
                 write_cap=None,
-                next_message_index=alice_keypair.first_message_index,
+                message_box_index=alice_keypair.first_message_index,
                 reply_index=0,
                 envelope_descriptor=read_result.envelope_descriptor,
                 message_ciphertext=read_result.message_ciphertext,
@@ -1231,7 +1233,7 @@ async def test_read_before_write():
         await alice_client.start_resending_encrypted_message(
             read_cap=None,
             write_cap=alice_keypair.write_cap,
-            next_message_index=None,
+            message_box_index=None,
             reply_index=0,
             envelope_descriptor=write_result.envelope_descriptor,
             message_ciphertext=write_result.message_ciphertext,
@@ -1284,7 +1286,7 @@ async def test_copy_onto_already_existing_box_error():
         await client.start_resending_encrypted_message(
             read_cap=None,
             write_cap=keypair.write_cap,
-            next_message_index=None,
+            message_box_index=None,
             reply_index=None,
             envelope_descriptor=write_result1.envelope_descriptor,
             message_ciphertext=write_result1.message_ciphertext,
@@ -1323,7 +1325,7 @@ async def test_copy_onto_already_existing_box_error():
             await client.start_resending_encrypted_message(
                 read_cap=None,
                 write_cap=temp_keypair.write_cap,
-                next_message_index=None,
+                message_box_index=None,
                 reply_index=0,
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
@@ -1414,7 +1416,7 @@ async def test_from_payload_multi_call():
                 elem, temp_keypair.write_cap, temp_index)
             await alice_client.start_resending_encrypted_message(
                 read_cap=None, write_cap=temp_keypair.write_cap,
-                next_message_index=None, reply_index=0,
+                message_box_index=None, reply_index=0,
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash)
@@ -1435,7 +1437,7 @@ async def test_from_payload_multi_call():
             read_result = await bob_client.encrypt_read(dest_keypair.read_cap, bob_index)
             msg_result = await bob_client.start_resending_encrypted_message(
                 read_cap=dest_keypair.read_cap, write_cap=None,
-                next_message_index=bob_index, reply_index=0,
+                message_box_index=bob_index, reply_index=0,
                 envelope_descriptor=read_result.envelope_descriptor,
                 message_ciphertext=read_result.message_ciphertext,
                 envelope_hash=read_result.envelope_hash)
@@ -1516,7 +1518,7 @@ async def test_from_multi_payload_multi_call():
                 elem, temp_keypair.write_cap, temp_index)
             await alice_client.start_resending_encrypted_message(
                 read_cap=None, write_cap=temp_keypair.write_cap,
-                next_message_index=None, reply_index=0,
+                message_box_index=None, reply_index=0,
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash)
@@ -1538,7 +1540,7 @@ async def test_from_multi_payload_multi_call():
             read_result = await bob_client.encrypt_read(chan1_keypair.read_cap, bob_index)
             msg_result = await bob_client.start_resending_encrypted_message(
                 read_cap=chan1_keypair.read_cap, write_cap=None,
-                next_message_index=bob_index, reply_index=0,
+                message_box_index=bob_index, reply_index=0,
                 envelope_descriptor=read_result.envelope_descriptor,
                 message_ciphertext=read_result.message_ciphertext,
                 envelope_hash=read_result.envelope_hash)
@@ -1556,7 +1558,7 @@ async def test_from_multi_payload_multi_call():
             read_result = await bob_client.encrypt_read(chan2_keypair.read_cap, bob_index)
             msg_result = await bob_client.start_resending_encrypted_message(
                 read_cap=chan2_keypair.read_cap, write_cap=None,
-                next_message_index=bob_index, reply_index=0,
+                message_box_index=bob_index, reply_index=0,
                 envelope_descriptor=read_result.envelope_descriptor,
                 message_ciphertext=read_result.message_ciphertext,
                 envelope_hash=read_result.envelope_hash)

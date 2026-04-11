@@ -38,6 +38,7 @@ class EncryptReadResult:
     message_ciphertext: bytes
     envelope_descriptor: bytes
     envelope_hash: bytes
+    next_message_box_index: bytes
 
 
 @dataclass
@@ -46,6 +47,7 @@ class EncryptWriteResult:
     message_ciphertext: bytes
     envelope_descriptor: bytes
     envelope_hash: bytes
+    next_message_box_index: bytes
 
 
 @dataclass
@@ -179,7 +181,8 @@ async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> Encry
     return EncryptReadResult(
         message_ciphertext=reply["message_ciphertext"],
         envelope_descriptor=reply["envelope_descriptor"],
-        envelope_hash=reply["envelope_hash"]
+        envelope_hash=reply["envelope_hash"],
+        next_message_box_index=reply["next_message_box_index"]
     )
 
 
@@ -242,7 +245,8 @@ async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_in
     return EncryptWriteResult(
         message_ciphertext=reply["message_ciphertext"],
         envelope_descriptor=reply["envelope_descriptor"],
-        envelope_hash=reply["envelope_hash"]
+        envelope_hash=reply["envelope_hash"],
+        next_message_box_index=reply["next_message_box_index"]
     )
 
 
@@ -250,14 +254,14 @@ async def start_resending_encrypted_message(
     self,
     read_cap: "bytes|None",
     write_cap: "bytes|None",
-    next_message_index: "bytes|None",
+    message_box_index: "bytes|None",
     reply_index: "int|None",
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
     envelope_hash: bytes,
     no_retry_on_box_id_not_found: bool = False,
     no_idempotent_box_already_exists: bool = False
-) -> bytes:
+) -> StartResendingResult:
     """
     Starts resending an encrypted message via ARQ.
 
@@ -288,7 +292,7 @@ async def start_resending_encrypted_message(
     Args:
         read_cap: Read capability (can be None for write operations, required for reads).
         write_cap: Write capability (can be None for read operations, required for writes).
-        next_message_index: Next message index for BACAP decryption (required for reads).
+        message_box_index: Current message box index being operated on (required for reads).
         reply_index: Index of the reply to use (typically 0 or 1).
         envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
         message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
@@ -304,10 +308,8 @@ async def start_resending_encrypted_message(
             performed or if the box already existed.
 
     Returns:
-        bytes: For read operations, the decrypted plaintext message (at most
-            PigeonholeGeometry.max_plaintext_payload_length bytes). The length
-            prefix and padding are automatically removed by the daemon.
-            For write operations, returns an empty bytes object on success.
+        StartResendingResult: Contains plaintext (decrypted message for reads, empty for
+            writes), courier_identity_hash, and courier_queue_id.
 
     Raises:
         BoxIDNotFoundError: If no_retry_on_box_id_not_found=True and the box does not exist.
@@ -316,9 +318,9 @@ async def start_resending_encrypted_message(
         Exception: If the operation fails. Check error_code for specific errors.
 
     Example:
-        >>> plaintext = await client.start_resending_encrypted_message(
-        ...     read_cap, None, next_index, reply_idx, env_desc, ciphertext, env_hash)
-        >>> print(f"Received: {plaintext}")
+        >>> result = await client.start_resending_encrypted_message(
+        ...     read_cap, None, message_box_index, reply_idx, env_desc, ciphertext, env_hash)
+        >>> print(f"Received: {result.plaintext}")
     """
     query_id = self.new_query_id()
 
@@ -327,7 +329,7 @@ async def start_resending_encrypted_message(
             "query_id": query_id,
             "read_cap": read_cap,
             "write_cap": write_cap,
-            "next_message_index": next_message_index,
+            "message_box_index": message_box_index,
             "reply_index": reply_index,
             "envelope_descriptor": envelope_descriptor,
             "message_ciphertext": message_ciphertext,
@@ -367,7 +369,7 @@ async def start_resending_encrypted_message_return_box_exists(
     self,
     read_cap: "bytes|None",
     write_cap: "bytes|None",
-    next_message_index: "bytes|None",
+    message_box_index: "bytes|None",
     reply_index: "int|None",
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
@@ -383,15 +385,14 @@ async def start_resending_encrypted_message_return_box_exists(
     Args:
         read_cap: Read capability (can be None for write operations, required for reads).
         write_cap: Write capability (can be None for read operations, required for writes).
-        next_message_index: Next message index for BACAP decryption (required for reads).
+        message_box_index: Current message box index being operated on (required for reads).
         reply_index: Index of the reply to use (typically 0 or 1).
         envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
         message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
         envelope_hash: Hash of the courier envelope.
 
     Returns:
-        bytes: For read operations, the decrypted plaintext message.
-            For write operations, returns an empty bytes object on success.
+        StartResendingResult: Contains plaintext, courier_identity_hash, and courier_queue_id.
 
     Raises:
         BoxAlreadyExistsError: If the box already contains data.
@@ -407,7 +408,7 @@ async def start_resending_encrypted_message_return_box_exists(
     return await self.start_resending_encrypted_message(
         read_cap=read_cap,
         write_cap=write_cap,
-        next_message_index=next_message_index,
+        message_box_index=message_box_index,
         reply_index=reply_index,
         envelope_descriptor=envelope_descriptor,
         message_ciphertext=message_ciphertext,
@@ -420,7 +421,7 @@ async def start_resending_encrypted_message_no_retry(
     self,
     read_cap: "bytes|None",
     write_cap: "bytes|None",
-    next_message_index: "bytes|None",
+    message_box_index: "bytes|None",
     reply_index: "int|None",
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
@@ -436,15 +437,14 @@ async def start_resending_encrypted_message_no_retry(
     Args:
         read_cap: Read capability (can be None for write operations, required for reads).
         write_cap: Write capability (can be None for read operations, required for writes).
-        next_message_index: Next message index for BACAP decryption (required for reads).
+        message_box_index: Current message box index being operated on (required for reads).
         reply_index: Index of the reply to use (typically 0 or 1).
         envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
         message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
         envelope_hash: Hash of the courier envelope.
 
     Returns:
-        bytes: For read operations, the decrypted plaintext message.
-            For write operations, returns an empty bytes object on success.
+        StartResendingResult: Contains plaintext, courier_identity_hash, and courier_queue_id.
 
     Raises:
         BoxIDNotFoundError: If the box does not exist (no automatic retries).
@@ -452,15 +452,15 @@ async def start_resending_encrypted_message_no_retry(
 
     Example:
         >>> try:
-        ...     plaintext = await client.start_resending_encrypted_message_no_retry(
-        ...         read_cap, None, next_index, reply_idx, env_desc, ciphertext, env_hash)
+        ...     result = await client.start_resending_encrypted_message_no_retry(
+        ...         read_cap, None, message_box_index, reply_idx, env_desc, ciphertext, env_hash)
         ... except BoxIDNotFoundError:
         ...     print("Box not found - message not yet written")
     """
     return await self.start_resending_encrypted_message(
         read_cap=read_cap,
         write_cap=write_cap,
-        next_message_index=next_message_index,
+        message_box_index=message_box_index,
         reply_index=reply_index,
         envelope_descriptor=envelope_descriptor,
         message_ciphertext=message_ciphertext,
@@ -896,44 +896,20 @@ async def set_stream_buffer(
         raise Exception(f"set_stream_buffer failed: {error_msg}")
 
 
-async def tombstone_box(
-    self,
-    write_cap: bytes,
+@dataclass
+class TombstoneEnvelope:
+    """A single tombstone envelope ready to be sent."""
+    message_ciphertext: bytes
+    envelope_descriptor: bytes
+    envelope_hash: bytes
     box_index: bytes
-) -> EncryptWriteResult:
-    """
-    Create a tombstone for a single pigeonhole box.
 
-    This method creates a tombstone (empty payload with signature) for deleting
-    the specified box. The caller must send the returned values via
-    start_resending_encrypted_message to complete the tombstone operation.
 
-    Args:
-        write_cap: Write capability for the box.
-        box_index: Index of the box to tombstone.
-
-    Returns:
-        EncryptWriteResult: Contains message_ciphertext, envelope_descriptor,
-            and envelope_hash.
-
-    Raises:
-        ValueError: If any argument is None.
-        Exception: If the encrypt operation fails.
-
-    Example:
-        >>> result = await client.tombstone_box(write_cap, box_index)
-        >>> await client.start_resending_encrypted_message(
-        ...     None, write_cap, None, None,
-        ...     result.envelope_descriptor, result.message_ciphertext, result.envelope_hash)
-    """
-    if write_cap is None:
-        raise ValueError("write_cap cannot be None")
-    if box_index is None:
-        raise ValueError("box_index cannot be None")
-
-    # Tombstones are created by sending an empty plaintext to encrypt_write
-    # The daemon will detect this and sign an empty payload instead of encrypting
-    return await self.encrypt_write(b'', write_cap, box_index)
+@dataclass
+class TombstoneRangeResult:
+    """Result of a tombstone_range operation."""
+    envelopes: "List[TombstoneEnvelope]"
+    next: bytes
 
 
 async def tombstone_range(
@@ -941,7 +917,7 @@ async def tombstone_range(
     write_cap: bytes,
     start: bytes,
     max_count: int
-) -> "Dict[str, Any]":
+) -> TombstoneRangeResult:
     """
     Create tombstones for a range of pigeonhole boxes.
 
@@ -949,6 +925,8 @@ async def tombstone_range(
     starting from the specified box index and advancing through consecutive
     indices. The caller must send each envelope via start_resending_encrypted_message
     to complete the tombstone operations.
+
+    To tombstone a single box, use max_count=1.
 
     If an error occurs during the operation, a partial result is returned
     containing the envelopes created so far and the next index.
@@ -959,54 +937,40 @@ async def tombstone_range(
         max_count: Maximum number of boxes to tombstone.
 
     Returns:
-        Dict[str, Any]: A dictionary with:
-            - "envelopes" (List[Dict]): List of envelope dicts, each containing:
-                - "message_ciphertext": The tombstone payload.
-                - "envelope_descriptor": The envelope descriptor.
-                - "envelope_hash": The envelope hash for cancellation.
-                - "box_index": The box index this envelope is for.
-            - "next" (bytes): The next MessageBoxIndex after the last processed.
+        TombstoneRangeResult: Contains envelopes (list of TombstoneEnvelope) and
+            next (the next MessageBoxIndex after the last processed).
 
     Raises:
         ValueError: If write_cap or start is None.
 
     Example:
         >>> result = await client.tombstone_range(write_cap, start_index, 10)
-        >>> for envelope in result["envelopes"]:
+        >>> for envelope in result.envelopes:
         ...     await client.start_resending_encrypted_message(
         ...         None, write_cap, None, None,
-        ...         envelope["envelope_descriptor"],
-        ...         envelope["message_ciphertext"],
-        ...         envelope["envelope_hash"])
+        ...         envelope.envelope_descriptor,
+        ...         envelope.message_ciphertext,
+        ...         envelope.envelope_hash)
     """
     if write_cap is None:
         raise ValueError("write_cap cannot be None")
     if start is None:
         raise ValueError("start index cannot be None")
     if max_count == 0:
-        return {"envelopes": [], "next": start}
+        return TombstoneRangeResult(envelopes=[], next=start)
 
     cur = start
     envelopes = []
 
     while len(envelopes) < max_count:
-        try:
-            result = await self.tombstone_box(write_cap, cur)
-            envelopes.append({
-                "message_ciphertext": result.message_ciphertext,
-                "envelope_descriptor": result.envelope_descriptor,
-                "envelope_hash": result.envelope_hash,
-                "box_index": cur,
-            })
-        except Exception as e:
-            self.logger.error(f"Error creating tombstone for box at index {len(envelopes)}: {e}")
-            return {"envelopes": envelopes, "next": cur, "error": str(e)}
+        result = await self.encrypt_write(b'', write_cap, cur)
+        envelopes.append(TombstoneEnvelope(
+            message_ciphertext=result.message_ciphertext,
+            envelope_descriptor=result.envelope_descriptor,
+            envelope_hash=result.envelope_hash,
+            box_index=cur,
+        ))
+        cur = result.next_message_box_index
 
-        try:
-            cur = await self.next_message_box_index(cur)
-        except Exception as e:
-            self.logger.error(f"Error getting next index after creating tombstone: {e}")
-            return {"envelopes": envelopes, "next": cur, "error": str(e)}
-
-    return {"envelopes": envelopes, "next": cur}
+    return TombstoneRangeResult(envelopes=envelopes, next=cur)
 
