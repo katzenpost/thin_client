@@ -75,12 +75,12 @@ jobs:
           cd thinclient
 
           # Run Python tests in background
-          python -m pytest tests/ -vvv -s --tb=short --timeout=1200 \
+          python -m pytest tests/ -vvv -s --tb=short --timeout=1200 -n 5 \
             > /tmp/python-test-output.txt 2>&1 &
           PYTHON_PID=$!
 
           # Run Rust tests in background
-          cargo test --test '*' -- --nocapture --test-threads=1 \
+          cargo test --test '*' -- --nocapture --test-threads=5 \
             > /tmp/rust-test-output.txt 2>&1 &
           RUST_PID=$!
 
