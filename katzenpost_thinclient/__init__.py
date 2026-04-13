@@ -110,7 +110,6 @@ from .core import (
     # Constants
     SURB_ID_SIZE,
     MESSAGE_ID_SIZE,
-    STREAM_ID_LENGTH,
     # Classes
     ThinClient,
     Config,
@@ -126,7 +125,6 @@ from .core import (
 
 # Import new pigeonhole API methods and result types
 from .pigeonhole import (
-    stream_id,
     new_keypair,
     encrypt_read,
     encrypt_write,
@@ -139,7 +137,7 @@ from .pigeonhole import (
     cancel_resending_copy_command,
     create_courier_envelopes_from_payload,
     create_courier_envelopes_from_multi_payload,
-    set_stream_buffer,
+    create_courier_envelopes_from_tombstone_range,
     tombstone_range,
     # Result dataclasses
     KeypairResult,
@@ -153,7 +151,6 @@ from .pigeonhole import (
 
 
 # Attach new pigeonhole API methods to ThinClient
-ThinClient.stream_id = stream_id
 ThinClient.new_keypair = new_keypair
 ThinClient.encrypt_read = encrypt_read
 ThinClient.encrypt_write = encrypt_write
@@ -166,7 +163,7 @@ ThinClient.start_resending_copy_command = start_resending_copy_command
 ThinClient.cancel_resending_copy_command = cancel_resending_copy_command
 ThinClient.create_courier_envelopes_from_payload = create_courier_envelopes_from_payload
 ThinClient.create_courier_envelopes_from_multi_payload = create_courier_envelopes_from_multi_payload
-ThinClient.set_stream_buffer = set_stream_buffer
+ThinClient.create_courier_envelopes_from_tombstone_range = create_courier_envelopes_from_tombstone_range
 ThinClient.tombstone_range = tombstone_range
 
 
@@ -197,7 +194,6 @@ __all__ = [
     # Constants
     'SURB_ID_SIZE',
     'MESSAGE_ID_SIZE',
-    'STREAM_ID_LENGTH',
     # Replica error codes (from pigeonhole/errors.go)
     'REPLICA_SUCCESS',
     'REPLICA_ERROR_BOX_ID_NOT_FOUND',

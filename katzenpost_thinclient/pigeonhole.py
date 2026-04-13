@@ -20,7 +20,6 @@ from .core import (
     thin_client_error_to_string,
     error_code_to_exception,
     PigeonholeGeometry,
-    STREAM_ID_LENGTH,
 )
 
 
@@ -64,20 +63,6 @@ class StartResendingResult:
 
 
 # New Pigeonhole API methods - these will be attached to ThinClient class
-
-
-def stream_id(self) -> bytes:
-    """
-    Generate a new 16-byte stream ID for copy stream operations.
-
-    Stream IDs are used to identify encoder instances for multi-call
-    envelope encoding streams. All calls for the same stream must use
-    the same stream ID.
-
-    Returns:
-        bytes: Random 16-byte stream identifier.
-    """
-    return os.urandom(STREAM_ID_LENGTH)
 
 
 async def new_keypair(self, seed: bytes) -> KeypairResult:
@@ -741,9 +726,10 @@ async def create_courier_envelopes_from_payload(
 
 async def create_courier_envelopes_from_multi_payload(
     self,
-    stream_id: bytes,
     destinations: "List[Dict[str, Any]]",
-    is_last: bool
+    is_start: bool,
+    is_last: bool,
+    buffer: "bytes | None" = None
 ) -> "CreateEnvelopesResult":
     """
     Creates CourierEnvelopes from multiple payloads going to different destinations.
@@ -752,52 +738,51 @@ async def create_courier_envelopes_from_multi_payload(
     multiple times because envelopes from different destinations are packed
     together in the copy stream without wasting space.
 
-    Multiple calls can be made with the same stream_id to build up a stream
-    incrementally. The first call creates a new encoder (first element gets
-    IsStart=true). The final call should have is_last=True (last element
-    gets IsFinal=true).
-
-    The buffer in the result contains the current encoder buffer which
-    you should persist for crash recovery. On restart, use `set_stream_buffer`
-    to restore the state before continuing the stream.
+    This method is stateless — the buffer parameter enables continuation across
+    multiple calls without daemon-side state. Pass the buffer from the previous
+    call's result to avoid wasting space. On the first call, pass None.
 
     Args:
-        stream_id: 16-byte identifier for the encoder instance. All calls for
-                  the same stream must use the same stream ID.
         destinations: List of destination payloads, each a dict with:
                      - "payload": bytes - The data to be written
                      - "write_cap": bytes - Write capability for destination
                      - "start_index": bytes - Starting index in destination
+        is_start: Whether this is the first call in the sequence.
+                 When True, the first CopyStreamElement will have IsStart=true.
         is_last: Whether this is the last set of payloads in the sequence.
-                When True, the final CopyStreamElement will have IsFinal=true
-                and the encoder instance will be removed.
+                When True, the final CopyStreamElement will have IsFinal=true.
+        buffer: Residual encoder buffer from a previous call, or None.
 
     Returns:
-        CreateEnvelopesResult: Contains envelopes and buffer state for crash recovery.
+        CreateEnvelopesResult: Contains envelopes and buffer for next call.
 
     Raises:
         Exception: If the envelope creation fails.
 
     Example:
-        >>> stream_id = client.new_stream_id()
         >>> destinations = [
         ...     {"payload": data1, "write_cap": cap1, "start_index": idx1},
         ...     {"payload": data2, "write_cap": cap2, "start_index": idx2},
         ... ]
         >>> result = await client.create_courier_envelopes_from_multi_payload(
-        ...     stream_id, destinations, is_last=False)
-        >>> # Persist buffer for crash recovery
-        >>> save_to_disk(stream_id, result.buffer)
+        ...     destinations, is_start=True, is_last=False)
+        >>> # Pass buffer to next call
+        >>> result2 = await client.create_courier_envelopes_from_multi_payload(
+        ...     more_destinations, is_start=False, is_last=True, buffer=result.buffer)
     """
     query_id = self.new_query_id()
 
+    req_inner = {
+        "query_id": query_id,
+        "destinations": destinations,
+        "is_start": is_start,
+        "is_last": is_last,
+    }
+    if buffer is not None:
+        req_inner["buffer"] = buffer
+
     request = {
-        "create_courier_envelopes_from_multi_payload": {
-            "query_id": query_id,
-            "stream_id": stream_id,
-            "destinations": destinations,
-            "is_last": is_last
-        }
+        "create_courier_envelopes_from_multi_payload": req_inner
     }
 
     try:
@@ -831,69 +816,6 @@ class CreateEnvelopesResult:
     next_dest_indices: "Optional[List[bytes]]" = None
     """The next destination indices for each destination, in request order.
     Only populated by create_courier_envelopes_from_multi_payload."""
-
-
-async def set_stream_buffer(
-    self,
-    stream_id: bytes,
-    buffer: bytes
-) -> None:
-    """
-    Restores the buffered state for a given stream ID.
-
-    This is useful for crash recovery: after restart, call this method with the
-    buffer that was returned by `create_courier_envelopes_from_payload` or
-    `create_courier_envelopes_from_multi_payload` before the crash/shutdown.
-
-    Note: This will create a new encoder if one doesn't exist for this stream_id,
-    or replace the buffer contents if one already exists.
-
-    Args:
-        stream_id: 16-byte identifier for the encoder instance.
-        buffer: The buffered data to restore (from CreateEnvelopesResult.buffer).
-
-    Returns:
-        None
-
-    Raises:
-        ValueError: If stream_id is not exactly 16 bytes.
-        Exception: If the operation fails.
-
-    Example:
-        >>> # During streaming, save the buffer from each call
-        >>> result = await client.create_courier_envelopes_from_payload(
-        ...     query_id, stream_id, data, ..., is_last=False)
-        >>> save_to_disk(stream_id, result.buffer)
-        >>>
-        >>> # On restart, restore the stream state
-        >>> buffer = load_from_disk(stream_id)
-        >>> await client.set_stream_buffer(stream_id, buffer)
-        >>> # Now continue streaming from where we left off
-        >>> await client.create_courier_envelopes_from_payload(
-        ...     query_id, stream_id, more_data, ..., is_last=True)
-    """
-    if len(stream_id) != STREAM_ID_LENGTH:
-        raise ValueError(f"stream_id must be exactly {STREAM_ID_LENGTH} bytes")
-
-    query_id = self.new_query_id()
-
-    request = {
-        "set_stream_buffer": {
-            "query_id": query_id,
-            "stream_id": stream_id,
-            "buffer": buffer
-        }
-    }
-
-    try:
-        reply = await self._send_and_wait(query_id=query_id, request=request)
-    except Exception as e:
-        self.logger.error(f"Error setting stream buffer: {e}")
-        raise
-
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
-        raise Exception(f"set_stream_buffer failed: {error_msg}")
 
 
 @dataclass
@@ -973,4 +895,76 @@ async def tombstone_range(
         cur = result.next_message_box_index
 
     return TombstoneRangeResult(envelopes=envelopes, next=cur)
+
+
+async def create_courier_envelopes_from_tombstone_range(
+    self,
+    dest_write_cap: bytes,
+    dest_start_index: bytes,
+    max_count: int,
+    is_start: bool,
+    is_last: bool,
+    buffer: "bytes | None" = None
+) -> "CreateEnvelopesResult":
+    """
+    Creates tombstone CourierEnvelopes for a range of destination indices,
+    encoded as copy stream elements.
+
+    This method is stateless — the buffer parameter enables continuation across
+    multiple calls without daemon-side state. Pass the buffer from the previous
+    call's result to avoid wasting space. On the first call, pass None.
+
+    Args:
+        dest_write_cap: Write capability for the destination channel.
+        dest_start_index: Starting index in the destination channel.
+        max_count: Number of tombstones to create.
+        is_start: Whether this is the first call in the sequence.
+        is_last: Whether this is the last call in the sequence.
+        buffer: Residual encoder buffer from a previous call, or None.
+
+    Returns:
+        CreateEnvelopesResult: Contains envelopes, buffer, and next_dest_index.
+
+    Raises:
+        Exception: If the operation fails.
+
+    Example:
+        >>> result = await client.create_courier_envelopes_from_tombstone_range(
+        ...     write_cap, start_index, 10, is_start=True, is_last=True)
+        >>> for envelope in result.envelopes:
+        ...     # write envelope to temp copy stream channel
+        ...     pass
+    """
+    query_id = self.new_query_id()
+
+    req_inner = {
+        "query_id": query_id,
+        "dest_write_cap": dest_write_cap,
+        "dest_start_index": dest_start_index,
+        "max_count": max_count,
+        "is_start": is_start,
+        "is_last": is_last,
+    }
+    if buffer is not None:
+        req_inner["buffer"] = buffer
+
+    request = {
+        "create_courier_envelopes_from_tombstone_range": req_inner
+    }
+
+    try:
+        reply = await self._send_and_wait(query_id=query_id, request=request)
+    except Exception as e:
+        self.logger.error(f"Error creating tombstone courier envelopes: {e}")
+        raise
+
+    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply['error_code'])
+        raise Exception(f"create_courier_envelopes_from_tombstone_range failed: {error_msg}")
+
+    return CreateEnvelopesResult(
+        envelopes=reply.get("envelopes", []),
+        buffer=reply.get("buffer", b""),
+        next_dest_index=reply.get("next_dest_index", None)
+    )
 

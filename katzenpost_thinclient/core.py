@@ -241,10 +241,6 @@ SURB_ID_SIZE = 16
 # which is unique to the sent message.
 MESSAGE_ID_SIZE = 16
 
-# STREAM_ID_LENGTH is the length of a stream ID in bytes.
-# Used for multi-call envelope encoding streams.
-STREAM_ID_LENGTH = 16
-
 
 class Geometry:
     """
@@ -1238,19 +1234,6 @@ class ThinClient:
         """
         return os.urandom(16)
 
-    @staticmethod
-    def new_stream_id() -> bytes:
-        """
-        Generate a new 16-byte stream ID for copy stream operations.
-
-        Stream IDs are used to identify encoder instances for multi-call
-        envelope encoding streams. All calls for the same stream must use
-        the same stream ID.
-
-        Returns:
-            bytes: Random 16-byte stream identifier.
-        """
-        return os.urandom(STREAM_ID_LENGTH)
 
     async def _send_and_wait(self, *, query_id:bytes, request: Dict[str, Any]) -> Dict[str, Any]:
         cbor_request = cbor2.dumps(request)

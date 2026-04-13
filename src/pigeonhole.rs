@@ -9,7 +9,6 @@
 
 use std::collections::BTreeMap;
 use serde_cbor::Value;
-use rand::RngCore;
 use log::debug;
 use blake2::{Blake2b, Digest, digest::consts::U32};
 
@@ -301,10 +300,11 @@ struct EnvelopeDestination {
 struct CreateCourierEnvelopesFromPayloadsRequest {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    stream_id: Vec<u8>,
     destinations: Vec<EnvelopeDestination>,
+    is_start: bool,
     is_last: bool,
+    #[serde(default, with = "optional_bytes")]
+    buffer: Option<Vec<u8>>,
 }
 
 /// Reply containing the created courier envelopes from multiple payloads and buffer state.
@@ -325,22 +325,36 @@ struct CreateCourierEnvelopesFromPayloadsReply {
     error_code: u8,
 }
 
-/// Request to set/restore the buffered state for a stream (for crash recovery).
+/// Request to create courier envelopes from a range of tombstones.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct SetStreamBufferRequest {
+struct CreateCourierEnvelopesFromTombstoneRangeRequest {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
     #[serde(with = "serde_bytes")]
-    stream_id: Vec<u8>,
+    dest_write_cap: Vec<u8>,
     #[serde(with = "serde_bytes")]
-    buffer: Vec<u8>,
+    dest_start_index: Vec<u8>,
+    max_count: u32,
+    is_start: bool,
+    is_last: bool,
+    #[serde(default, with = "optional_bytes")]
+    buffer: Option<Vec<u8>>,
 }
 
-/// Reply confirming the buffer state has been restored.
+/// Reply containing the created tombstone courier envelopes.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct SetStreamBufferReply {
+struct CreateCourierEnvelopesFromTombstoneRangeReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
+    /// Envelopes is None when the daemon returns an error.
+    envelopes: Option<Vec<serde_bytes::ByteBuf>>,
+    /// Buffer contains any residual data for the next call.
+    #[serde(default, with = "optional_bytes")]
+    buffer: Option<Vec<u8>>,
+    /// Next destination index after all tombstones created.
+    #[serde(default, with = "optional_bytes")]
+    next_dest_index: Option<Vec<u8>>,
+    #[serde(default)]
     error_code: u8,
 }
 
@@ -956,28 +970,19 @@ impl ThinClient {
     /// CourierEnvelope. Each returned chunk is a serialized CopyStreamElement
     /// ready to be written to a box.
     ///
-    /// Multiple calls can be made with the same stream_id to build up a stream
-    /// incrementally. The first call creates a new encoder (first element gets
-    /// IsStart=true). The final call should have is_last=true (last element
-    /// gets IsFinal=true).
-    ///
-    /// # Crash Recovery
-    ///
-    /// When `is_last=false`, the daemon buffers the last partial box's payload
-    /// internally so that subsequent writes can be packed efficiently. The
-    /// `buffer` in the result contains this buffered data which you should
-    /// persist for crash recovery. On restart, use `set_stream_buffer` to restore
-    /// the state before continuing the stream.
+    /// This method is stateless — each call creates a fresh encoder. Multiple
+    /// calls can target the same destination stream by using next_dest_index
+    /// from the result as dest_start_index for the next call.
     ///
     /// # Arguments
-    /// * `stream_id` - 16-byte identifier for the encoder instance
     /// * `payload` - The data to be encoded into courier envelopes
     /// * `dest_write_cap` - Write capability for the destination channel
     /// * `dest_start_index` - Starting index in the destination channel
+    /// * `is_start` - Whether this is the first call (sets IsStart on first element)
     /// * `is_last` - Whether this is the last payload in the sequence
     ///
     /// # Returns
-    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes and buffer state for crash recovery
+    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes and next_dest_index
     /// * `Err(ThinClientError)` on failure
     pub async fn create_courier_envelopes_from_payload(
         &self,
@@ -1027,27 +1032,25 @@ impl ThinClient {
     /// multiple times because envelopes from different destinations are packed
     /// together in the copy stream without wasting space.
     ///
-    /// # Crash Recovery
-    ///
-    /// When `is_last=false`, the daemon buffers the last partial box's payload
-    /// internally so that subsequent writes can be packed efficiently. The
-    /// `buffer` in the result contains this buffered data which you should
-    /// persist for crash recovery. On restart, use `set_stream_buffer` to restore
-    /// the state before continuing the stream.
+    /// This method is stateless — the buffer field enables continuation across
+    /// multiple calls without daemon-side state. Pass the buffer from the previous
+    /// call's result to avoid wasting space. On the first call, pass None.
     ///
     /// # Arguments
-    /// * `stream_id` - 16-byte identifier for the encoder instance
     /// * `destinations` - List of (payload, write_cap, start_index) tuples
+    /// * `is_start` - Whether this is the first call in the sequence
     /// * `is_last` - Whether this is the last set of payloads in the sequence
+    /// * `buffer` - Residual encoder buffer from a previous call, or None
     ///
     /// # Returns
-    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes and buffer state for crash recovery
+    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes and buffer for next call
     /// * `Err(ThinClientError)` on failure
     pub async fn create_courier_envelopes_from_multi_payload(
         &self,
-        stream_id: &[u8; 16],
         destinations: Vec<(&[u8], &[u8], &[u8])>,
-        is_last: bool
+        is_start: bool,
+        is_last: bool,
+        buffer: Option<Vec<u8>>,
     ) -> Result<CreateEnvelopesResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
@@ -1062,9 +1065,10 @@ impl ThinClient {
 
         let request_inner = CreateCourierEnvelopesFromPayloadsRequest {
             query_id: query_id.clone(),
-            stream_id: stream_id.to_vec(),
             destinations: destinations_inner,
+            is_start,
             is_last,
+            buffer,
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
@@ -1090,52 +1094,42 @@ impl ThinClient {
         })
     }
 
-    /// Generates a new random 16-byte stream ID.
-    pub fn new_stream_id() -> [u8; 16] {
-        let mut stream_id = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut stream_id);
-        stream_id
-    }
-
-    /// Restores the buffered state for a given stream ID.
+    /// Creates tombstone CourierEnvelopes for a range of destination indices,
+    /// encoded as copy stream elements.
     ///
-    /// This is useful for crash recovery: after restart, call this method with the
-    /// buffer that was returned by `create_courier_envelopes_from_payload` or
-    /// `create_courier_envelopes_from_multi_payload` before the crash/shutdown.
-    ///
-    /// Note: This will create a new encoder if one doesn't exist for this stream_id,
-    /// or replace the buffer contents if one already exists.
+    /// This method is stateless — the buffer field enables continuation across
+    /// multiple calls. Pass the buffer from the previous call's result to avoid
+    /// wasting space. On the first call, pass None.
     ///
     /// # Arguments
-    /// * `stream_id` - 16-byte identifier for the encoder instance
-    /// * `buffer` - The buffered data to restore (from `CreateEnvelopesResult.buffer`)
+    /// * `dest_write_cap` - Write capability for the destination channel
+    /// * `dest_start_index` - Starting index in the destination channel
+    /// * `max_count` - Number of tombstones to create
+    /// * `is_start` - Whether this is the first call in the sequence
+    /// * `is_last` - Whether this is the last call in the sequence
+    /// * `buffer` - Residual encoder buffer from a previous call, or None
     ///
     /// # Returns
-    /// * `Ok(())` on success
+    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes, buffer, and next_dest_index
     /// * `Err(ThinClientError)` on failure
-    ///
-    /// # Example
-    /// ```ignore
-    /// // During streaming, save the buffer from each call
-    /// let result = client.create_courier_envelopes_from_payload(&stream_id, data, ..., false).await?;
-    /// save_to_disk(&stream_id, &result.buffer)?;
-    ///
-    /// // On restart, restore the stream state
-    /// let buffer = load_from_disk(&stream_id)?;
-    /// client.set_stream_buffer(&stream_id, buffer).await?;
-    /// // Now continue streaming from where we left off
-    /// client.create_courier_envelopes_from_payload(&stream_id, more_data, ..., true).await?;
-    /// ```
-    pub async fn set_stream_buffer(
+    pub async fn create_courier_envelopes_from_tombstone_range(
         &self,
-        stream_id: &[u8; 16],
-        buffer: Vec<u8>,
-    ) -> Result<(), ThinClientError> {
+        dest_write_cap: &[u8],
+        dest_start_index: &[u8],
+        max_count: u32,
+        is_start: bool,
+        is_last: bool,
+        buffer: Option<Vec<u8>>,
+    ) -> Result<CreateEnvelopesResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
-        let request_inner = SetStreamBufferRequest {
+        let request_inner = CreateCourierEnvelopesFromTombstoneRangeRequest {
             query_id: query_id.clone(),
-            stream_id: stream_id.to_vec(),
+            dest_write_cap: dest_write_cap.to_vec(),
+            dest_start_index: dest_start_index.to_vec(),
+            max_count,
+            is_start,
+            is_last,
             buffer,
         };
 
@@ -1143,20 +1137,23 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("set_stream_buffer".to_string()), request_value);
+        request.insert(Value::Text("create_courier_envelopes_from_tombstone_range".to_string()), request_value);
 
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
-        let reply: SetStreamBufferReply = serde_cbor::value::from_value(Value::Map(reply_map))
+        let reply: CreateCourierEnvelopesFromTombstoneRangeReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!(
-                "set_stream_buffer failed with error code: {}", reply.error_code
-            )));
+            return Err(ThinClientError::Other(format!("create_courier_envelopes_from_tombstone_range failed with error code: {}", reply.error_code)));
         }
 
-        Ok(())
+        Ok(CreateEnvelopesResult {
+            envelopes: reply.envelopes.unwrap_or_default().into_iter().map(|b| b.into_vec()).collect(),
+            buffer: reply.buffer.unwrap_or_default(),
+            next_dest_index: reply.next_dest_index,
+            next_dest_indices: None,
+        })
     }
 
 }

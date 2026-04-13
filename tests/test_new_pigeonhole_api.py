@@ -677,8 +677,6 @@ async def test_copy_command_multi_channel_efficient():
 
         # Step 4: Create copy stream chunks using efficient multi-destination API
         print("\n--- Step 4: Creating copy stream chunks using efficient multi-destination API ---")
-        stream_id = alice_client.new_stream_id()
-
         # Create destinations list with both payloads
         destinations = [
             {
@@ -695,7 +693,7 @@ async def test_copy_command_multi_channel_efficient():
 
         # Single call packs all envelopes efficiently
         result = await alice_client.create_courier_envelopes_from_multi_payload(
-            stream_id, destinations, True  # is_last
+            destinations, is_start=True, is_last=True
         )
         assert result.envelopes, "create_courier_envelopes_from_multi_payload returned empty chunks"
         all_chunks = result.envelopes
@@ -1357,7 +1355,7 @@ async def test_from_payload_multi_call():
     Test calling create_courier_envelopes_from_payload multiple times to send
     a large payload to a single destination stream.
 
-    Exercises the stateless API: no stream_id, explicit is_start/is_last flags,
+    Exercises the stateless API: explicit is_start/is_last flags,
     and next_dest_index returned in the result so the caller never does index math.
     """
     alice_client = await setup_thin_client()
@@ -1460,8 +1458,8 @@ async def test_from_multi_payload_multi_call():
     Test calling create_courier_envelopes_from_multi_payload multiple times,
     writing to two destination channels across two calls.
 
-    Exercises the stateful API with next_dest_indices in the result so the caller
-    can continue writing to the same destinations without index math.
+    Exercises the stateless API with buffer passing and next_dest_indices in the
+    result so the caller can continue writing to the same destinations.
     """
     alice_client = await setup_thin_client()
     bob_client = await setup_thin_client()
@@ -1476,22 +1474,20 @@ async def test_from_multi_payload_multi_call():
         # Create temp copy stream channel
         temp_keypair = await alice_client.new_keypair(os.urandom(32))
 
-        stream_id = alice_client.new_stream_id()
-
         # Create payloads — use small payloads that fit in one box each
         payload1a = b"First batch of data for channel 1 - testing multi-call"
         payload2a = b"First batch of data for channel 2 - testing multi-call"
         payload1b = b"Second batch of data for channel 1 - multi-call works"
         payload2b = b"Second batch of data for channel 2 - multi-call works"
 
-        # First call: two destinations, is_last=False
+        # First call: two destinations, is_start=True, is_last=False
         result1 = await alice_client.create_courier_envelopes_from_multi_payload(
-            stream_id, [
+            [
                 {"payload": payload1a, "write_cap": chan1_keypair.write_cap,
                  "start_index": chan1_keypair.first_message_index},
                 {"payload": payload2a, "write_cap": chan2_keypair.write_cap,
                  "start_index": chan2_keypair.first_message_index},
-            ], False)
+            ], is_start=True, is_last=False)
         assert result1.envelopes
         assert result1.next_dest_indices is not None
         assert len(result1.next_dest_indices) == 2
@@ -1499,12 +1495,12 @@ async def test_from_multi_payload_multi_call():
 
         # Second call: same destinations, continue from next_dest_indices, is_last=True
         result2 = await alice_client.create_courier_envelopes_from_multi_payload(
-            stream_id, [
+            [
                 {"payload": payload1b, "write_cap": chan1_keypair.write_cap,
                  "start_index": result1.next_dest_indices[0]},
                 {"payload": payload2b, "write_cap": chan2_keypair.write_cap,
                  "start_index": result1.next_dest_indices[1]},
-            ], True)
+            ], is_start=False, is_last=True, buffer=result1.buffer)
         assert result2.envelopes
         assert result2.next_dest_indices is not None
         assert len(result2.next_dest_indices) == 2

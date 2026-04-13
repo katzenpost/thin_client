@@ -48,7 +48,6 @@ builder.add_multi_payload(destinations, is_last) -> Result<usize>
 builder.finish() -> Result<usize>
 builder.finish_with_courier(&hash, &queue) -> Result<usize>
 builder.buffer() -> &[u8]
-builder.stream_id() -> &[u8; 16]
 builder.temp_write_cap() -> &[u8]
 ```
 
@@ -195,10 +194,10 @@ The `CopyStreamBuilder` exposes its internal buffer for persistence:
 ```rust
 // After each add_payload call, save the buffer
 let buffer = builder.buffer().to_vec();
-db.save_stream_state(&stream_id, &buffer)?;
+db.save_stream_state(&buffer)?;
 
-// On restart, restore the buffer before continuing
-thin_client.set_stream_buffer(&stream_id, &saved_buffer).await?;
+// On restart, pass the saved buffer to continue the stream
+// via the buffer parameter in create_courier_envelopes_from_multi_payload
 ```
 
 ## Database Schema

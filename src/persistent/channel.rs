@@ -878,7 +878,7 @@ impl ChannelHandle {
 /// When `is_last=false` is passed to `add_payload` or `add_multi_payload`, partial
 /// data may be buffered by the daemon. The buffer is saved after each call and can
 /// be accessed via `buffer()`. To recover after a crash, persist the buffer and
-/// restore it via `ThinClient::set_stream_buffer` before continuing the stream.
+/// pass it to the next call via the `buffer` parameter.
 ///
 /// # Example
 /// ```ignore
@@ -893,7 +893,6 @@ impl ChannelHandle {
 /// ```
 pub struct CopyStreamBuilder {
     client: Arc<ThinClient>,
-    stream_id: [u8; 16],
     temp_write_cap: Vec<u8>,
     temp_index: Vec<u8>,
     total_boxes: usize,
@@ -912,7 +911,6 @@ impl CopyStreamBuilder {
 
         Ok(Self {
             client,
-            stream_id: ThinClient::new_stream_id(),
             temp_write_cap,
             temp_index: temp_first_index,
             total_boxes: 0,
@@ -998,10 +996,13 @@ impl CopyStreamBuilder {
             return Ok(0);
         }
 
+        let is_start = self.total_boxes == 0;
+        let buf = if self.buffer.is_empty() { None } else { Some(self.buffer.clone()) };
         let result = self.client.create_courier_envelopes_from_multi_payload(
-            &self.stream_id,
             destinations,
+            is_start,
             is_last,
+            buf,
         ).await?;
 
         let chunk_count = result.envelopes.len();
@@ -1077,16 +1078,11 @@ impl CopyStreamBuilder {
         &self.temp_write_cap
     }
 
-    /// Get the stream ID for this copy stream.
-    pub fn stream_id(&self) -> &[u8; 16] {
-        &self.stream_id
-    }
-
     /// Get the current buffer contents for crash recovery.
     ///
     /// When `is_last=false` is passed to `add_payload` or `add_multi_payload`,
-    /// partial data may be buffered. This buffer can be persisted and restored
-    /// via `ThinClient::set_stream_buffer` on restart to continue the stream.
+    /// partial data may be buffered. Persist this and pass it back when
+    /// creating a new CopyStreamBuilder to continue the stream.
     pub fn buffer(&self) -> &[u8] {
         &self.buffer
     }

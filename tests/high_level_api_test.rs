@@ -372,27 +372,6 @@ async fn test_tombstone_range() {
 }
 
 #[tokio::test]
-async fn test_stream_buffer_set_and_restore() {
-    println!("\n=== Test: Set stream buffer for recovery ===");
-
-    let (alice_thin, _bob_thin) = setup_clients().await.expect("Failed to setup clients");
-
-    // Generate a stream ID
-    let stream_id = ThinClient::new_stream_id();
-    println!("Using stream_id: {:?}", &stream_id[..4]);
-
-    // Set a buffer state (simulating restoration from persisted state)
-    let test_buffer = b"test buffer data for crash recovery".to_vec();
-
-    println!("Setting buffer: {} bytes", test_buffer.len());
-    alice_thin.set_stream_buffer(&stream_id, test_buffer.clone()).await
-        .expect("Failed to set stream buffer");
-    println!("✓ Buffer set successfully - encoder created/updated in daemon");
-
-    println!("\n✅ Set stream buffer test passed!");
-}
-
-#[tokio::test]
 async fn test_stream_buffer_returned_from_payload() {
     println!("\n=== Test: Buffer state returned from create_courier_envelopes_from_payload ===");
 

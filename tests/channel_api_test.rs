@@ -309,17 +309,16 @@ async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
 
     // Step 4: Create copy stream chunks using efficient multi-destination API
     println!("\n--- Step 4: Creating copy stream chunks using efficient API ---");
-    let stream_id = ThinClient::new_stream_id();
-
     let destinations = vec![
         (payload1.as_slice(), chan1_write_cap.as_slice(), chan1_first_index.as_slice()),
         (payload2.as_slice(), chan2_write_cap.as_slice(), chan2_first_index.as_slice()),
     ];
 
     let result = alice_client.create_courier_envelopes_from_multi_payload(
-        &stream_id,
         destinations,
-        true // is_last
+        true, // is_start
+        true, // is_last
+        None, // buffer
     ).await.expect("Failed to create courier envelopes from multi payload");
 
     assert!(!result.envelopes.is_empty(), "Should have at least one chunk");
@@ -651,7 +650,7 @@ async fn test_box_id_not_found_error() {
 /// Test calling create_courier_envelopes_from_payload multiple times
 /// to send a large payload to a single destination stream.
 ///
-/// Exercises the stateless API: no stream_id, explicit is_start/is_last flags,
+/// Exercises the stateless API: explicit is_start/is_last flags,
 /// and next_dest_index returned in the result so the caller never does index math.
 #[tokio::test]
 async fn test_from_payload_multi_call() {
@@ -764,8 +763,8 @@ async fn test_from_payload_multi_call() {
 /// Test calling create_courier_envelopes_from_multi_payload multiple times,
 /// writing to two destination channels across two calls.
 ///
-/// Exercises the stateful API with next_dest_indices in the result so the caller
-/// can continue writing to the same destinations without index math.
+/// Exercises the stateless API with buffer passing and next_dest_indices in the
+/// result so the caller can continue writing to the same destinations.
 #[tokio::test]
 async fn test_from_multi_payload_multi_call() {
     println!("\n=== Test: FromMultiPayload Multi-Call ===");
@@ -790,21 +789,19 @@ async fn test_from_multi_payload_multi_call() {
         alice_client.new_keypair(&temp_seed).await
             .expect("Failed to create temp keypair");
 
-    let stream_id = ThinClient::new_stream_id();
-
     // Create payloads — small enough to fit in one box each
     let payload1a = b"First batch of data for channel 1 - testing multi-call".to_vec();
     let payload2a = b"First batch of data for channel 2 - testing multi-call".to_vec();
     let payload1b = b"Second batch of data for channel 1 - multi-call works".to_vec();
     let payload2b = b"Second batch of data for channel 2 - multi-call works".to_vec();
 
-    // First call: two destinations, is_last=false
+    // First call: two destinations, is_start=true, is_last=false
     let destinations1 = vec![
         (payload1a.as_slice(), chan1_write_cap.as_slice(), chan1_first_index.as_slice()),
         (payload2a.as_slice(), chan2_write_cap.as_slice(), chan2_first_index.as_slice()),
     ];
     let result1 = alice_client.create_courier_envelopes_from_multi_payload(
-        &stream_id, destinations1, false,
+        destinations1, true, false, None,
     ).await.expect("Multi-payload call 1 failed");
     assert!(!result1.envelopes.is_empty());
     assert!(result1.next_dest_indices.is_some(), "Call 1 should return next_dest_indices");
@@ -818,7 +815,7 @@ async fn test_from_multi_payload_multi_call() {
         (payload2b.as_slice(), chan2_write_cap.as_slice(), next_indices[1].as_slice()),
     ];
     let result2 = alice_client.create_courier_envelopes_from_multi_payload(
-        &stream_id, destinations2, true,
+        destinations2, false, true, Some(result1.buffer.clone()),
     ).await.expect("Multi-payload call 2 failed");
     assert!(!result2.envelopes.is_empty());
     assert!(result2.next_dest_indices.is_some(), "Call 2 should return next_dest_indices");
