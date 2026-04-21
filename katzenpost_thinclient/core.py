@@ -844,10 +844,19 @@ class ThinClient:
 
     def is_connected(self) -> bool:
         """
-        Returns True if the daemon is connected to the mixnet.
+        Returns True if the daemon is currently connected to the mixnet.
+
+        Note the distinction: this reflects the daemon's *mixnet*
+        connectivity, not the local socket between this thin client and
+        the daemon. The daemon may be reachable while the mixnet itself
+        is unreachable; in that case the local socket is fine but this
+        method returns False, and ``send_message`` / ``blocking_send_message``
+        will raise ``ThinClientOfflineError``. The latest value is updated
+        from ``ConnectionStatusEvent``s pushed by the daemon.
 
         Returns:
-            bool: True if connected, False if in offline mode.
+            bool: True if the daemon is connected to the mixnet, False
+            otherwise (offline mode).
         """
         return self._is_connected
 
@@ -1102,10 +1111,20 @@ class ThinClient:
 
     def pki_document(self) -> "Dict[str,Any] | None":
         """
-        Retrieve the latest PKI document received.
+        Return the most recent PKI consensus document the daemon has
+        forwarded to this thin client.
+
+        The document is a CBOR map describing the current mixnet topology,
+        the set of available services, and per-node public-key material.
+        Useful inputs include the PKI epoch, the list of mix nodes, the
+        list of service providers, and the replica descriptors consulted
+        by Pigeonhole.
 
         Returns:
-            dict: Parsed CBOR PKI document.
+            Dict[str, Any] | None: The parsed CBOR PKI document, or
+            ``None`` if the daemon has not yet forwarded one (most
+            commonly on a freshly-connected client, before the first
+            ``on_new_pki_document`` callback has fired).
         """
         return self.pki_doc
 
@@ -1178,13 +1197,23 @@ class ThinClient:
 
     def get_service(self, service_name:str) -> ServiceDescriptor:
         """
-        Select a random service matching a capability.
+        Select one random service matching a capability from the current
+        PKI document.
+
+        Multiple mix nodes may advertise the same capability; this method
+        returns an arbitrary one. To see every advertised instance, use
+        ``get_services``.
 
         Args:
-            service_name (str): The capability name (e.g., "echo").
+            service_name (str): The capability name (e.g. ``"echo"``,
+                ``"courier"``).
 
         Returns:
             ServiceDescriptor: One of the matching services.
+
+        Raises:
+            Exception: If the PKI document is missing, or no node in the
+                current consensus advertises ``service_name``.
         """
         service_descriptors = self.get_services(service_name)
         return random.choice(service_descriptors)
@@ -1265,7 +1294,14 @@ class ThinClient:
     @staticmethod
     def new_message_id() -> bytes:
         """
-        Generate a new 16-byte message ID for use with ARQ sends.
+        Generate a new 16-byte random message ID.
+
+        Message IDs are used to correlate ``SendMessage`` requests with their
+        corresponding ``MessageSentEvent`` and (if a SURB is present)
+        ``MessageReplyEvent``. Callers generally do not need to construct
+        one by hand — ``blocking_send_message`` does it internally — but
+        this helper is exposed for callers composing requests manually.
+        Randomness is drawn from ``os.urandom``.
 
         Returns:
             bytes: Random 16-byte identifier.
@@ -1274,16 +1310,28 @@ class ThinClient:
 
     def new_surb_id(self) -> bytes:
         """
-        Generate a new 16-byte SURB ID for reply-capable sends.
+        Generate a new random SURB ID.
+
+        SURB IDs identify which Single Use Reply Block a given
+        ``on_message_reply`` event corresponds to. Pass the returned bytes
+        as the ``surb_id`` argument to ``send_message``, then watch the
+        callback for a matching reply. Randomness is drawn from
+        ``os.urandom``.
 
         Returns:
-            bytes: Random 16-byte identifier.
+            bytes: Random identifier of ``SURB_ID_SIZE`` bytes.
         """
         return os.urandom(SURB_ID_SIZE)
 
     def new_query_id(self) -> bytes:
         """
-        Generate a new 16-byte query ID for channel API operations.
+        Generate a new 16-byte random query ID.
+
+        Query IDs correlate requests and replies within the thin client ↔
+        daemon CBOR protocol (distinct from mix-network SURB IDs, which
+        identify replies within the mixnet itself). Most callers never
+        touch query IDs directly; they are used internally by the
+        Pigeonhole API helpers. Randomness is drawn from ``os.urandom``.
 
         Returns:
             bytes: Random 16-byte identifier.
