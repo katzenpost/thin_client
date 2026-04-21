@@ -6,11 +6,26 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum ThinClientError {
+    /// An underlying `std::io::Error` was encountered when reading from or
+    /// writing to the local daemon socket.
     IoError(std::io::Error),
+    /// CBOR (de)serialisation failed. The thin client ↔ daemon protocol is
+    /// CBOR-framed; this variant indicates a malformed or unexpected payload.
     CborError(serde_cbor::Error),
+    /// The thin client failed to establish a connection to the local daemon
+    /// socket during `ThinClient::new`. The daemon may not be running, or the
+    /// socket path in the config may be wrong.
     ConnectError,
+    /// No PKI document is currently available. The daemon forwards the latest
+    /// consensus on connect; receiving this error generally means the daemon
+    /// has not yet received its first PKI document from the mixnet.
     MissingPkiDocument,
+    /// `get_service` was called with a service name that no mix node in the
+    /// current PKI document advertises.
     ServiceNotFound,
+    /// The requested operation cannot be performed because the daemon is not
+    /// currently connected to the mixnet. Raised by send/receive methods;
+    /// callers can poll `is_connected()` to decide when to retry.
     OfflineMode(String),
 
     // Pigeonhole replica error codes (from pigeonhole/errors.go)
@@ -56,7 +71,12 @@ pub enum ThinClientError {
         failed_envelope_index: u64,
     },
 
+    /// `blocking_send_message` did not receive a reply within the caller's
+    /// supplied timeout. The message may still have been sent and may still
+    /// elicit a reply that is later dropped.
     Timeout(String),
+    /// A miscellaneous error carrying a free-form description. Used when no
+    /// more specific variant applies, including unknown daemon error codes.
     Other(String),
 }
 

@@ -241,7 +241,15 @@ impl ThinClient {
         debug!("ThinClient disconnected (state preserved).");
     }
 
-    /// Returns true if the daemon is connected to the mixnet.
+    /// Returns `true` if the daemon is currently connected to the mixnet.
+    ///
+    /// Note the distinction: this tracks the daemon's *mixnet* connectivity,
+    /// not the local socket between this thin client and the daemon. The
+    /// daemon may be reachable while the mixnet itself is unreachable — in
+    /// that case the local socket is fine but this method returns `false`,
+    /// and `send_message` / `blocking_send_message` will raise
+    /// `ThinClientError::OfflineMode`. The latest value is updated by
+    /// `ConnectionStatusEvent`s.
     pub fn is_connected(&self) -> bool {
         self.is_connected.load(Ordering::Relaxed)
     }
@@ -260,21 +268,44 @@ impl ThinClient {
         }
     }
 
-    /// Generates a new message ID.
+    /// Generates a new 16-byte random message ID.
+    ///
+    /// Message IDs are used to correlate `SendMessage` requests with their
+    /// corresponding `MessageSentEvent` and (if a SURB is present)
+    /// `MessageReplyEvent`. Callers generally do not need to construct one
+    /// by hand — use `blocking_send_message`, which does it internally —
+    /// but this helper is exposed for callers composing requests manually.
+    ///
+    /// Randomness is drawn from the thread-local CSPRNG.
     pub fn new_message_id() -> Vec<u8> {
         let mut id = vec![0; MESSAGE_ID_SIZE];
         rand::thread_rng().fill_bytes(&mut id);
         id
     }
 
-    /// Generates a new SURB ID.
+    /// Generates a new random SURB ID of the Sphinx-protocol-defined length.
+    ///
+    /// SURB IDs identify which Single Use Reply Block a given
+    /// `MessageReplyEvent` corresponds to. Pass the returned bytes as the
+    /// `surb_id` argument to `send_message`, then watch the event sink for
+    /// a matching reply.
+    ///
+    /// Randomness is drawn from the thread-local CSPRNG.
     pub fn new_surb_id() -> Vec<u8> {
         let mut id = vec![0; SURB_ID_SIZE];
         rand::thread_rng().fill_bytes(&mut id);
         id
     }
 
-    /// Generates a new query ID.
+    /// Generates a new 16-byte random query ID.
+    ///
+    /// Query IDs correlate requests and replies within the thin client ↔
+    /// daemon CBOR protocol (distinct from mix-network SURB IDs, which
+    /// identify replies within the mixnet itself). Most callers never
+    /// touch query IDs directly; they are used internally by the
+    /// Pigeonhole wire-protocol helpers.
+    ///
+    /// Randomness is drawn from the thread-local CSPRNG.
     pub fn new_query_id() -> Vec<u8> {
         let mut id = vec![0; QUERY_ID_SIZE];
         rand::thread_rng().fill_bytes(&mut id);
@@ -287,7 +318,20 @@ impl ThinClient {
         debug!("PKI document updated.");
     }
 
-    /// Returns our latest retrieved PKI document.
+    /// Returns the most recent PKI consensus document the daemon has
+    /// forwarded to this thin client.
+    ///
+    /// The document is a CBOR map describing the current mixnet topology,
+    /// the set of available services, and per-node public-key material.
+    /// Useful inputs include the PKI epoch, the list of mix nodes, the list
+    /// of service providers, and the `ReplicaDescriptor` entries consulted
+    /// by Pigeonhole.
+    ///
+    /// # Errors
+    ///
+    /// * `ThinClientError::MissingPkiDocument` — the daemon has not yet
+    ///   forwarded a PKI document (most commonly on a freshly-connected
+    ///   client, before the first `NewDocumentEvent` has arrived).
     pub async fn pki_document(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
         self.pki_doc.read().await.clone().ok_or(ThinClientError::MissingPkiDocument)
     }
@@ -298,8 +342,25 @@ impl ThinClient {
         &self.config.pigeonhole_geometry
     }
 
-    /// Given a service name this returns a ServiceDescriptor if the service exists
-    /// in the current PKI document.
+    /// Returns a random instance of the named service from the current PKI
+    /// document.
+    ///
+    /// Multiple mix nodes may advertise the same service name; this method
+    /// returns the first match from `find_services`, which effectively picks
+    /// one arbitrarily. To see every advertised instance, use
+    /// `find_services` directly.
+    ///
+    /// # Arguments
+    ///
+    /// * `service_name` — the service capability to look up (e.g.
+    ///   `"echo"`, `"courier"`).
+    ///
+    /// # Errors
+    ///
+    /// * `ThinClientError::MissingPkiDocument` — no PKI document is yet
+    ///   available; see `pki_document`.
+    /// * `ThinClientError::ServiceNotFound` — no node in the current
+    ///   consensus advertises `service_name`.
     pub async fn get_service(&self, service_name: &str) -> Result<ServiceDescriptor, ThinClientError> {
         let doc = self.pki_doc.read().await.clone().ok_or(ThinClientError::MissingPkiDocument)?;
         let services = find_services(service_name, &doc);
