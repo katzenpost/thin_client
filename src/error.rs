@@ -44,6 +44,17 @@ pub enum ThinClientError {
     StartResendingCancelled,
     /// Tombstone signature verification failed (error code 25)
     InvalidTombstoneSignature,
+    /// Copy command reported CopyStatusFailed by the courier (error code 26).
+    ///
+    /// `replica_error_code` is the pigeonhole replica `ErrorCode` that
+    /// triggered the abort (e.g. `10 = BoxAlreadyExists`); 0 if not reported.
+    /// `failed_envelope_index` is the 1-based position in the copy stream of
+    /// the envelope whose write triggered the abort; 0 if not applicable.
+    /// This is NOT a BACAP message index.
+    CopyCommandFailed {
+        replica_error_code: u8,
+        failed_envelope_index: u64,
+    },
 
     Timeout(String),
     Other(String),
@@ -97,6 +108,14 @@ impl fmt::Display for ThinClientError {
             ThinClientError::BacapDecryptionFailed => write!(f, "BACAP decryption failed"),
             ThinClientError::StartResendingCancelled => write!(f, "Start resending cancelled"),
             ThinClientError::InvalidTombstoneSignature => write!(f, "Invalid tombstone signature"),
+            ThinClientError::CopyCommandFailed {
+                replica_error_code,
+                failed_envelope_index,
+            } => write!(
+                f,
+                "Copy command failed: replica_error_code={}, failed_envelope_index={}",
+                replica_error_code, failed_envelope_index
+            ),
             ThinClientError::Timeout(msg) => write!(f, "Timeout: {}", msg),
             ThinClientError::Other(msg) => write!(f, "Error: {}", msg),
         }

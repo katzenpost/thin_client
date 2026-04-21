@@ -19,6 +19,7 @@ from .core import (
     THIN_CLIENT_SUCCESS,
     thin_client_error_to_string,
     error_code_to_exception,
+    copy_reply_to_exception,
     PigeonholeGeometry,
 )
 
@@ -612,9 +613,9 @@ async def start_resending_copy_command(
     finally:
         self._in_flight_resends.pop(tracking_key, None)
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
-        raise Exception(f"start_resending_copy_command failed: {error_msg}")
+    exc = copy_reply_to_exception(reply)
+    if exc is not None:
+        raise exc
 
 
 async def cancel_resending_copy_command(self, write_cap_hash: bytes) -> None:

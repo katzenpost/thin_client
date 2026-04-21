@@ -85,8 +85,11 @@ from .core import (
     THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED,
     THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED,
     THIN_CLIENT_ERROR_START_RESENDING_CANCELLED,
+    THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG,
+    THIN_CLIENT_ERROR_COPY_COMMAND_FAILED,
     thin_client_error_to_string,
     error_code_to_exception,
+    copy_reply_to_exception,
     # Replica exceptions (matching Go sentinel errors)
     ReplicaError,
     BoxIDNotFoundError,
@@ -106,6 +109,7 @@ from .core import (
     MKEMDecryptionFailedError,
     BACAPDecryptionFailedError,
     StartResendingCancelledError,
+    CopyCommandFailedError,
     ThinClientOfflineError,
     # Constants
     SURB_ID_SIZE,
@@ -191,6 +195,7 @@ __all__ = [
     'blake2_256_sum',
     'thin_client_error_to_string',
     'error_code_to_exception',
+    'copy_reply_to_exception',
     # Constants
     'SURB_ID_SIZE',
     'MESSAGE_ID_SIZE',
@@ -232,6 +237,8 @@ __all__ = [
     'THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED',
     'THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED',
     'THIN_CLIENT_ERROR_START_RESENDING_CANCELLED',
+    'THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG',
+    'THIN_CLIENT_ERROR_COPY_COMMAND_FAILED',
     # Replica exceptions (matching Go sentinel errors)
     'ReplicaError',
     'BoxIDNotFoundError',

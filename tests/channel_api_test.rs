@@ -21,7 +21,7 @@
 //! These tests require a running mixnet with client daemon for integration testing.
 
 use std::time::Duration;
-use katzenpost_thin_client::{ThinClient, Config};
+use katzenpost_thin_client::{ThinClient, Config, ThinClientError};
 use katzenpost_thin_client::pigeonhole::{KeypairResult, EncryptWriteResult};
 
 /// Test helper to setup a thin client for integration tests
@@ -895,4 +895,128 @@ async fn test_from_multi_payload_multi_call() {
     println!("Channel 2 verified");
 
     println!("✅ FromMultiPayload multi-call test passed!");
+}
+
+/// Pigeonhole replica ErrorCode for BoxAlreadyExists.
+/// Mirrors `ReplicaErrorBoxAlreadyExists` in pigeonhole/errors.go.
+const REPLICA_ERROR_BOX_ALREADY_EXISTS: u8 = 10;
+
+/// Covers the audit's `853cef04` namespace-collision fix: when the courier
+/// reports `CopyStatusFailed`, the thin client must receive a dedicated
+/// `ThinClientError::CopyCommandFailed` variant carrying both the replica's
+/// `ErrorCode` and the 1-based `FailedEnvelopeIndex` of the offending envelope
+/// — not a generic `Other(String)`.
+///
+/// This is the Rust analogue of the Python
+/// `test_copy_onto_already_existing_box_error` test in
+/// `tests/test_new_pigeonhole_api.py`.
+#[tokio::test]
+async fn test_copy_onto_already_existing_box_error() {
+    println!("\n=== Test: Copy Onto Already Existing Box Error ===");
+
+    let client = setup_thin_client().await.expect("Failed to setup client");
+
+    // Step 1: Create destination keypair.
+    let dest_seed: [u8; 32] = rand::random();
+    let KeypairResult { write_cap: dest_write_cap, read_cap: _, first_message_index: dest_first_index } =
+        client.new_keypair(&dest_seed).await
+            .expect("Failed to create destination keypair");
+    println!("✓ Created destination keypair");
+
+    // Step 2: Write a message directly to the first destination box so the
+    // subsequent Copy command has something to collide with.
+    let first_message = b"First message - this should work";
+    let first_write = client
+        .encrypt_write(first_message, &dest_write_cap, &dest_first_index).await
+        .expect("Failed to encrypt first write");
+    client.start_resending_encrypted_message(
+        None,
+        Some(&dest_write_cap),
+        None,
+        None,
+        &first_write.envelope_descriptor,
+        &first_write.message_ciphertext,
+        &first_write.envelope_hash,
+    ).await.expect("Failed to send first write");
+    println!("✓ First direct write succeeded");
+
+    println!("--- Waiting for first write to propagate (5 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Step 3: Create temporary copy stream channel.
+    let temp_seed: [u8; 32] = rand::random();
+    let KeypairResult { write_cap: temp_write_cap, read_cap: _, first_message_index: temp_first_index } =
+        client.new_keypair(&temp_seed).await
+            .expect("Failed to create temp keypair");
+    println!("✓ Created temporary copy stream channel");
+
+    // Step 4: Create copy stream chunks targeting the already-written destination.
+    let random_data: Vec<u8> = (0..2000).map(|_| rand::random::<u8>()).collect();
+    let copy_stream_result = client.create_courier_envelopes_from_payload(
+        &random_data,
+        &dest_write_cap,
+        &dest_first_index,
+        true,   // is_start
+        true,   // is_last
+    ).await.expect("Failed to create courier envelopes from payload");
+    assert!(!copy_stream_result.envelopes.is_empty(), "Should have at least one chunk");
+    let num_chunks = copy_stream_result.envelopes.len();
+    println!("✓ Created {} copy stream chunks", num_chunks);
+
+    // Step 5: Write all copy stream chunks to the temporary channel.
+    let mut temp_index = temp_first_index.clone();
+    for (i, chunk) in copy_stream_result.envelopes.iter().enumerate() {
+        let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash, .. } =
+            client.encrypt_write(chunk, &temp_write_cap, &temp_index).await
+                .expect("Failed to encrypt chunk");
+
+        client.start_resending_encrypted_message(
+            None,
+            Some(&temp_write_cap),
+            None,
+            Some(0),
+            &envelope_descriptor,
+            &message_ciphertext,
+            &envelope_hash,
+        ).await.expect("Failed to send chunk via ARQ");
+
+        println!("  ✓ Wrote chunk {}/{}", i + 1, num_chunks);
+
+        temp_index = client.next_message_box_index(&temp_index).await
+            .expect("Failed to get next index");
+    }
+
+    println!("--- Waiting for copy stream chunks to propagate (30 seconds) ---");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+
+    // Step 6: Send Copy command — must fail because the destination's first
+    // box was already populated in step 2.
+    println!("--- Sending Copy command (should fail) ---");
+    let result = client.start_resending_copy_command(&temp_write_cap, None, None).await;
+
+    match result {
+        Ok(()) => panic!("Expected CopyCommandFailed when copying onto already existing box, got Ok"),
+        Err(ThinClientError::CopyCommandFailed { replica_error_code, failed_envelope_index }) => {
+            println!(
+                "✓ Got ThinClientError::CopyCommandFailed \
+                 (replica_error_code={}, failed_envelope_index={})",
+                replica_error_code, failed_envelope_index
+            );
+            assert_eq!(
+                replica_error_code, REPLICA_ERROR_BOX_ALREADY_EXISTS,
+                "expected replica_error_code={} (BoxAlreadyExists), got {}",
+                REPLICA_ERROR_BOX_ALREADY_EXISTS, replica_error_code
+            );
+            assert!(
+                failed_envelope_index > 0,
+                "expected failed_envelope_index > 0, got {}",
+                failed_envelope_index
+            );
+            println!("✅ CopyOntoAlreadyExistingBoxError test passed!");
+        }
+        Err(other) => panic!(
+            "Expected ThinClientError::CopyCommandFailed, got {:?}",
+            other
+        ),
+    }
 }

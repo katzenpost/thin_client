@@ -18,7 +18,12 @@ These tests require a running mixnet with client daemon for integration testing.
 import asyncio
 import pytest
 import os
-from katzenpost_thinclient import ThinClient, Config
+from katzenpost_thinclient import (
+    ThinClient,
+    Config,
+    CopyCommandFailedError,
+    REPLICA_ERROR_BOX_ALREADY_EXISTS,
+)
 
 
 async def setup_thin_client():
@@ -1340,8 +1345,20 @@ async def test_copy_onto_already_existing_box_error():
         try:
             await client.start_resending_copy_command(temp_keypair.write_cap)
             assert False, "Expected error when copying onto already existing box"
-        except Exception as e:
+        except CopyCommandFailedError as e:
             print(f"✓ Copy command failed as expected: {e}")
+            assert e.replica_error_code == REPLICA_ERROR_BOX_ALREADY_EXISTS, (
+                f"expected replica_error_code={REPLICA_ERROR_BOX_ALREADY_EXISTS} "
+                f"(BoxAlreadyExists), got {e.replica_error_code}"
+            )
+            assert e.failed_envelope_index > 0, (
+                f"expected failed_envelope_index > 0, got {e.failed_envelope_index}"
+            )
+            print(
+                f"✓ Diagnostic fields populated: "
+                f"replica_error_code={e.replica_error_code}, "
+                f"failed_envelope_index={e.failed_envelope_index}"
+            )
             print("✅ CopyOntoAlreadyExistingBoxError test passed!")
 
     finally:

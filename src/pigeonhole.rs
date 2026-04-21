@@ -231,11 +231,40 @@ struct StartResendingCopyCommandRequest {
 }
 
 /// Reply confirming start of copy command resending.
+///
+/// `replica_error_code` and `failed_envelope_index` are populated only when
+/// `error_code == 26` (`ThinClientErrorCopyCommandFailed`) — they carry
+/// diagnostic detail about which replica rejected which envelope in the copy
+/// stream. Absent tags decode to zero via `#[serde(default)]`, preserving
+/// compatibility with daemons that omit them.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StartResendingCopyCommandReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
     error_code: u8,
+    #[serde(default)]
+    replica_error_code: u8,
+    #[serde(default)]
+    failed_envelope_index: u64,
+}
+
+/// Thin-client error code reserved for courier-reported copy command failures.
+/// Mirrors `ThinClientErrorCopyCommandFailed` in the Go thin client.
+const THIN_CLIENT_ERROR_COPY_COMMAND_FAILED: u8 = 26;
+
+/// Maps a `StartResendingCopyCommandReply` to an error variant (or `None` on
+/// success). Unlike `error_code_to_error()`, this helper has access to the
+/// reply's diagnostic fields and can populate
+/// `ThinClientError::CopyCommandFailed { .. }` when the courier reports code 26.
+fn copy_reply_to_error(reply: &StartResendingCopyCommandReply) -> Option<ThinClientError> {
+    match reply.error_code {
+        0 => None,
+        THIN_CLIENT_ERROR_COPY_COMMAND_FAILED => Some(ThinClientError::CopyCommandFailed {
+            replica_error_code: reply.replica_error_code,
+            failed_envelope_index: reply.failed_envelope_index,
+        }),
+        code => Some(error_code_to_error(code)),
+    }
 }
 
 /// Request to cancel resending a copy command.
@@ -912,8 +941,8 @@ impl ThinClient {
         let reply: StartResendingCopyCommandReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
 
-        if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("start_resending_copy_command failed with error code: {}", reply.error_code)));
+        if let Some(err) = copy_reply_to_error(&reply) {
+            return Err(err);
         }
 
         Ok(())

@@ -69,6 +69,7 @@ THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED = 22
 THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED = 23
 THIN_CLIENT_ERROR_START_RESENDING_CANCELLED = 24
 THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG = 25
+THIN_CLIENT_ERROR_COPY_COMMAND_FAILED = 26
 
 def thin_client_error_to_string(error_code: int) -> str:
     """Convert a thin client error code to a human-readable string."""
@@ -99,6 +100,7 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED: "BACAP decryption failed",
         THIN_CLIENT_ERROR_START_RESENDING_CANCELLED: "Start resending cancelled",
         THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG: "Invalid tombstone signature",
+        THIN_CLIENT_ERROR_COPY_COMMAND_FAILED: "Copy command failed",
     }
     return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
 
@@ -172,6 +174,29 @@ class StartResendingCancelledError(Exception):
     pass
 
 
+class CopyCommandFailedError(Exception):
+    """StartResendingCopyCommand operation failed on the courier.
+
+    The courier aborted the Copy command because a replica rejected one of the
+    embedded writes. Inspect the diagnostic attributes to determine the cause:
+
+    Attributes:
+        replica_error_code (int): The pigeonhole replica ErrorCode that triggered
+            the abort (e.g. REPLICA_ERROR_BOX_ALREADY_EXISTS). 0 if not reported.
+        failed_envelope_index (int): 1-based sequential position in the copy
+            stream of the envelope whose write triggered the abort. 0 if not
+            applicable. This is NOT a BACAP message index.
+    """
+
+    def __init__(self, replica_error_code: int = 0, failed_envelope_index: int = 0) -> None:
+        self.replica_error_code = replica_error_code
+        self.failed_envelope_index = failed_envelope_index
+        super().__init__(
+            f"copy command failed: replica_error_code={replica_error_code}, "
+            f"failed_envelope_index={failed_envelope_index}"
+        )
+
+
 def error_code_to_exception(error_code: int) -> Exception:
     """
     Maps error codes to exception instances for StartResendingEncryptedMessage.
@@ -219,9 +244,40 @@ def error_code_to_exception(error_code: int) -> Exception:
     elif error_code == THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG:  # 25
         return InvalidTombstoneSignatureError("invalid tombstone signature")
 
+    # Note: THIN_CLIENT_ERROR_COPY_COMMAND_FAILED (26) is not handled here because
+    # constructing CopyCommandFailedError requires the reply's diagnostic fields
+    # (replica_error_code, failed_envelope_index). Copy command callers should use
+    # copy_reply_to_exception() instead.
+
     # For other error codes, return a generic exception with the error string
     else:
         return Exception(thin_client_error_to_string(error_code))
+
+
+def copy_reply_to_exception(reply: "Dict[str, Any]") -> "Exception | None":
+    """
+    Maps a StartResendingCopyCommandReply dict to an exception (or None on success).
+
+    Unlike error_code_to_exception(), this helper has access to the reply's
+    diagnostic fields (replica_error_code, failed_envelope_index), which it
+    uses to construct a CopyCommandFailedError when the courier reports
+    THIN_CLIENT_ERROR_COPY_COMMAND_FAILED.
+
+    Args:
+        reply: The decoded start_resending_copy_command_reply dict.
+
+    Returns:
+        None if error_code is 0 (success); otherwise an Exception instance.
+    """
+    error_code = reply.get("error_code", 0)
+    if error_code == THIN_CLIENT_SUCCESS:
+        return None
+    if error_code == THIN_CLIENT_ERROR_COPY_COMMAND_FAILED:
+        return CopyCommandFailedError(
+            replica_error_code=reply.get("replica_error_code", 0),
+            failed_envelope_index=reply.get("failed_envelope_index", 0),
+        )
+    return error_code_to_exception(error_code)
 
 
 def is_expected_outcome(exc: Exception) -> bool:
