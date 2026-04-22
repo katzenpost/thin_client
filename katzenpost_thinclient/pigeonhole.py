@@ -551,6 +551,55 @@ async def next_message_box_index(self, message_box_index: bytes) -> bytes:
     return reply.get("next_message_box_index")
 
 
+async def get_message_box_index_counter(self, message_box_index: bytes) -> int:
+    """
+    Return the BACAP Idx64 counter embedded in a MessageBoxIndex.
+
+    Callers that persist MessageBoxIndex blobs across sessions can use this
+    to order or compare two indexes — e.g. to detect a duplicate ACK that
+    would otherwise regress a write-cap's index — without having to peek at
+    the binary layout themselves. The layout (first 8 bytes little-endian)
+    is a BACAP implementation detail and must not be relied on outside the
+    daemon.
+
+    Args:
+        message_box_index: MessageBoxIndex blob (as bytes) whose counter
+            should be returned.
+
+    Returns:
+        int: The BACAP Idx64 value.
+
+    Raises:
+        Exception: If the daemon rejects the request.
+
+    Example:
+        >>> current_idx = await client.get_message_box_index_counter(mbi_a)
+        >>> next_idx = await client.get_message_box_index_counter(mbi_b)
+        >>> if next_idx <= current_idx:
+        ...     print("skipping stale ACK")
+    """
+    query_id = self.new_query_id()
+
+    request = {
+        "get_message_box_index_counter": {
+            "query_id": query_id,
+            "message_box_index": message_box_index,
+        }
+    }
+
+    try:
+        reply = await self._send_and_wait(query_id=query_id, request=request)
+    except Exception as e:
+        self.logger.error(f"Error reading message box index counter: {e}")
+        raise
+
+    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply['error_code'])
+        raise Exception(f"get_message_box_index_counter failed: {error_msg}")
+
+    return reply.get("counter")
+
+
 async def start_resending_copy_command(
     self,
     write_cap: bytes,
