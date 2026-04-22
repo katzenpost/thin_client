@@ -111,6 +111,7 @@ from .core import (
     StartResendingCancelledError,
     CopyCommandFailedError,
     ThinClientOfflineError,
+    ConfigError,
     # Constants
     SURB_ID_SIZE,
     MESSAGE_ID_SIZE,
@@ -176,6 +177,7 @@ __all__ = [
     # Main classes
     'ThinClient',
     'ThinClientOfflineError',
+    'ConfigError',
     'Config',
     'ConfigFile',
     'Geometry',

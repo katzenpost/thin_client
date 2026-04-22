@@ -17,6 +17,7 @@ use super::{DialedHalves, Dialer};
 /// of `"tcp"`, `"tcp4"`, `"tcp6"`; when absent it defaults to
 /// `"tcp"` (dual-stack where supported).
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TcpDialConfig {
     #[serde(rename = "Address")]
     pub address: String,

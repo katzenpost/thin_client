@@ -242,6 +242,7 @@ impl ServiceDescriptor {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Geometry {
     #[serde(rename = "PacketLength")]
     pub packet_length: usize,
@@ -296,6 +297,7 @@ pub struct Geometry {
 /// 2. Given precomputed Pigeonhole Geometry → derive accommodating Sphinx Geometry
 /// 3. Given Sphinx Geometry constraint → derive optimal Pigeonhole Geometry
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PigeonholeGeometry {
     /// The maximum usable plaintext payload size within a Box.
     #[serde(rename = "MaxPlaintextPayloadLength")]
@@ -363,6 +365,7 @@ impl PigeonholeGeometry {
 
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigFile {
     #[serde(rename = "SphinxGeometry")]
     pub sphinx_geometry: Geometry,

@@ -17,6 +17,7 @@ use super::{DialedHalves, Dialer};
 /// Linux abstract socket; the rest of the name becomes the abstract
 /// address (with a leading null byte prepended internally).
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UnixDialConfig {
     #[serde(rename = "Address")]
     pub address: String,

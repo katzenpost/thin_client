@@ -107,6 +107,19 @@ def thin_client_error_to_string(error_code: int) -> str:
     return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
 
 
+class ConfigError(Exception):
+    """
+    Raised when the thin-client TOML config is missing required sections,
+    contains unknown keys, or otherwise fails structural validation.
+
+    Every caller of ConfigFile.load / Config(...) should expect this
+    exception. It is raised eagerly at startup so that a stale or
+    drifted config produces a loud, early failure instead of surfacing
+    later as a mysterious runtime error during mixnet operations.
+    """
+    pass
+
+
 # Pigeonhole Replica Exceptions (matching Go sentinel errors in thin/thin.go)
 # These exceptions can be caught using isinstance() for specific error handling,
 # similar to how Go uses errors.Is() with sentinel errors.
@@ -446,37 +459,127 @@ class PigeonholeGeometry:
         )
 
 
+# Canonical set of top-level keys the thin-client TOML config must
+# contain. kpclientd's genconfig emits exactly these three; anything
+# else indicates a stale or drifted file.
+_EXPECTED_TOP_LEVEL_KEYS = frozenset({"Dial", "SphinxGeometry", "PigeonholeGeometry"})
+
+# Mapping from the PascalCase keys that genconfig emits under
+# [PigeonholeGeometry] to the snake_case kwargs that the
+# PigeonholeGeometry class accepts.
+_PIGEONHOLE_TOML_TO_KWARG = {
+    "MaxPlaintextPayloadLength": "max_plaintext_payload_length",
+    "CourierQueryReadLength": "courier_query_read_length",
+    "CourierQueryWriteLength": "courier_query_write_length",
+    "CourierQueryReplyReadLength": "courier_query_reply_read_length",
+    "CourierQueryReplyWriteLength": "courier_query_reply_write_length",
+    "NIKEName": "nike_name",
+    "SignatureSchemeName": "signature_scheme_name",
+}
+
+
 class ConfigFile:
     """
     ConfigFile represents everything loaded from a TOML file: the
-    subtable-discriminated Dial transport config and the Sphinx
-    geometry.
+    subtable-discriminated Dial transport config, the Sphinx geometry,
+    and the Pigeonhole geometry.
     """
-    def __init__(self, dial: "DialConfig", geometry: Geometry) -> None:
+    def __init__(
+        self,
+        dial: "DialConfig",
+        geometry: Geometry,
+        pigeonhole_geometry: PigeonholeGeometry,
+    ) -> None:
         self.dial : "DialConfig" = dial
         self.geometry : Geometry = geometry
+        self.pigeonhole_geometry : PigeonholeGeometry = pigeonhole_geometry
 
     @classmethod
     def load(cls, toml_path:str) -> "ConfigFile":
-        with open(toml_path, 'r') as f:
-            data = toml.load(f)
-        dial_data = data.get('Dial')
-        if not isinstance(dial_data, dict):
-            raise ValueError(
-                "config: missing or malformed [Dial] subtable; expected one of "
-                "[Dial.Unix] or [Dial.Tcp]"
+        """
+        Parse a kpclientd-style thin-client TOML config.
+
+        Raises ConfigError eagerly on any structural problem: unknown
+        top-level sections, missing required sections, wrong types, or
+        unknown / missing keys within the SphinxGeometry,
+        PigeonholeGeometry, or Dial subtables. The intent is that a
+        stale or drifted config fails here at startup rather than
+        producing a mysterious runtime failure later.
+        """
+        try:
+            with open(toml_path, 'r') as f:
+                data = toml.load(f)
+        except FileNotFoundError as e:
+            raise ConfigError(f"config: {toml_path}: file not found") from e
+        except toml.TomlDecodeError as e:
+            raise ConfigError(f"config: {toml_path}: TOML parse error: {e}") from e
+
+        if not isinstance(data, dict):
+            raise ConfigError(f"config: {toml_path}: top-level must be a table")
+
+        unknown = set(data.keys()) - _EXPECTED_TOP_LEVEL_KEYS
+        if unknown:
+            raise ConfigError(
+                f"config: {toml_path}: unknown top-level key(s) {sorted(unknown)}; "
+                f"expected exactly {sorted(_EXPECTED_TOP_LEVEL_KEYS)}"
             )
-        dial = DialConfig.from_toml_dict(dial_data)
-        geometry_data = data.get('SphinxGeometry')
-        assert isinstance(geometry_data, dict)
-        geometry : Geometry = Geometry(**geometry_data)
-        return cls(dial, geometry)
+        missing = _EXPECTED_TOP_LEVEL_KEYS - set(data.keys())
+        if missing:
+            raise ConfigError(
+                f"config: {toml_path}: missing required top-level key(s) {sorted(missing)}"
+            )
+
+        dial = _load_dial(data["Dial"], toml_path)
+        geometry = _load_sphinx_geometry(data["SphinxGeometry"], toml_path)
+        pigeonhole_geometry = _load_pigeonhole_geometry(data["PigeonholeGeometry"], toml_path)
+        return cls(dial, geometry, pigeonhole_geometry)
 
     def __str__(self) -> str:
         return (
             f"Dial: {self.dial}\n"
-            f"Geometry:\n{self.geometry}"
+            f"Geometry:\n{self.geometry}\n"
+            f"{self.pigeonhole_geometry}"
         )
+
+
+def _load_dial(dial_data: "Any", toml_path: str) -> "DialConfig":
+    if not isinstance(dial_data, dict):
+        raise ConfigError(
+            f"config: {toml_path}: [Dial] must be a table containing "
+            f"exactly one of [Dial.Unix] or [Dial.Tcp]"
+        )
+    try:
+        return DialConfig.from_toml_dict(dial_data)
+    except ValueError as e:
+        raise ConfigError(f"config: {toml_path}: [Dial]: {e}") from e
+
+
+def _load_sphinx_geometry(geometry_data: "Any", toml_path: str) -> Geometry:
+    if not isinstance(geometry_data, dict):
+        raise ConfigError(f"config: {toml_path}: [SphinxGeometry] must be a table")
+    try:
+        return Geometry(**geometry_data)
+    except TypeError as e:
+        raise ConfigError(
+            f"config: {toml_path}: [SphinxGeometry] has unknown or missing keys: {e}"
+        ) from e
+
+
+def _load_pigeonhole_geometry(geometry_data: "Any", toml_path: str) -> PigeonholeGeometry:
+    if not isinstance(geometry_data, dict):
+        raise ConfigError(f"config: {toml_path}: [PigeonholeGeometry] must be a table")
+    unknown = set(geometry_data.keys()) - set(_PIGEONHOLE_TOML_TO_KWARG.keys())
+    if unknown:
+        raise ConfigError(
+            f"config: {toml_path}: [PigeonholeGeometry] has unknown key(s) {sorted(unknown)}"
+        )
+    kwargs = {_PIGEONHOLE_TOML_TO_KWARG[k]: v for k, v in geometry_data.items()}
+    try:
+        return PigeonholeGeometry(**kwargs)
+    except TypeError as e:
+        raise ConfigError(
+            f"config: {toml_path}: [PigeonholeGeometry] has unknown or missing keys: {e}"
+        ) from e
 
 
 def pretty_print_obj(obj: "Any") -> str:
@@ -649,6 +752,7 @@ class Config:
 
         self.dial = cfgfile.dial
         self.geometry = cfgfile.geometry
+        self.pigeonhole_geometry = cfgfile.pigeonhole_geometry
 
         self.on_connection_status = on_connection_status
         self.on_new_pki_document = on_new_pki_document

@@ -46,13 +46,47 @@ class DialConfig:
 
     @classmethod
     def from_toml_dict(cls, data: dict) -> "DialConfig":
-        """Parse a TOML [Dial] subtable (dict) into a DialConfig."""
+        """
+        Parse a TOML [Dial] subtable (dict) into a DialConfig.
+
+        Rejects unknown subtables (typos, removed variants, future
+        names) and unknown keys inside a recognised subtable. Exactly
+        one of [Dial.Unix] / [Dial.Tcp] must be populated.
+        """
+        known_subtables = {"Unix", "Tcp"}
+        unknown_subtables = set(data.keys()) - known_subtables
+        if unknown_subtables:
+            raise ValueError(
+                f"unknown subtable(s) {sorted(unknown_subtables)} under [Dial]; "
+                f"expected one of {sorted(known_subtables)}"
+            )
+
         unix: Optional[UnixDialConfig] = None
         tcp: Optional[TcpDialConfig] = None
         if "Unix" in data:
-            unix = UnixDialConfig(address=data["Unix"]["Address"])
+            unix_data = data["Unix"]
+            if not isinstance(unix_data, dict):
+                raise ValueError("[Dial.Unix] must be a table")
+            unknown = set(unix_data.keys()) - {"Address"}
+            if unknown:
+                raise ValueError(
+                    f"[Dial.Unix] has unknown key(s) {sorted(unknown)}; expected ['Address']"
+                )
+            if "Address" not in unix_data:
+                raise ValueError("[Dial.Unix] missing required key 'Address'")
+            unix = UnixDialConfig(address=unix_data["Address"])
         if "Tcp" in data:
             tcp_data = data["Tcp"]
+            if not isinstance(tcp_data, dict):
+                raise ValueError("[Dial.Tcp] must be a table")
+            unknown = set(tcp_data.keys()) - {"Address", "Network"}
+            if unknown:
+                raise ValueError(
+                    f"[Dial.Tcp] has unknown key(s) {sorted(unknown)}; "
+                    f"expected from ['Address', 'Network']"
+                )
+            if "Address" not in tcp_data:
+                raise ValueError("[Dial.Tcp] missing required key 'Address'")
             tcp = TcpDialConfig(
                 address=tcp_data["Address"],
                 network=tcp_data.get("Network", "tcp"),

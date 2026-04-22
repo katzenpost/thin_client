@@ -52,6 +52,7 @@ impl From<DialConfigError> for io::Error {
 /// The subtable-discriminated dial configuration. Exactly one of its
 /// fields must be `Some`; zero or two or more is rejected.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DialConfig {
     #[serde(rename = "Unix", default)]
     pub unix: Option<UnixDialConfig>,
@@ -173,16 +174,20 @@ mod tests {
 
     #[test]
     fn toml_rejects_flat_old_fields() {
-        // The old flat {Network, Address} layout at the top level
-        // has no matching fields in DialConfig. Serde with the
-        // default unknown-field policy silently ignores them, so
-        // validate() should reject the empty shape.
+        // The old flat {Network, Address} layout at the top level is
+        // not a valid DialConfig. With `deny_unknown_fields`, serde
+        // rejects the parse outright rather than silently producing
+        // an empty subtable shape — giving stale configs a loud,
+        // early error instead of a surprising runtime failure.
         let src = r#"
             Network = "tcp"
             Address = "localhost:64331"
         "#;
-        let cfg: DialConfig = toml::from_str(src).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(err, DialConfigError::NoTransport));
+        let err = toml::from_str::<DialConfig>(src).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field") && msg.contains("Network"),
+            "expected unknown-field rejection, got: {msg}",
+        );
     }
 }
