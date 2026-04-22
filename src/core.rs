@@ -11,7 +11,6 @@ use serde_cbor::{from_slice, Value};
 
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::net::{TcpStream, UnixStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf as TcpReadHalf, OwnedWriteHalf as TcpWriteHalf};
 use tokio::net::unix::{OwnedReadHalf as UnixReadHalf, OwnedWriteHalf as UnixWriteHalf};
@@ -112,70 +111,29 @@ impl ThinClient {
         // Shared response channels map
         let response_channels = Arc::new(Mutex::new(HashMap::new()));
 
-	let client = match config.network.to_uppercase().as_str() {
-            "TCP" => {
-		let socket = TcpStream::connect(&config.address).await?;
-		let (read_half, write_half) = socket.into_split();
-		Arc::new(Self {
-                    read_half: Mutex::new(ReadHalf::Tcp(read_half)),
-                    write_half: Mutex::new(WriteHalf::Tcp(write_half)),
-                    config,
-                    pki_doc: Arc::new(RwLock::new(None)),
-                    worker_task: Mutex::new(None),
-                    event_sink_task: Mutex::new(None),
-                    shutdown: Arc::new(AtomicBool::new(false)),
-                    is_connected: Arc::new(AtomicBool::new(false)),
-                    event_sink: event_sink_tx.clone(),
-                    drain_add: drain_add_tx.clone(),
-                    drain_remove: drain_remove_tx.clone(),
-                    response_channels: response_channels.clone(),
-                    daemon_instance_token: RwLock::new(Vec::new()),
-                    in_flight_resends: Mutex::new(HashMap::new()),
-                    received_shutdown: AtomicBool::new(false),
-                    instance_token: {
-                        let mut token = [0u8; 16];
-                        rand::thread_rng().fill_bytes(&mut token);
-                        token
-                    },
-		})
-            }
-            "UNIX" => {
-		let path = if config.address.starts_with('@') {
-                    let mut p = String::from("\0");
-                    p.push_str(&config.address[1..]);
-                    p
-		} else {
-                    config.address.clone()
-		};
-		let socket = UnixStream::connect(path).await?;
-		let (read_half, write_half) = socket.into_split();
-		Arc::new(Self {
-                    read_half: Mutex::new(ReadHalf::Unix(read_half)),
-                    write_half: Mutex::new(WriteHalf::Unix(write_half)),
-                    config,
-                    pki_doc: Arc::new(RwLock::new(None)),
-                    worker_task: Mutex::new(None),
-                    event_sink_task: Mutex::new(None),
-                    shutdown: Arc::new(AtomicBool::new(false)),
-                    is_connected: Arc::new(AtomicBool::new(false)),
-                    event_sink: event_sink_tx,
-                    drain_add: drain_add_tx,
-                    drain_remove: drain_remove_tx,
-                    response_channels,
-                    daemon_instance_token: RwLock::new(Vec::new()),
-                    in_flight_resends: Mutex::new(HashMap::new()),
-                    received_shutdown: AtomicBool::new(false),
-                    instance_token: {
-                        let mut token = [0u8; 16];
-                        rand::thread_rng().fill_bytes(&mut token);
-                        token
-                    },
-		})
-            }
-	    _ => {
-		return Err(format!("Unknown network type: {}", config.network).into());
-            }
-        };
+        let (read_half, write_half) = config.dial.dial().await?;
+        let client = Arc::new(Self {
+            read_half: Mutex::new(read_half),
+            write_half: Mutex::new(write_half),
+            config,
+            pki_doc: Arc::new(RwLock::new(None)),
+            worker_task: Mutex::new(None),
+            event_sink_task: Mutex::new(None),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            is_connected: Arc::new(AtomicBool::new(false)),
+            event_sink: event_sink_tx,
+            drain_add: drain_add_tx,
+            drain_remove: drain_remove_tx,
+            response_channels,
+            daemon_instance_token: RwLock::new(Vec::new()),
+            in_flight_resends: Mutex::new(HashMap::new()),
+            received_shutdown: AtomicBool::new(false),
+            instance_token: {
+                let mut token = [0u8; 16];
+                rand::thread_rng().fill_bytes(&mut token);
+                token
+            },
+        });
 
         // Start worker loop
         let client_clone = Arc::clone(&client);
@@ -546,28 +504,15 @@ impl ThinClient {
 
     /// Create a new socket connection and replace the read/write halves.
     async fn dial(&self) -> Result<(), String> {
-        match self.config.network.to_uppercase().as_str() {
-            "TCP" => {
-                let socket = TcpStream::connect(&self.config.address).await.map_err(|e| format!("{}", e))?;
-                let (read_half, write_half) = socket.into_split();
-                *self.read_half.lock().await = ReadHalf::Tcp(read_half);
-                *self.write_half.lock().await = WriteHalf::Tcp(write_half);
-                Ok(())
-            }
-            "UNIX" => {
-                let path = if self.config.address.starts_with('@') {
-                    format!("\0{}", &self.config.address[1..])
-                } else {
-                    self.config.address.clone()
-                };
-                let socket = UnixStream::connect(path).await.map_err(|e| format!("{}", e))?;
-                let (read_half, write_half) = socket.into_split();
-                *self.read_half.lock().await = ReadHalf::Unix(read_half);
-                *self.write_half.lock().await = WriteHalf::Unix(write_half);
-                Ok(())
-            }
-            _ => Err(format!("Unknown network type: {}", self.config.network)),
-        }
+        let (read_half, write_half) = self
+            .config
+            .dial
+            .dial()
+            .await
+            .map_err(|e| format!("{}", e))?;
+        *self.read_half.lock().await = read_half;
+        *self.write_half.lock().await = write_half;
+        Ok(())
     }
 
     /// Send SessionToken to the daemon and read SessionTokenReply.
@@ -621,7 +566,7 @@ impl ThinClient {
                 return false;
             }
 
-            debug!("Attempting to reconnect to daemon at {}://{}", self.config.network, self.config.address);
+            debug!("Attempting to reconnect to daemon via {:?}", self.config.dial);
             if let Err(e) = self.dial().await {
                 error!("Reconnect failed: {}", e);
                 delay = std::cmp::min(delay * 2, max_delay);

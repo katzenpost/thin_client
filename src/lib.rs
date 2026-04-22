@@ -33,6 +33,7 @@ pub mod core;
 pub mod pigeonhole;
 pub mod persistent;
 pub mod helpers;
+pub mod transport;
 
 // ========================================================================
 // Re-exports for public API
@@ -42,6 +43,7 @@ pub use crate::core::{ThinClient, EventSinkReceiver};
 pub use crate::error::ThinClientError;
 pub use crate::helpers::{find_services, pretty_print_pki_doc};
 pub use crate::pigeonhole::{TombstoneRangeResult, StartResendingResult};
+pub use crate::transport::{DialConfig, DialConfigError, Dialer, TcpDialConfig, UnixDialConfig};
 
 // ========================================================================
 // Imports for types defined in this file
@@ -368,17 +370,18 @@ pub struct ConfigFile {
     #[serde(rename = "PigeonholeGeometry")]
     pub pigeonhole_geometry: PigeonholeGeometry,
 
-    #[serde(rename = "Network")]
-    pub network: String,
-
-    #[serde(rename = "Address")]
-    pub address: String,
+    /// The subtable-discriminated dial-transport configuration.
+    /// Exactly one of its inner variants ([Dial.Unix] / [Dial.Tcp])
+    /// must be populated.
+    #[serde(rename = "Dial")]
+    pub dial: DialConfig,
 }
 
 impl ConfigFile {
     pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let contents = fs::read_to_string(path)?;
         let config: ConfigFile = toml::from_str(&contents)?;
+        config.dial.validate()?;
         Ok(config)
     }
 }
@@ -388,8 +391,7 @@ impl ConfigFile {
 /// when it receives the corresponding event from the client daemon.
 #[derive(Clone)]
 pub struct Config {
-    pub network: String,
-    pub address: String,
+    pub dial: DialConfig,
     pub sphinx_geometry: Geometry,
     pub pigeonhole_geometry: PigeonholeGeometry,
 
@@ -404,10 +406,10 @@ impl Config {
     pub fn new(filepath: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let contents = fs::read_to_string(filepath)?;
         let parsed: ConfigFile = toml::from_str(&contents)?;
+        parsed.dial.validate()?;
 
         Ok(Self {
-            network: parsed.network,
-            address: parsed.address,
+            dial: parsed.dial,
             sphinx_geometry: parsed.sphinx_geometry,
             pigeonhole_geometry: parsed.pigeonhole_geometry,
             on_connection_status: None,
