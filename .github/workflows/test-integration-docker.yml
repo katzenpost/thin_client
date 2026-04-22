@@ -74,13 +74,11 @@ jobs:
           cd thinclient
           python -m pytest tests/ -vvv -s --tb=short --timeout=1200 -n 1
 
-      # Rust integration tests temporarily disabled — re-enable once
-      # the Python side is stable under the serialized (-n 1) pytest run.
-      # - name: Run Rust integration tests
-      #   timeout-minutes: 60
-      #   run: |
-      #     cd thinclient
-      #     cargo test --test '*' -- --nocapture --test-threads=5
+      - name: Run Rust integration tests
+        timeout-minutes: 60
+        run: |
+          cd thinclient
+          cargo test --test '*' -- --nocapture --test-threads=5
 
       - name: Stop the mixnet
         if: always()
