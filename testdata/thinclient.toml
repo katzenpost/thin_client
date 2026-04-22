@@ -1,7 +1,3 @@
-[Dial.Tcp]
-Address = "localhost:64331"
-Network = "tcp"
-
 [SphinxGeometry]
   PacketLength = 3082
   NrHops = 5
@@ -26,3 +22,8 @@ Network = "tcp"
   CourierQueryReplyWriteLength = 50
   NIKEName = "CTIDH1024-X25519"
   SignatureSchemeName = "Ed25519"
+
+[Dial]
+  [Dial.Tcp]
+    Address = "localhost:64331"
+    Network = "tcp"
