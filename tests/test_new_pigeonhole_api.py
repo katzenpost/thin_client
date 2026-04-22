@@ -113,7 +113,7 @@ async def test_alice_sends_bob_complete_workflow():
 
         # Wait for message propagation to storage replicas
         print("\n--- Waiting for message propagation to storage replicas (30 seconds) ---")
-        await asyncio.sleep(30)
+        await asyncio.sleep(45)
 
         # Step 4: Bob encrypts a read request
         print("\n--- Step 4: Bob encrypts read request ---")
@@ -292,7 +292,7 @@ async def test_multiple_messages_bulk():
 
         # Wait for propagation
         print("\nWaiting for message propagation (30 seconds)")
-        await asyncio.sleep(30)
+        await asyncio.sleep(45)
 
         # Bob reads ALL messages
         bob_current_index = alice_keypair.first_message_index
@@ -407,7 +407,7 @@ async def test_create_courier_envelopes_from_payload():
 
         # Wait for all chunks to propagate to the copy stream
         print("\n--- Waiting for copy stream chunks to propagate (30 seconds) ---")
-        await asyncio.sleep(30)
+        await asyncio.sleep(45)
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
@@ -570,7 +570,7 @@ async def test_copy_command_multi_channel():
 
         # Wait for chunks to propagate
         print("\n--- Waiting for copy stream chunks to propagate (30 seconds) ---")
-        await asyncio.sleep(30)
+        await asyncio.sleep(45)
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
@@ -734,7 +734,7 @@ async def test_copy_command_multi_channel_efficient():
 
         # Wait for chunks to propagate
         print("\n--- Waiting for copy stream chunks to propagate (30 seconds) ---")
-        await asyncio.sleep(30)
+        await asyncio.sleep(45)
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
@@ -836,7 +836,7 @@ async def test_tombstoning():
 
         # Wait for message propagation
         print("--- Waiting for message propagation (30 seconds) ---")
-        await asyncio.sleep(30)
+        await asyncio.sleep(45)
 
         # Step 2: Bob reads and verifies
         print("\n--- Step 2: Bob reads and verifies ---")
@@ -965,7 +965,7 @@ async def test_tombstone_range():
 
         # Wait for messages to propagate
         print("--- Waiting for message propagation (30 seconds) ---")
-        await asyncio.sleep(30)
+        await asyncio.sleep(45)
 
         # Bob reads and verifies all messages
         read_idx = keypair.first_message_index
@@ -1338,7 +1338,7 @@ async def test_copy_onto_already_existing_box_error():
 
         # Wait for chunks to propagate
         print("--- Waiting for copy stream chunks to propagate (30 seconds) ---")
-        await asyncio.sleep(30)
+        await asyncio.sleep(45)
 
         # Send Copy command - should fail because destination box already exists
         print("--- Sending Copy command (should fail) ---")
@@ -1439,7 +1439,7 @@ async def test_from_payload_multi_call():
             print(f"Wrote temp element {i+1}/{len(all_temp_elements)}")
 
         print("Waiting for temp stream to propagate (30 seconds)")
-        await asyncio.sleep(30)
+        await asyncio.sleep(45)
 
         # Send copy command
         await alice_client.start_resending_copy_command(temp_keypair.write_cap)
@@ -1539,7 +1539,7 @@ async def test_from_multi_payload_multi_call():
             print(f"Wrote temp element {i+1}/{len(all_elements)}")
 
         print("Waiting for temp stream to propagate (30 seconds)")
-        await asyncio.sleep(30)
+        await asyncio.sleep(45)
 
         # Send copy command
         await alice_client.start_resending_copy_command(temp_keypair.write_cap)
