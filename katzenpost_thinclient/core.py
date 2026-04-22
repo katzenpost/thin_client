@@ -25,6 +25,8 @@ import hashlib
 
 from typing import Tuple, Any, Dict, List, Callable
 
+from .transport import DialConfig, TcpDialConfig, UnixDialConfig
+
 # Pigeonhole Replica Error Codes (matching Go pigeonhole/errors.go)
 # These are error codes returned by storage replicas, passed through by the daemon
 # for the StartResendingEncryptedMessage API.
@@ -446,31 +448,33 @@ class PigeonholeGeometry:
 
 class ConfigFile:
     """
-    ConfigFile represents everything loaded from a TOML file:
-    network, address, and geometry.
+    ConfigFile represents everything loaded from a TOML file: the
+    subtable-discriminated Dial transport config and the Sphinx
+    geometry.
     """
-    def __init__(self, network:str, address:str, geometry:Geometry) -> None:
-        self.network : str = network
-        self.address : str = address
+    def __init__(self, dial: "DialConfig", geometry: Geometry) -> None:
+        self.dial : "DialConfig" = dial
         self.geometry : Geometry = geometry
 
     @classmethod
     def load(cls, toml_path:str) -> "ConfigFile":
         with open(toml_path, 'r') as f:
             data = toml.load(f)
-        network = data.get('Network')
-        assert isinstance(network, str)
-        address = data.get('Address')
-        assert isinstance(address, str)
+        dial_data = data.get('Dial')
+        if not isinstance(dial_data, dict):
+            raise ValueError(
+                "config: missing or malformed [Dial] subtable; expected one of "
+                "[Dial.Unix] or [Dial.Tcp]"
+            )
+        dial = DialConfig.from_toml_dict(dial_data)
         geometry_data = data.get('SphinxGeometry')
         assert isinstance(geometry_data, dict)
         geometry : Geometry = Geometry(**geometry_data)
-        return cls(network, address, geometry)
+        return cls(dial, geometry)
 
     def __str__(self) -> str:
         return (
-            f"Network: {self.network}\n"
-            f"Address: {self.address}\n"
+            f"Dial: {self.dial}\n"
             f"Geometry:\n{self.geometry}"
         )
 
@@ -643,8 +647,7 @@ class Config:
 
         cfgfile = ConfigFile.load(filepath)
 
-        self.network = cfgfile.network
-        self.address = cfgfile.address
+        self.dial = cfgfile.dial
         self.geometry = cfgfile.geometry
 
         self.on_connection_status = on_connection_status
@@ -725,37 +728,11 @@ class ThinClient:
         #    handler = logging.StreamHandler(sys.stderr)
         #    self.logger.addHandler(handler)
 
-        if self.config.network is None:
-            raise RuntimeError("config.network is None")
+        if self.config.dial is None:
+            raise RuntimeError("config.dial is None")
 
-        network: str = self.config.network.lower()
-        self.server_addr : str | Tuple[str,int]
-        if network.lower().startswith("tcp"):
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            host, port_str = self.config.address.split(":")
-            self.server_addr = (host, int(port_str))
-        elif network.lower().startswith("unix"):
-            self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-
-            if self.config.address.startswith("@"):
-                # Abstract UNIX socket: leading @ means first byte is null
-                abstract_name = self.config.address[1:]
-                self.server_addr = f"\0{abstract_name}"
-
-                # Bind to a unique abstract socket for this client
-                random_bytes = [random.randint(0, 255) for _ in range(16)]
-                hex_string = ''.join(format(byte, '02x') for byte in random_bytes)
-                client_abstract = f"\0katzenpost_python_thin_client_{hex_string}"
-                self.socket.bind(client_abstract)
-            else:
-                # Filesystem UNIX socket
-                self.server_addr = self.config.address
-
-            self.socket.setblocking(False)
-        else:
-            raise RuntimeError(f"Unknown network type: {self.config.network}")
-
-        self.socket.setblocking(False)
+        dialer = self.config.dial.resolve()
+        self.socket, self.server_addr = dialer.setup_socket()
 
 
     async def start(self, loop:asyncio.AbstractEventLoop) -> None:
@@ -770,20 +747,7 @@ class ThinClient:
             BrokenPipeError
         """
         self.logger.debug("connecting to daemon")
-        server_addr : str | Tuple[str,int] = ''
-
-        if self.config.network.lower().startswith("tcp"):
-            host, port_str = self.config.address.split(":")
-            server_addr = (host, int(port_str))
-        elif self.config.network.lower().startswith("unix"):
-            if self.config.address.startswith("@"):
-                server_addr = '\0' + self.config.address[1:]
-            else:
-                server_addr = self.config.address
-        else:
-            raise RuntimeError(f"Unknown network type: {self.config.network}")
-
-        await loop.sock_connect(self.socket, server_addr)
+        await loop.sock_connect(self.socket, self.server_addr)
 
         # 1st message is always a status event
         response = await self.recv(loop)
@@ -861,20 +825,14 @@ class ThinClient:
         return self._is_connected
 
     def _create_socket(self) -> socket.socket:
-        """Create a new non-blocking socket matching the configured network type."""
-        network = self.config.network.lower()
-        if network.startswith("tcp"):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        elif network.startswith("unix"):
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            if self.config.address.startswith("@"):
-                random_bytes = [random.randint(0, 255) for _ in range(16)]
-                hex_string = ''.join(format(byte, '02x') for byte in random_bytes)
-                client_abstract = f"\0katzenpost_python_thin_client_{hex_string}"
-                sock.bind(client_abstract)
-        else:
-            raise RuntimeError(f"Unknown network type: {self.config.network}")
-        sock.setblocking(False)
+        """Create a new non-blocking socket matching the configured transport.
+
+        Also refreshes self.server_addr, since for abstract unix sockets each
+        reconnect binds to a fresh random client-side path.
+        """
+        dialer = self.config.dial.resolve()
+        sock, server_addr = dialer.setup_socket()
+        self.server_addr = server_addr
         return sock
 
     def stop(self) -> None:
@@ -969,7 +927,7 @@ class ThinClient:
                 return
 
             try:
-                self.logger.debug(f"Attempting to reconnect to daemon at {self.config.network}://{self.config.address}")
+                self.logger.debug(f"Attempting to reconnect to daemon via {self.config.dial}")
                 self.socket = self._create_socket()
                 await loop.sock_connect(self.socket, self.server_addr)
 

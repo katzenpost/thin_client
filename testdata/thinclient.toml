@@ -1,5 +1,6 @@
-Network = "tcp"
+[Dial.Tcp]
 Address = "localhost:64331"
+Network = "tcp"
 
 [SphinxGeometry]
   PacketLength = 3082
