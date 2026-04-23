@@ -918,7 +918,7 @@ async fn test_copy_onto_already_existing_box_error() {
 
     // Step 1: Create destination keypair.
     let dest_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: dest_write_cap, read_cap: _, first_message_index: dest_first_index } =
+    let KeypairResult { write_cap: dest_write_cap, read_cap: dest_read_cap, first_message_index: dest_first_index } =
         client.new_keypair(&dest_seed).await
             .expect("Failed to create destination keypair");
     println!("✓ Created destination keypair");
@@ -940,8 +940,31 @@ async fn test_copy_onto_already_existing_box_error() {
     ).await.expect("Failed to send first write");
     println!("✓ First direct write succeeded");
 
-    println!("--- Waiting for first write to propagate (5 seconds) ---");
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // Read-back to confirm the write is visible at the serving replica.
+    // The default ARQ behavior auto-retries on BoxIDNotFound, so this
+    // returns only once the box is populated — replacing a blind sleep
+    // with a deterministic propagation check.
+    println!("--- Reading back to confirm propagation ---");
+    let read_request = client
+        .encrypt_read(&dest_read_cap, &dest_first_index).await
+        .expect("Failed to encrypt read");
+    let read_reply = client
+        .start_resending_encrypted_message(
+            Some(&dest_read_cap),
+            None,
+            Some(&dest_first_index),
+            Some(0),
+            &read_request.envelope_descriptor,
+            &read_request.message_ciphertext,
+            &read_request.envelope_hash,
+        )
+        .await
+        .expect("Failed to read back first write");
+    assert_eq!(
+        read_reply.plaintext, first_message,
+        "expected to read back first_message, got a different payload"
+    );
+    println!("✓ Read-back confirms first write is visible at the replica");
 
     // Step 3: Create temporary copy stream channel.
     let temp_seed: [u8; 32] = rand::random();

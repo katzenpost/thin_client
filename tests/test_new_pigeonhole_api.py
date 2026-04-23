@@ -1297,9 +1297,27 @@ async def test_copy_onto_already_existing_box_error():
         )
         print("✓ First write succeeded")
 
-        # Wait for propagation
-        print("Waiting for message propagation...")
-        await asyncio.sleep(5)
+        # Read-back to confirm the write is visible at the serving replica.
+        # The default ARQ behavior auto-retries on BoxIDNotFound, so this
+        # returns only once the box is populated — replacing a blind sleep
+        # with a deterministic propagation check.
+        print("--- Reading back to confirm propagation ---")
+        read_request = await client.encrypt_read(
+            keypair.read_cap, keypair.first_message_index
+        )
+        read_reply = await client.start_resending_encrypted_message(
+            read_cap=keypair.read_cap,
+            write_cap=None,
+            message_box_index=keypair.first_message_index,
+            reply_index=0,
+            envelope_descriptor=read_request.envelope_descriptor,
+            message_ciphertext=read_request.message_ciphertext,
+            envelope_hash=read_request.envelope_hash,
+        )
+        assert read_reply.plaintext == message1, (
+            f"expected to read back {message1!r}, got {read_reply.plaintext!r}"
+        )
+        print("✓ Read-back confirms first write is visible at the replica")
 
         # Create temporary copy stream
         temp_seed = os.urandom(32)
