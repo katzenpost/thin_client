@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: katzenpost/katzenpost
-          ref: d00ebbda71c41e3a2683a01087e3de550daf2b1f
+          ref: f6056a1d9961a5398f6543cd4dca1389e157f4fc
           path: katzenpost
 
       - name: Set up Docker Buildx
@@ -68,17 +68,44 @@ jobs:
       - name: Brief pause to ensure mixnet is fully ready
         run: sleep 30
 
-      - name: Run Python integration tests
+      - name: Run Python and Rust integration tests in parallel
+        id: parallel-tests
         timeout-minutes: 60
         run: |
           cd thinclient
-          python -m pytest tests/ -vvv -s --tb=short --timeout=1200 -n 1
 
-      - name: Run Rust integration tests
-        timeout-minutes: 60
-        run: |
-          cd thinclient
-          cargo test --test '*' -- --nocapture --test-threads=5
+          # Run Python tests in background
+          python -m pytest tests/ -vvv -s --tb=short --timeout=1200 -n 5 \
+            > /tmp/python-test-output.txt 2>&1 &
+          PYTHON_PID=$!
+
+          # Run Rust tests in background
+          cargo test --test '*' -- --nocapture --test-threads=5 \
+            > /tmp/rust-test-output.txt 2>&1 &
+          RUST_PID=$!
+
+          # Wait for both and capture exit codes
+          PYTHON_RC=0
+          RUST_RC=0
+          wait $PYTHON_PID || PYTHON_RC=$?
+          wait $RUST_PID || RUST_RC=$?
+
+          # Print outputs
+          echo "=== Python test output ==="
+          cat /tmp/python-test-output.txt
+          echo ""
+          echo "=== Rust test output ==="
+          cat /tmp/rust-test-output.txt
+          echo ""
+
+          # Report results
+          echo "Python tests exit code: $PYTHON_RC"
+          echo "Rust tests exit code: $RUST_RC"
+
+          # Fail if either failed
+          if [ $PYTHON_RC -ne 0 ] || [ $RUST_RC -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Stop the mixnet
         if: always()
