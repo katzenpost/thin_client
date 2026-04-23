@@ -119,3 +119,4 @@ jobs:
           name: mixnet-${{ github.run_id }}-${{ github.job }}
           path: |
             katzenpost/docker/voting_mixnet/*/*.log
+            katzenpost/docker/voting_mixnet/servicenode*/courier/*.log
