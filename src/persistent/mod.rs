@@ -33,44 +33,45 @@
 //! let db = Database::open("pigeonhole.db")?;
 //! let pigeonhole = PigeonholeClient::new(thin_client, db);
 //!
-//! // Create a channel (generates keypair automatically)
-//! let mut channel = pigeonhole.create_channel("my-channel").await?;
+//! // Generate a fresh capability pair via the thin client
+//! let mut seed = [0u8; 32];
+//! rand::thread_rng().fill_bytes(&mut seed);
+//! let kp = thin_client.new_keypair(&seed).await?;
 //!
-//! // Send a message (indices managed automatically)
-//! channel.send(b"Hello, world!").await?;
+//! // Sender loads a write channel
+//! let mut writer = pigeonhole
+//!     .load_write_channel("alice-to-bob", &kp.write_cap, &kp.first_message_index)?;
+//! writer.send(b"Hello, world!").await?;
 //!
-//! // Share read capability with someone else
-//! let read_cap = channel.share_read_capability();
-//! let read_cap_bytes = read_cap.to_bytes();
-//!
-//! // On the receiver side:
-//! let read_cap = ReadCapability::from_bytes(&read_cap_bytes)?;
-//! let mut their_channel = pigeonhole.import_channel("from-alice", &read_cap)?;
-//! let message = their_channel.receive().await?;
-//!
-//! // Tombstone (delete) the last written message
-//! channel.tombstone_current(&geometry).await?;
+//! // Receiver (possibly on another machine, with their own PigeonholeClient)
+//! let mut reader = pigeonhole
+//!     .load_read_channel("from-alice", &kp.read_cap, &kp.first_message_index)?;
+//! let message = reader.receive().await?;
 //! ```
 //!
 //! # Plaintext Size Constraints
 //!
-//! Single messages sent via [`ChannelHandle::send`] must not exceed
+//! Single messages sent via [`WriteChannel::send`] must not exceed
 //! `PigeonholeGeometry.max_plaintext_payload_length` bytes.
 //!
 //! # Database Schema
 //!
-//! The module creates three tables:
-//! - `channels`: Stores channel metadata (name, capabilities, indices)
-//! - `pending_messages`: Messages waiting to be sent or acknowledged
-//! - `received_messages`: Messages received from channels
+//! The module creates four tables:
+//! - `write_channels`: write capabilities and write-side `next_index`
+//! - `read_channels`: read capabilities and read-side `next_index`
+//! - `pending_messages`: messages waiting to be sent or acknowledged
+//! - `received_messages`: messages received from read channels
 
 pub mod channel;
 pub mod db;
 pub mod error;
 pub mod models;
 
-pub use channel::{ChannelHandle, CopyStreamBuilder, PigeonholeClient};
+pub use channel::{CopyStreamBuilder, PigeonholeClient, ReadChannel, WriteChannel};
 pub use db::Database;
 pub use error::{PigeonholeDbError, Result};
-pub use models::{Channel, PendingMessage, ReadCapability, ReceivedMessage};
+pub use models::{
+    PendingMessage, ReadChannel as ReadChannelModel, ReceivedMessage,
+    WriteChannel as WriteChannelModel,
+};
 

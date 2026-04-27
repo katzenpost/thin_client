@@ -5,27 +5,42 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A pigeonhole channel stored in the database.
+/// A pigeonhole write channel stored in the database.
 ///
-/// Channels represent a communication endpoint with write and/or read capabilities.
-/// The owner of a channel has the write_cap and can send messages.
-/// They can share the read_cap with others to allow reading.
+/// A write channel carries the write capability and the next message box
+/// index to be used for the next write. The cap is immutable; `next_index`
+/// advances with each successful write.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Channel {
+pub struct WriteChannel {
     /// Unique database ID.
     pub id: i64,
     /// Human-readable name for the channel.
     pub name: String,
-    /// Write capability (only present if we own the channel).
-    pub write_cap: Option<Vec<u8>>,
-    /// Read capability (always present).
+    /// Write capability bytes.
+    pub write_cap: Vec<u8>,
+    /// The next message box index to use for the next write.
+    pub next_index: Vec<u8>,
+    /// Creation timestamp (Unix epoch seconds).
+    pub created_at: i64,
+    /// Last activity timestamp (Unix epoch seconds).
+    pub updated_at: i64,
+}
+
+/// A pigeonhole read channel stored in the database.
+///
+/// A read channel carries the read capability and the next message box
+/// index to be used for the next read. The cap is immutable; `next_index`
+/// advances with each successful read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadChannel {
+    /// Unique database ID.
+    pub id: i64,
+    /// Human-readable name for the channel.
+    pub name: String,
+    /// Read capability bytes.
     pub read_cap: Vec<u8>,
-    /// Current write index (for sending messages).
-    pub write_index: Vec<u8>,
-    /// Current read index (for receiving messages).
-    pub read_index: Vec<u8>,
-    /// Whether this is an owned channel (we have write_cap) or imported (read-only).
-    pub is_owned: bool,
+    /// The next message box index to use for the next read.
+    pub next_index: Vec<u8>,
     /// Creation timestamp (Unix epoch seconds).
     pub created_at: i64,
     /// Last activity timestamp (Unix epoch seconds).
@@ -33,12 +48,14 @@ pub struct Channel {
 }
 
 /// A pending outgoing message waiting to be sent or acknowledged.
+///
+/// `write_channel_id` references a row in the `write_channels` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingMessage {
     /// Unique database ID.
     pub id: i64,
-    /// Channel ID this message belongs to.
-    pub channel_id: i64,
+    /// Write channel ID this message belongs to.
+    pub write_channel_id: i64,
     /// The plaintext message content.
     pub plaintext: Vec<u8>,
     /// The encrypted message ciphertext.
@@ -59,13 +76,15 @@ pub struct PendingMessage {
     pub last_attempt_at: Option<i64>,
 }
 
-/// A received message from a channel.
+/// A received message from a read channel.
+///
+/// `read_channel_id` references a row in the `read_channels` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceivedMessage {
     /// Unique database ID.
     pub id: i64,
-    /// Channel ID this message was received from.
-    pub channel_id: i64,
+    /// Read channel ID this message was received from.
+    pub read_channel_id: i64,
     /// The decrypted plaintext message content.
     pub plaintext: Vec<u8>,
     /// The message box index this was read from.
@@ -75,30 +94,3 @@ pub struct ReceivedMessage {
     /// Whether the message has been read/processed by the application.
     pub is_read: bool,
 }
-
-/// Read capability that can be shared with others.
-///
-/// This is a serializable structure containing all information
-/// needed to import and read from a channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReadCapability {
-    /// The read capability bytes.
-    pub read_cap: Vec<u8>,
-    /// The starting message index for reading.
-    pub start_index: Vec<u8>,
-    /// Optional human-readable name/description.
-    pub name: Option<String>,
-}
-
-impl ReadCapability {
-    /// Serialize to bytes for sharing (e.g., as a QR code or file).
-    pub fn to_bytes(&self) -> Vec<u8> {
-        serde_cbor::to_vec(self).expect("Failed to serialize ReadCapability")
-    }
-
-    /// Deserialize from bytes.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, serde_cbor::Error> {
-        serde_cbor::from_slice(bytes)
-    }
-}
-
