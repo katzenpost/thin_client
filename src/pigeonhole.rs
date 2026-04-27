@@ -217,6 +217,26 @@ struct NextMessageBoxIndexReply {
     error_code: u8,
 }
 
+/// Request to read the BACAP Idx64 counter from a MessageBoxIndex.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct GetMessageBoxIndexCounterRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    message_box_index: Vec<u8>,
+}
+
+/// Reply containing the BACAP Idx64 counter.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct GetMessageBoxIndexCounterReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default)]
+    counter: u64,
+    #[serde(default)]
+    error_code: u8,
+}
+
 /// Request to start resending a copy command.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StartResendingCopyCommandRequest {
@@ -880,6 +900,47 @@ impl ThinClient {
 
         let next_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("next_message_box_index: next_message_box_index is None".to_string()))?;
         Ok(next_index)
+    }
+
+    /// Returns the BACAP `Idx64` counter embedded in a `MessageBoxIndex`.
+    ///
+    /// Callers that persist `MessageBoxIndex` blobs across sessions can use this
+    /// to order or compare two indices — e.g. to detect a duplicate ACK that
+    /// would otherwise regress a write-cap's index — without having to peek at
+    /// the binary layout themselves. The layout (first 8 bytes little-endian)
+    /// is a BACAP implementation detail and must not be relied on outside the
+    /// daemon.
+    ///
+    /// # Arguments
+    /// * `message_box_index` - The `MessageBoxIndex` blob whose counter should be returned.
+    ///
+    /// # Returns
+    /// * `Ok(counter)` - The BACAP `Idx64` value.
+    /// * `Err(ThinClientError)` on failure.
+    pub async fn get_message_box_index_counter(&self, message_box_index: &[u8]) -> Result<u64, ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let request_inner = GetMessageBoxIndexCounterRequest {
+            query_id: query_id.clone(),
+            message_box_index: message_box_index.to_vec(),
+        };
+
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("get_message_box_index_counter".to_string()), request_value);
+
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
+
+        let reply: GetMessageBoxIndexCounterReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(|e| ThinClientError::CborError(e))?;
+
+        if reply.error_code != 0 {
+            return Err(ThinClientError::Other(format!("get_message_box_index_counter failed with error code: {}", reply.error_code)));
+        }
+
+        Ok(reply.counter)
     }
 
     /// Starts resending a copy command to a courier via ARQ.
