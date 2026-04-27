@@ -113,6 +113,14 @@ impl PigeonholeClient {
     pub fn delete_read_channel(&self, name: &str) -> Result<()> {
         self.db.delete_read_channel(name)
     }
+
+    /// Create a `CopyStreamBuilder` rooted at this client's thin client,
+    /// without first loading or creating any persisted channel. Useful
+    /// when the caller already has the destination cap and start index
+    /// in hand.
+    pub async fn copy_stream_builder(&self) -> Result<CopyStreamBuilder> {
+        CopyStreamBuilder::new(self.client.clone()).await
+    }
 }
 
 // ============================================================================
