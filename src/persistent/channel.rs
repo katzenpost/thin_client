@@ -99,6 +99,41 @@ impl PigeonholeClient {
         })
     }
 
+    /// Load an owned channel from previously-issued capabilities.
+    ///
+    /// Use this to reconstruct a writeable `ChannelHandle` from capability
+    /// material produced earlier by `new_keypair` (or extracted from another
+    /// channel via `write_cap()` / `read_cap()`).
+    ///
+    /// `start_index` is used for both the write and read sides, matching the
+    /// state of a freshly-created channel where no boxes have yet been
+    /// written or read. Resuming after partial progress requires a follow-on
+    /// signature that takes `write_index` and `read_index` separately.
+    ///
+    /// # Arguments
+    /// * `name` - Human-readable name for the channel.
+    /// * `write_cap` - The write capability bytes.
+    /// * `read_cap` - The read capability bytes.
+    /// * `start_index` - The first box index (used for both write and read sides).
+    ///
+    /// # Returns
+    /// An owned `ChannelHandle` (`is_owned() == true`).
+    pub fn load_write_channel(
+        &self,
+        name: &str,
+        write_cap: &[u8],
+        read_cap: &[u8],
+        start_index: &[u8],
+    ) -> Result<ChannelHandle> {
+        let channel = self.db.create_channel(name, write_cap, read_cap, start_index)?;
+
+        Ok(ChannelHandle {
+            channel,
+            client: self.client.clone(),
+            db: self.db.clone(),
+        })
+    }
+
     /// Get an existing channel by name.
     pub fn get_channel(&self, name: &str) -> Result<ChannelHandle> {
         let channel = self.db.get_channel(name)?;
