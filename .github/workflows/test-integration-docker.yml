@@ -68,6 +68,21 @@ jobs:
       - name: Brief pause to ensure mixnet is fully ready
         run: sleep 30
 
+      - name: Detect pigeonhole-cp-relevant changes
+        id: smoke_filter
+        uses: dorny/paths-filter@v3
+        with:
+          working-directory: thinclient
+          filters: |
+            smoke:
+              - 'src/bin/**'
+              - 'src/persistent/**'
+              - 'src/pigeonhole.rs'
+              - 'src/core.rs'
+              - 'tests/smoke_pigeonhole_cp.rs'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+
       - name: Run Python and Rust integration tests in parallel
         id: parallel-tests
         timeout-minutes: 60
@@ -106,6 +121,13 @@ jobs:
           if [ $PYTHON_RC -ne 0 ] || [ $RUST_RC -ne 0 ]; then
             exit 1
           fi
+
+      - name: Run pigeonhole-cp smoke test
+        if: steps.smoke_filter.outputs.smoke == 'true'
+        timeout-minutes: 10
+        run: |
+          cd thinclient
+          cargo test --features cli --test smoke_pigeonhole_cp -- --nocapture
 
       - name: Stop the mixnet
         if: always()
