@@ -127,6 +127,12 @@ enum Commands {
         /// Input file
         #[arg(short, long)]
         file: PathBuf,
+
+        /// Skip the COPY command and write each box directly. The default
+        /// is COPY, which gives atomic all-or-nothing semantics on the
+        /// destination but caps the payload at roughly 9 MiB per transfer.
+        #[arg(long)]
+        no_copy: bool,
     },
 
     /// Read from a Pigeonhole channel and write to a file
@@ -156,8 +162,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Genkey { config } => run_genkey(config).await,
-        Commands::Send { config, write_cap, index, file } => {
-            run_send(config, write_cap, index, file).await
+        Commands::Send { config, write_cap, index, file, no_copy } => {
+            run_send(config, write_cap, index, file, no_copy).await
         }
         Commands::Receive { config, read_cap, index, dest_dir } => {
             run_receive(config, read_cap, index, dest_dir).await
@@ -200,17 +206,23 @@ async fn run_genkey(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Read from disk and send to a Pigeonhole channel.
 ///
-/// Wire format:
-/// - First box plaintext = `[CBOR FileMetaData][file bytes…]`. CBOR is
+/// Wire format (both modes):
+/// - First plaintext = `[CBOR FileMetaData][file bytes…]`. CBOR is
 ///   self-delimiting, so the receiver decodes the header and then knows
-///   exactly where the file payload begins inside the same box.
-/// - Subsequent boxes are pure file bytes. The receiver stops after
+///   where the file payload begins.
+/// - Subsequent plaintext is pure file bytes. The receiver stops after
 ///   consuming exactly `FileMetaData.size` file bytes.
+///
+/// Default uses the courier Copy command — the client populates a
+/// temporary channel and the courier dispatches its contents to the
+/// destination atomically. `--no-copy` falls back to writing each box
+/// to the destination directly via per-box ARQ.
 async fn run_send(
     config: PathBuf,
     write_cap_b64: String,
     next_index_b64: String,
     input_file: PathBuf,
+    no_copy: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let write_cap = BASE64.decode(&write_cap_b64)?;
     let next_index = BASE64.decode(&next_index_b64)?;
@@ -221,13 +233,31 @@ async fn run_send(
     }
     let total_len = meta.len();
     let file_name = strip_for_send(&input_file)?;
-    let mut input_reader = BufReader::new(File::open(&input_file)?);
-
     let header = serde_cbor::to_vec(&FileMetaData { name: file_name, size: total_len })?;
 
     let client = init_client(config).await?;
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
-    let box_payload_size = client.pigeonhole_geometry().max_plaintext_payload_length;
+
+    if no_copy {
+        send_direct(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await
+    } else {
+        send_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await
+    }
+}
+
+/// Direct path: write each box to the destination via per-box ARQ.
+async fn send_direct(
+    pigeonhole: &PigeonholeClient,
+    write_cap: &[u8],
+    next_index: &[u8],
+    input_file: &Path,
+    total_len: u64,
+    header: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let box_payload_size = pigeonhole
+        .thin_client()
+        .pigeonhole_geometry()
+        .max_plaintext_payload_length;
 
     if header.len() >= box_payload_size {
         return Err(format!(
@@ -238,20 +268,19 @@ async fn run_send(
         .into());
     }
 
-    let mut writer = pigeonhole.load_write_channel("pigeonhole-cp", &write_cap, &next_index)?;
+    let mut input_reader = BufReader::new(File::open(input_file)?);
+    let mut writer = pigeonhole.load_write_channel("pigeonhole-cp", write_cap, next_index)?;
 
-    // First box: header + as much file as fits.
     let first_room = box_payload_size - header.len();
     let mut first_chunk = vec![0u8; first_room];
     let n = read_fill(&mut input_reader, &mut first_chunk)?;
     let mut first_box = Vec::with_capacity(header.len() + n);
-    first_box.extend_from_slice(&header);
+    first_box.extend_from_slice(header);
     first_box.extend_from_slice(&first_chunk[..n]);
     writer.send(&first_box).await?;
     let mut bytes_sent = n as u64;
     let mut box_count = 1usize;
 
-    // Subsequent boxes: pure file bytes until we've delivered total_len.
     let mut chunk_buf = vec![0u8; box_payload_size];
     while bytes_sent < total_len {
         let n = read_fill(&mut input_reader, &mut chunk_buf)?;
@@ -271,7 +300,41 @@ async fn run_send(
         .into());
     }
 
-    println!("sent {} bytes in {} box(es)", bytes_sent, box_count);
+    println!("sent {} bytes in {} box(es) (direct)", bytes_sent, box_count);
+    Ok(())
+}
+
+/// Copy path: build the full payload, hand it to a `CopyStreamBuilder`
+/// for chunking onto a temp channel, then dispatch via the courier.
+async fn send_copy(
+    pigeonhole: &PigeonholeClient,
+    write_cap: &[u8],
+    next_index: &[u8],
+    input_file: &Path,
+    total_len: u64,
+    header: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    // The daemon caps a single create_courier_envelopes_from_payload call
+    // at 10 MiB; we leave headroom under that for the CBOR header.
+    const COPY_PAYLOAD_LIMIT: u64 = 9 * 1024 * 1024;
+    let total_payload_len = header.len() as u64 + total_len;
+    if total_payload_len > COPY_PAYLOAD_LIMIT {
+        return Err(format!(
+            "payload of {} bytes exceeds COPY mode limit of {} bytes; rerun with --no-copy",
+            total_payload_len, COPY_PAYLOAD_LIMIT
+        )
+        .into());
+    }
+
+    let mut payload = Vec::with_capacity(total_payload_len as usize);
+    payload.extend_from_slice(header);
+    File::open(input_file)?.read_to_end(&mut payload)?;
+
+    let mut builder = pigeonhole.copy_stream_builder().await?;
+    builder.add_payload(&payload, write_cap, next_index, true).await?;
+    let boxes = builder.finish().await?;
+
+    println!("sent {} bytes in {} box(es) (copy)", total_len, boxes);
     Ok(())
 }
 
