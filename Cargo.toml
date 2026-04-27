@@ -27,14 +27,19 @@ generic-array = "0.14.0"
 typenum = "1.16"
 toml = "0.8"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
-clap = { version = "4.5", features = ["derive"] }
 base64 = "0.22"
 async-trait = "0.1"
 thiserror = "1"
+clap = { version = "4.5", features = ["derive"], optional = true }
+tempfile = { version = "3", optional = true }
+
+[features]
+cli = ["dep:clap", "dep:tempfile"]
 
 [[bin]]
-name = "copycat"
-path = "src/bin/copycat.rs"
+name = "pigeonhole-cp"
+path = "src/bin/pigeonhole_cp.rs"
+required-features = ["cli"]
 
-[dev-dependencies]
-crdts = "7"
+
+
