@@ -9,20 +9,19 @@
 //!
 //! A mix network is a type of anonymous communications network.
 //! What's a thin client library? It's code you can use as a
-//! depencency in your application so that it can interact with
+//! dependency in your application so that it can interact with
 //! services on the mix network. The Katzenpost client daemon is a
 //! multiplexing client; many applications on the same device can use
 //! their thin client libraries to connect to the daemon and interact
 //! with mixnet services concurrently.
 //!
-//! This example can be found here: https://github.com/katzenpost/thin_client/blob/main/examples/echo_ping.rs
-//!
 //! # See Also
 //!
-//! - [katzenpost thin client rust docs](https://docs.rs/katzenpost_thin_client/latest/katzenpost_thin_client/)
-//! - [katzenpost website](https://katzenpost.mixnetworks.org/)
-//! - [katzepost client integration guide](https://katzenpost.network/docs/client_integration/)
-//! - [katzenpost thin client protocol specification](https://katzenpost.network/docs/specs/connector.html)
+//! - [Rust API reference on docs.rs](https://docs.rs/katzenpost_thin_client/latest/katzenpost_thin_client/)
+//! - [Katzenpost website](https://katzenpost.network/)
+//! - [Thin Client How-to Guide](https://katzenpost.network/docs/thin_client_howto/)
+//! - [Thin Client API Reference](https://katzenpost.network/docs/thin_client_api_reference/)
+//! - [Thin client protocol specification](https://katzenpost.network/docs/specs/thin_client.html)
 
 // ========================================================================
 // Module declarations

@@ -20,8 +20,9 @@ All cryptographic operations, including PQ Noise transport, Sphinx
 packet construction, and retransmission mechanisms are handled by the
 client daemon, and not this thin client library.
 
-For more information, see our client integration guide:
-https://katzenpost.network/docs/client_integration/
+For more information, see our thin client documentation:
+https://katzenpost.network/docs/thin_client_howto/
+https://katzenpost.network/docs/thin_client_api_reference/
 
 
 Usage Example
