@@ -1,25 +1,28 @@
 name: Integration Tests with Docker Mixnet
 
 on:
-  push:
-    branches: [ main, master ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, update_python_pigeonhole ]
 
 jobs:
   test-integration-docker:
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 120
+
     steps:
       - name: Checkout thinclient repository
         uses: actions/checkout@v4
         with:
           path: thinclient
 
-      - name: Checkout katzenpost repository  
+      - name: Checkout katzenpost repository
         uses: actions/checkout@v4
         with:
           repository: katzenpost/katzenpost
+          ref: dbc7702a92716b542b0f77c8e824fc8e73420c29
           path: katzenpost
 
       - name: Set up Docker Buildx
@@ -53,22 +56,78 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[test]
 
+      - name: Log in to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin || true
+
       - name: Build and start the mixnet
         run: |
           cd katzenpost/docker && make start wait
 
       - name: Brief pause to ensure mixnet is fully ready
-        run: sleep 5
+        run: sleep 30
 
-      - name: Run all Python tests (including channel API integration tests)
+      - name: Detect pigeonhole-cp-relevant changes
+        id: smoke_filter
+        uses: dorny/paths-filter@v3
+        with:
+          working-directory: thinclient
+          filters: |
+            smoke:
+              - 'src/bin/**'
+              - 'src/persistent/**'
+              - 'src/pigeonhole.rs'
+              - 'src/core.rs'
+              - 'tests/smoke_pigeonhole_cp.rs'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+
+      - name: Run Python and Rust integration tests in parallel
+        id: parallel-tests
+        timeout-minutes: 60
         run: |
           cd thinclient
-          python -m pytest tests/ -vvv -s --tb=short
 
-      - name: Run Rust integration tests
+          # Run Python tests in background
+          python -m pytest tests/ -vvv -s --tb=short --timeout=1200 -n 5 \
+            > /tmp/python-test-output.txt 2>&1 &
+          PYTHON_PID=$!
+
+          # Run Rust tests in background
+          cargo test --test '*' -- --nocapture --test-threads=5 \
+            > /tmp/rust-test-output.txt 2>&1 &
+          RUST_PID=$!
+
+          # Wait for both and capture exit codes
+          PYTHON_RC=0
+          RUST_RC=0
+          wait $PYTHON_PID || PYTHON_RC=$?
+          wait $RUST_PID || RUST_RC=$?
+
+          # Print outputs
+          echo "=== Python test output ==="
+          cat /tmp/python-test-output.txt
+          echo ""
+          echo "=== Rust test output ==="
+          cat /tmp/rust-test-output.txt
+          echo ""
+
+          # Report results
+          echo "Python tests exit code: $PYTHON_RC"
+          echo "Rust tests exit code: $RUST_RC"
+
+          # Fail if either failed
+          if [ $PYTHON_RC -ne 0 ] || [ $RUST_RC -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Run pigeonhole-cp smoke test
+        if: steps.smoke_filter.outputs.smoke == 'true'
+        timeout-minutes: 10
         run: |
           cd thinclient
-          cargo test --test '*' -- --nocapture
+          cargo test --features cli --test smoke_pigeonhole_cp -- --nocapture
 
       - name: Stop the mixnet
         if: always()
@@ -82,3 +141,4 @@ jobs:
           name: mixnet-${{ github.run_id }}-${{ github.job }}
           path: |
             katzenpost/docker/voting_mixnet/*/*.log
+            katzenpost/docker/voting_mixnet/servicenode*/courier/*.log
