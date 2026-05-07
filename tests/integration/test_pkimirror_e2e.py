@@ -141,7 +141,7 @@ def pkimirror_server(
     workdir = tmp_path_factory.mktemp("pkimirror-srv")
     identity_path = workdir / "identity"
     dirauth_path = workdir / "dirauth.toml"
-    dirauth_path.write_text('sphincs_warning = "ed25519"\n')
+    dirauth_path.write_text("# integration test: empty dirauth config\n")
     log_path = workdir / "pkimirror.log"
 
     cmd = [
