@@ -30,6 +30,12 @@ files = ["requirements.txt"]
 [tool.hatch.build]
 exclude = ["venv_test"]
 
+[tool.hatch.build.targets.wheel]
+packages = ["katzenpost_thinclient", "katzenpost_reticulum"]
+
+[project.scripts]
+pkimirror = "katzenpost_reticulum.pkimirror.__main__:main"
+
 [project.optional-dependencies]
 dev = [
     "mypy",
@@ -41,5 +47,9 @@ test = [
     "pytest-asyncio",
     "pytest-timeout",
     "pytest-xdist",
+]
+reticulum = [
+    "rns>=0.9",
+    "tomli; python_version<'3.11'",
 ]
 
