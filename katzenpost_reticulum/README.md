@@ -171,49 +171,65 @@ Defined error codes:
 ## Dirauth identity configuration
 
 Both the service and the client accept a TOML file naming the directory
-authority identity public keys. The format:
+authority identity public keys. Each entry carries a name and a
+PEM-encoded public key, matching the format used by katzenpost's own
+`authority.toml` so an operator may copy the relevant block across
+verbatim. The PEM marker label names the signature scheme (e.g.
+`ED25519`, `ML-DSA-44-ED25519`) and the parser captures it on each
+loaded `DirauthIdentity`.
 
 ```toml
-sphincs_warning = "ed25519"
+[[dirauths]]
+name = "auth1"
+identity_public_key = """
+-----BEGIN ML-DSA-44-ED25519 PUBLIC KEY-----
+<base64-encoded public key>
+-----END ML-DSA-44-ED25519 PUBLIC KEY-----
+"""
 
 [[dirauths]]
-name     = "auth1"
-identity = "8c3f9aa01b...deadbeef"   # hex-encoded public key
-
-[[dirauths]]
-name     = "auth2"
-identity = "5e7b21c9d4...cafe"
+name = "auth2"
+identity_public_key = """
+-----BEGIN ML-DSA-44-ED25519 PUBLIC KEY-----
+<base64-encoded public key>
+-----END ML-DSA-44-ED25519 PUBLIC KEY-----
+"""
 ```
 
-For the present revision the loaded keys are not yet used: the Python
-thin client delivers PKI documents stripped of their signatures, so a
-Reticulum-side observer has nothing to verify against. The slot exists
-now so that when a forthcoming thin-client API method returns the fully
-signed document, signature verification can be inserted without a
-config-format change. See "Roadmap" below.
+For the present revision the loaded keys are not yet put to work: the
+Python thin client delivers PKI documents stripped of their signatures,
+so a Reticulum-side observer has nothing to verify against. The slot
+exists now so that when a forthcoming thin-client API method returns the
+fully signed document, signature verification can be inserted without
+a config-format change. See "Roadmap" below.
 
 
 ## Signature scheme caveat
 
-Please attend to this section, sir, before deploying. **The choice of
-dirauth signature scheme has a decisive effect on whether pkimirror is
-useful at all.**
+Please attend to this section before deploying. **The choice of dirauth
+signature scheme has a decisive effect on whether pkimirror is useful
+at all.**
 
 Katzenpost's current Sphincs+ parameterisation in hpqc produces
 signatures of approximately 49 KB each. With three or more directory
 authorities signing every PKI document, the resulting signed document
 balloons to a size that is uncomfortable on most low-bandwidth meshes
 and well beyond what a sensible Reticulum deployment ought to relay.
+Sphincs+ is therefore unsuitable for use with this integration.
 
-For the time being we therefore recommend that deployments using
-pkimirror configure their directory authorities to sign with **Ed25519**
-only. The PKI document remains comfortably small and traverses
-Reticulum without strain.
+For deployments behind pkimirror we recommend the **ML-DSA-44-Ed25519**
+hybrid signature scheme, added to hpqc in v0.0.79. It restores
+post-quantum signature security at a size that traverses Reticulum
+comfortably. Set `PKISignatureScheme = "ML-DSA-44-Ed25519"` in each
+dirauth's `authority.toml`, then copy each authority's public key block
+into pkimirror's dirauth config (see above).
 
-This is a temporary recommendation. Once ML-DSA is added to hpqc, a
-hybrid Ed25519+ML-DSA scheme will replace it as the recommended
-configuration for Reticulum-bridged deployments, restoring
-post-quantum signature security at a manageable size.
+If a deployment cannot adopt ML-DSA-44-Ed25519 immediately, the
+classical **Ed25519** scheme remains acceptable on the wire, with the
+understanding that one forfeits post-quantum signature security until
+the upgrade is made. We expect to revisit this recommendation in turn
+as more compact post-quantum signature schemes find their way into
+hpqc.
 
 
 ## Roadmap
@@ -224,9 +240,12 @@ so callers may plan accordingly.
 - A new thin-client API method that returns the fully signed PKI
   document (working title: `pki_document_signed()`), so a
   Reticulum-side client may verify dirauth signatures itself. This
-  belongs in the katzenpost monorepo.
-- ML-DSA in hpqc, and a hybrid Ed25519+ML-DSA signature scheme, after
-  which the recommendation in "Signature scheme caveat" will change.
+  belongs in the katzenpost monorepo and is a prerequisite for the
+  loaded dirauth keys to be put to work.
+- A more compact post-quantum signature scheme in hpqc, after which
+  the recommendation in "Signature scheme caveat" may be revisited.
+  ML-DSA-44-Ed25519 is the present recommendation (added in hpqc
+  v0.0.79).
 - A multi-homed pigeonhole courier service on Reticulum, which will
   use pkimirror's client API to keep abreast of the consensus and
   route pigeonhole traffic accordingly. The shape of pkimirror (the
