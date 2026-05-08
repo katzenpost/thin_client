@@ -34,7 +34,7 @@ class StubTransport:
 
 
 def _make_client(transport: StubTransport) -> PkiMirrorClient:
-    return PkiMirrorClient(transport=transport, _skip_rns_init=True)
+    return PkiMirrorClient(transport=transport)
 
 
 def test_get_for_epoch_cache_hit_skips_network():

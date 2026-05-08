@@ -81,7 +81,7 @@ Flags in detail:
   still served (more useful than no document), but the flag lets
   cautious callers decline. Default 600.
 - `--app-name STR`, `--aspect STR`. Reticulum destination identifiers.
-  May be repeated for `--aspect`. Default `katzenpost.pkimirror`.
+  Default `katzenpost.pkimirror`.
 - `--log-level STR`. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`,
   `CRITICAL`. Default `INFO`.
 

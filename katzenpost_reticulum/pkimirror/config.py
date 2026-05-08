@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional
 
 _VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
@@ -17,7 +17,7 @@ class PkiMirrorConfig:
     announce_interval: float
     stale_after: float
     app_name: str
-    aspects: Tuple[str, ...]
+    aspect: str
     log_level: str
 
 
@@ -101,13 +101,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--aspect",
-        dest="aspects",
-        action="append",
-        default=None,
-        help=(
-            "Reticulum destination aspect; may be given several times. "
-            "Default: ['pkimirror']."
-        ),
+        default="pkimirror",
+        help="Reticulum destination aspect (default: 'pkimirror').",
     )
     p.add_argument(
         "--log-level",
@@ -120,7 +115,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def parse_args(argv: Optional[List[str]] = None) -> PkiMirrorConfig:
     ns = _build_parser().parse_args(argv)
-    aspects = tuple(ns.aspects) if ns.aspects else ("pkimirror",)
     return PkiMirrorConfig(
         thinclient_config=ns.thinclient_config,
         identity_path=ns.identity_path,
@@ -129,6 +123,6 @@ def parse_args(argv: Optional[List[str]] = None) -> PkiMirrorConfig:
         announce_interval=ns.announce_interval,
         stale_after=ns.stale_after,
         app_name=ns.app_name,
-        aspects=aspects,
+        aspect=ns.aspect,
         log_level=ns.log_level,
     )

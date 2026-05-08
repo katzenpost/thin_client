@@ -25,19 +25,18 @@ def test_defaults_are_set(tmp_path):
     assert cfg.announce_interval == 300.0
     assert cfg.stale_after == 600.0
     assert cfg.app_name == "katzenpost"
-    assert cfg.aspects == ("pkimirror",)
+    assert cfg.aspect == "pkimirror"
     assert cfg.log_level == "INFO"
 
 
-def test_aspect_is_repeatable():
+def test_aspect_overridable():
     cfg = parse_args(
         [
             "--thinclient-config", "/x.toml",
-            "--aspect", "pkimirror",
             "--aspect", "experimental",
         ]
     )
-    assert cfg.aspects == ("pkimirror", "experimental")
+    assert cfg.aspect == "experimental"
 
 
 def test_intervals_parse_as_float():

@@ -57,20 +57,13 @@ class _Transport(Protocol):
 
 
 class PkiMirrorClient:
-    """Synchronous client for a pkimirror service.
+    """Synchronous client for a pkimirror destination.
 
-    Two ways to construct it:
-
-    - For real use: leave ``transport`` as None. Call :meth:`discover` and
-      :meth:`connect`; an RNS-backed transport is built from the connected
-      Link.
-    - For tests: pass a ``transport`` implementing the small Protocol above.
-      No Reticulum initialisation occurs and queries route directly to the
-      stub.
-
-    The local :class:`PkiCache` makes :meth:`get_for_epoch` cache-first by
-    default; :meth:`get_current` is cache-skipping by default but offers
-    ``use_cache=True`` for callers who already accept what they have.
+    For tests, pass a ``transport=`` implementing the Protocol above; no
+    Reticulum initialisation occurs and queries route directly to the
+    stub. For real use, leave ``transport`` as None and call
+    :meth:`discover` then :meth:`connect` to build an RNS-backed
+    transport from the connected Link.
     """
 
     def __init__(
@@ -82,32 +75,28 @@ class PkiMirrorClient:
         cache_size: int = 5,
         *,
         transport: Optional[_Transport] = None,
-        _skip_rns_init: bool = False,
     ) -> None:
         self._app_name = app_name
         self._aspect = aspect
         self._dirauth_config = dirauth_config
         self._cache = PkiCache(max_epochs=cache_size)
         self._transport = transport
-        if transport is None and not _skip_rns_init:
+        if transport is None:
             self._init_reticulum(reticulum_config)
         if dirauth_config is not None:
             logger.info(
                 "PkiMirrorClient configured with %d dirauth identities "
-                "(verification deferred until signed-PKI API arrives); scheme=%r",
+                "(verification deferred); schemes: %s",
                 len(dirauth_config.identities),
-                dirauth_config.scheme,
+                ",".join(sorted({i.scheme for i in dirauth_config.identities})) or "none",
             )
 
     def _init_reticulum(self, config_path: Optional[str]) -> None:
-        import RNS  # noqa: WPS433 - lazy import keeps unit tests RNS-free
+        import RNS  # noqa: WPS433
         try:
             RNS.Reticulum(config_path)
         except OSError as exc:
             if "already running" in str(exc) or "reinitialise" in str(exc):
-                logger.debug(
-                    "RNS.Reticulum already running in this process; reusing it."
-                )
                 return
             raise
 
@@ -120,44 +109,14 @@ class PkiMirrorClient:
         aspect_filter = f"{self._app_name}.{self._aspect}"
         received: List[MirrorAnnouncement] = []
         done = threading.Event()
-
-        class _AnnounceHandler:
-            def __init__(handler_self) -> None:
-                handler_self.aspect_filter = aspect_filter
-
-            def received_announce(
-                handler_self,
-                destination_hash: Any,
-                announced_identity: Any,
-                app_data: Any,
-            ) -> None:
-                meta = _decode_announce_app_data(app_data)
-                ann = MirrorAnnouncement(
-                    destination_hash=bytes(destination_hash),
-                    identity=announced_identity,
-                    epoch=int(meta.get("epoch", 0)),
-                    has_pki=bool(meta.get("has_pki", False)),
-                    received_at=time.monotonic(),
-                )
-                logger.debug(
-                    "discover: received announce from %s epoch=%d has_pki=%s",
-                    ann.destination_hash.hex(),
-                    ann.epoch,
-                    ann.has_pki,
-                )
-                received.append(ann)
-                if max_announces and len(received) >= max_announces:
-                    done.set()
-
-        handler = _AnnounceHandler()
+        handler = _DiscoverAnnounceHandler(
+            aspect_filter, received, done, max_announces,
+        )
         RNS.Transport.register_announce_handler(handler)
         try:
             done.wait(timeout)
         finally:
-            try:
-                RNS.Transport.deregister_announce_handler(handler)
-            except Exception:
-                logger.exception("could not deregister announce handler")
+            RNS.Transport.deregister_announce_handler(handler)
         logger.info(
             "discover returning %d announce(s) for filter %r",
             len(received), aspect_filter,
@@ -167,11 +126,6 @@ class PkiMirrorClient:
     def connect(self, destination_hash: bytes, timeout: float = 30.0) -> None:
         import RNS  # noqa: WPS433
         if not RNS.Transport.has_path(destination_hash):
-            logger.info(
-                "no path to %s yet; requesting and waiting up to %.1fs",
-                destination_hash.hex(),
-                timeout,
-            )
             RNS.Transport.request_path(destination_hash)
             deadline = time.monotonic() + timeout
             while not RNS.Transport.has_path(destination_hash):
@@ -198,10 +152,10 @@ class PkiMirrorClient:
         link_ready = threading.Event()
         link_closed = threading.Event()
 
-        def _on_established(_link: Any) -> None:
+        def _on_established(_link):
             link_ready.set()
 
-        def _on_closed(_link: Any) -> None:
+        def _on_closed(_link):
             link_closed.set()
             link_ready.set()
 
@@ -210,10 +164,7 @@ class PkiMirrorClient:
         link.set_link_closed_callback(_on_closed)
 
         if not link_ready.wait(timeout):
-            try:
-                link.teardown()
-            except Exception:
-                logger.exception("teardown failed for un-established link")
+            link.teardown()
             raise TimeoutError(
                 f"link to {destination_hash.hex()} not established within {timeout:.1f}s"
             )
@@ -231,11 +182,9 @@ class PkiMirrorClient:
         if use_cache:
             cached = self._cache.get_current()
             if cached is not None:
-                epoch = self._cache.current_epoch()
-                logger.debug("get_current cache hit, epoch=%s", epoch)
                 return PkiResult(
                     code=PKIMIRROR_OK,
-                    epoch=epoch,
+                    epoch=self._cache.current_epoch(),
                     doc=cached,
                     msg=None,
                     stale=False,
@@ -253,7 +202,6 @@ class PkiMirrorClient:
         if use_cache:
             cached = self._cache.get_for_epoch(epoch)
             if cached is not None:
-                logger.debug("get_for_epoch cache hit, epoch=%d", epoch)
                 return PkiResult(
                     code=PKIMIRROR_OK,
                     epoch=epoch,
@@ -270,15 +218,13 @@ class PkiMirrorClient:
             raise RuntimeError(
                 "PkiMirrorClient is not connected; call connect() first"
             )
-        raw = self._transport.request(path, data, timeout)
-        env = decode_envelope(raw)
-        code = env["code"]
-        if code not in _KNOWN_CODES:
+        env = decode_envelope(self._transport.request(path, data, timeout))
+        if env["code"] not in _KNOWN_CODES:
             raise PkiMirrorProtocolError(
-                f"server returned unknown response code: {code}"
+                f"server returned unknown response code: {env['code']}"
             )
         return PkiResult(
-            code=code,
+            code=env["code"],
             epoch=env["epoch"],
             doc=env["doc"],
             msg=env["msg"],
@@ -301,12 +247,8 @@ class PkiMirrorClient:
 
     def close(self) -> None:
         if self._transport is not None:
-            try:
-                self._transport.close()
-            except Exception:
-                logger.exception("error closing pkimirror client transport")
-            finally:
-                self._transport = None
+            self._transport.close()
+            self._transport = None
 
     def __enter__(self) -> "PkiMirrorClient":
         return self
@@ -315,59 +257,73 @@ class PkiMirrorClient:
         self.close()
 
 
-def _decode_announce_app_data(app_data: Any) -> dict:
-    if not isinstance(app_data, (bytes, bytearray)) or len(app_data) == 0:
-        return {}
-    try:
-        meta = cbor2.loads(bytes(app_data))
-    except Exception:
-        logger.debug("announce app_data not CBOR-decodable; ignoring")
-        return {}
-    if not isinstance(meta, dict):
-        return {}
-    return meta
+class _DiscoverAnnounceHandler:
+    """Reticulum announce handler used by PkiMirrorClient.discover.
+
+    RNS calls received_announce on its own thread; we append to the
+    shared list and signal `done` once max_announces have arrived.
+    """
+
+    def __init__(
+        self,
+        aspect_filter: str,
+        sink: List["MirrorAnnouncement"],
+        done: threading.Event,
+        max_announces: int,
+    ) -> None:
+        self.aspect_filter = aspect_filter
+        self._sink = sink
+        self._done = done
+        self._max = max_announces
+
+    def received_announce(self, destination_hash, announced_identity, app_data):
+        meta: dict = {}
+        if isinstance(app_data, (bytes, bytearray)) and app_data:
+            try:
+                decoded = cbor2.loads(bytes(app_data))
+                if isinstance(decoded, dict):
+                    meta = decoded
+            except Exception:
+                pass
+        self._sink.append(
+            MirrorAnnouncement(
+                destination_hash=bytes(destination_hash),
+                identity=announced_identity,
+                epoch=int(meta.get("epoch", 0)),
+                has_pki=bool(meta.get("has_pki", False)),
+                received_at=time.monotonic(),
+            )
+        )
+        if self._max and len(self._sink) >= self._max:
+            self._done.set()
 
 
 class _RnsLinkTransport:
-    """Synchronous wrapper around an RNS.Link's request/response. Each call
-    blocks the caller's thread until the response, a failure, or the
-    timeout, whichever comes first.
-    """
+    """Synchronous wrapper around an RNS.Link's request/response."""
 
     def __init__(self, link: Any) -> None:
         self._link = link
-        self._closed = False
 
     def request(self, path: str, data: bytes, timeout: float) -> bytes:
         done = threading.Event()
         outcome: dict = {"response": None, "error": None}
 
-        def _on_response(receipt: Any) -> None:
-            try:
-                outcome["response"] = (
-                    bytes(receipt.response)
-                    if receipt.response is not None
-                    else b""
-                )
-            except Exception as exc:
-                outcome["error"] = f"could not read response: {exc}"
-            finally:
-                done.set()
+        def _on_response(receipt):
+            outcome["response"] = (
+                bytes(receipt.response) if receipt.response is not None else b""
+            )
+            done.set()
 
-        def _on_failed(_receipt: Any) -> None:
+        def _on_failed(_receipt):
             outcome["error"] = f"request to {path} failed"
             done.set()
 
-        try:
-            self._link.request(
-                path,
-                data=data,
-                response_callback=_on_response,
-                failed_callback=_on_failed,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"could not issue request: {exc}") from exc
-
+        self._link.request(
+            path,
+            data=data,
+            response_callback=_on_response,
+            failed_callback=_on_failed,
+        )
         if not done.wait(timeout):
             raise TimeoutError(
                 f"request to {path} did not complete within {timeout:.1f}s"
@@ -377,10 +333,4 @@ class _RnsLinkTransport:
         return outcome["response"]
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            self._link.teardown()
-        except Exception:
-            logger.exception("link teardown failed")
+        self._link.teardown()
