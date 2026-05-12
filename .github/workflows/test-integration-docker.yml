@@ -132,9 +132,10 @@ jobs:
       - name: Capture kpclientd container logs
         if: always()
         run: |
-          cd katzenpost/docker
-          docker compose -f voting_mixnet/docker-compose.yml logs --no-color --no-log-prefix kpclientd \
-            > voting_mixnet/kpclientd.log 2>&1 || true
+          cd katzenpost/docker/voting_mixnet
+          DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock" \
+            podman compose logs --no-color --no-log-prefix kpclientd \
+              > kpclientd.log 2>&1 || true
 
       - name: Stop the mixnet
         if: always()
