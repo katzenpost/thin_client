@@ -129,6 +129,13 @@ jobs:
           cd thinclient
           cargo test --features cli --test smoke_pigeonhole_cp -- --nocapture
 
+      - name: Capture kpclientd container logs
+        if: always()
+        run: |
+          cd katzenpost/docker
+          docker compose -f voting_mixnet/docker-compose.yml logs --no-color --no-log-prefix kpclientd \
+            > voting_mixnet/kpclientd.log 2>&1 || true
+
       - name: Stop the mixnet
         if: always()
         run: |
@@ -141,4 +148,5 @@ jobs:
           name: mixnet-${{ github.run_id }}-${{ github.job }}
           path: |
             katzenpost/docker/voting_mixnet/*/*.log
+            katzenpost/docker/voting_mixnet/kpclientd.log
             katzenpost/docker/voting_mixnet/servicenode*/courier/*.log
