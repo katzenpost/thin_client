@@ -1333,7 +1333,16 @@ class ThinClient:
 
     def get_all_couriers(self) -> "List[Tuple[bytes, bytes]]":
         """
-        Return all available courier services from the current PKI document.
+        Return every courier service advertised in the current PKI
+        document, each described by an ``(identity_hash, queue_id)``
+        tuple. The list reflects only the couriers that the current
+        consensus regards as serving.
+
+        The principal caller is the nested-copy-command machinery, which
+        needs to choose particular couriers rather than accept the random
+        draw made on the caller's behalf by
+        ``start_resending_copy_command``; for simple cases where any
+        courier will do, the default routing path is usually preferable.
 
         Returns:
             list[tuple[bytes, bytes]]: List of (identity_hash, queue_id) tuples.
@@ -1350,7 +1359,11 @@ class ThinClient:
 
     def get_distinct_couriers(self, n:int) -> "List[Tuple[bytes, bytes]]":
         """
-        Return N distinct random couriers from the current PKI document.
+        Draw ``n`` couriers uniformly at random from the list returned by
+        ``get_all_couriers``, without replacement, so that no two entries
+        in the returned list refer to the same courier. This is the usual
+        building block for a nested copy command, every layer of which
+        must be carried by a different courier.
 
         Args:
             n (int): Number of distinct couriers to return.
@@ -1359,7 +1372,8 @@ class ThinClient:
             list[tuple[bytes, bytes]]: List of (identity_hash, queue_id) tuples.
 
         Raises:
-            Exception: If fewer than N couriers are available.
+            Exception: If the current PKI document advertises fewer than
+                ``n`` couriers.
         """
         couriers = self.get_all_couriers()
         if len(couriers) < n:
