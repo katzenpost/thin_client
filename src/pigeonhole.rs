@@ -677,10 +677,23 @@ impl ThinClient {
         ).await
     }
 
-    /// Like `start_resending_encrypted_message` but returns BoxAlreadyExists errors.
+    /// Behaves exactly like `start_resending_encrypted_message` save that
+    /// it returns `ThinClientError::BoxAlreadyExists` when the replica
+    /// reports the destination box has already been written, rather than
+    /// swallowing the condition as idempotent success. Use this when one
+    /// needs to distinguish a fresh write from a repeat: for instance,
+    /// when implementing optimistic concurrency on top of the channel, or
+    /// when establishing whether a particular call actually caused a state
+    /// change at the replica.
     ///
-    /// Use this when you want to detect whether a write was actually performed
-    /// or if the box already existed.
+    /// Note that this variant costs an additional mixnet round trip: the
+    /// BoxAlreadyExists code is carried by the replica's reply rather than
+    /// the courier's ACK, so the daemon must dispatch a second SURB before
+    /// it can return the answer.
+    ///
+    /// As with `start_resending_encrypted_message`, an in-flight call may
+    /// be cancelled from another task via
+    /// `cancel_resending_encrypted_message`.
     ///
     /// # Arguments
     /// Same as `start_resending_encrypted_message`
@@ -712,10 +725,19 @@ impl ThinClient {
         ).await
     }
 
-    /// Like `start_resending_encrypted_message` but disables automatic retries on BoxIDNotFound.
+    /// Behaves exactly like `start_resending_encrypted_message` save that
+    /// it disables the daemon's automatic retry of
+    /// `ThinClientError::BoxIdNotFound`. The caller learns at once that
+    /// the box is absent rather than waiting for replication to settle.
     ///
-    /// Use this when you want immediate error feedback rather than waiting for
-    /// potential replication lag to resolve.
+    /// Use this when polling a box that may not yet have been written:
+    /// for instance, when a reader peeks ahead at a peer's next message
+    /// before that peer has produced it. The regular variant would block
+    /// until the box appeared, which can be many round trips.
+    ///
+    /// As with `start_resending_encrypted_message`, an in-flight call may
+    /// be cancelled from another task via
+    /// `cancel_resending_encrypted_message`.
     ///
     /// # Arguments
     /// Same as `start_resending_encrypted_message`
@@ -1054,15 +1076,25 @@ impl ThinClient {
         Ok(())
     }
 
-    /// Creates multiple CourierEnvelopes from a payload of any size.
+    /// Packs a payload of arbitrary size (up to 10 MB) into properly sized
+    /// `CopyStreamElement` chunks for one destination channel. Each chunk
+    /// is a serialised `CopyStreamElement`, ready to be written to a box
+    /// via `encrypt_write` followed by `start_resending_encrypted_message`;
+    /// the caller marks the boundaries of the stream with the `is_start`
+    /// and `is_last` flags.
     ///
-    /// The payload is automatically chunked and each chunk is wrapped in a
-    /// CourierEnvelope. Each returned chunk is a serialized CopyStreamElement
-    /// ready to be written to a box.
+    /// This method is stateless: no daemon state is kept between calls,
+    /// each invocation runs a fresh encoder and flushes before returning.
+    /// The 10 MB cap guards against accidental memory exhaustion.
     ///
-    /// This method is stateless — each call creates a fresh encoder. Multiple
-    /// calls can target the same destination stream by using next_dest_index
-    /// from the result as dest_start_index for the next call.
+    /// Once the chunks have been written to a temporary copy stream, a
+    /// copy command (`start_resending_copy_command`) is dispatched to a
+    /// courier with the write capability for that temporary stream; the
+    /// courier reads the chunks back and writes each envelope to its
+    /// destination box.
+    ///
+    /// Multiple calls can target the same destination stream by passing
+    /// `next_dest_index` from the previous result as `dest_start_index`.
     ///
     /// # Arguments
     /// * `payload` - The data to be encoded into courier envelopes
@@ -1116,15 +1148,17 @@ impl ThinClient {
         })
     }
 
-    /// Creates CourierEnvelopes from multiple payloads going to different destinations.
+    /// Packs payloads bound for several destination channels into a single
+    /// stream of `CopyStreamElement` chunks. This is more space-efficient
+    /// than calling `create_courier_envelopes_from_payload` once per
+    /// destination, because the shared encoder runs all envelopes together
+    /// rather than padding the final box of each destination independently.
     ///
-    /// This is more space-efficient than calling create_courier_envelopes_from_payload
-    /// multiple times because envelopes from different destinations are packed
-    /// together in the copy stream without wasting space.
-    ///
-    /// This method is stateless — the buffer field enables continuation across
-    /// multiple calls without daemon-side state. Pass the buffer from the previous
-    /// call's result to avoid wasting space. On the first call, pass None.
+    /// This method is stateless: the `buffer` argument carries any residual
+    /// encoder state across calls in place of daemon-side bookkeeping. Pass
+    /// `None` for `buffer` on the first call and the `buffer` returned by
+    /// the previous call thereafter; set `is_last` on the final call so the
+    /// encoder flushes its tail.
     ///
     /// # Arguments
     /// * `destinations` - List of (payload, write_cap, start_index) tuples
@@ -1184,12 +1218,18 @@ impl ThinClient {
         })
     }
 
-    /// Creates tombstone CourierEnvelopes for a range of destination indices,
-    /// encoded as copy stream elements.
+    /// Packs tombstones for a consecutive range of destination boxes into
+    /// `CopyStreamElement` chunks. The chunks are written to a temporary
+    /// copy stream and then dispatched as a copy command; the courier
+    /// applies all the tombstones atomically, which is the natural way to
+    /// retire a range of boxes as part of the same copy transaction that
+    /// writes their successors.
     ///
-    /// This method is stateless — the buffer field enables continuation across
-    /// multiple calls. Pass the buffer from the previous call's result to avoid
-    /// wasting space. On the first call, pass None.
+    /// This method is stateless: the `buffer` argument carries any residual
+    /// encoder state across calls in place of daemon-side bookkeeping.
+    /// Pass `None` for `buffer` on the first call and the `buffer`
+    /// returned by the previous call thereafter; set `is_last` on the
+    /// final call so the encoder flushes its tail.
     ///
     /// # Arguments
     /// * `dest_write_cap` - Write capability for the destination channel
@@ -1273,15 +1313,22 @@ pub struct TombstoneRangeResult {
 }
 
 impl ThinClient {
-    /// Create tombstones for a range of pigeonhole boxes.
+    /// Prepares the encrypted envelopes needed to tombstone a consecutive
+    /// range of pigeonhole boxes beginning at the supplied
+    /// `MessageBoxIndex`. A tombstone is a signed empty payload that the
+    /// replica recognises as a deletion marker; the daemon constructs one
+    /// by signing rather than encrypting whenever `encrypt_write` is
+    /// invoked with an empty plaintext.
     ///
-    /// This method creates tombstones for up to max_count boxes,
-    /// starting from the specified box index and advancing through consecutive
-    /// indices. The caller must send each envelope via start_resending_encrypted_message
-    /// to complete the tombstone operations.
+    /// This method does not itself touch the network: it returns the
+    /// envelopes for the caller to dispatch one by one, typically via
+    /// `start_resending_encrypted_message`. To tombstone a single box,
+    /// pass `max_count = 1`.
     ///
-    /// If an error occurs during the operation, a partial result is returned
-    /// containing the envelopes created so far and the next index.
+    /// If an error occurs while creating envelopes, a partial result is
+    /// returned containing the envelopes created so far together with the
+    /// next index and an error message, so the caller may resume or
+    /// surface the failure as appropriate.
     ///
     /// # Arguments
     /// * `write_cap` - Write capability for the boxes

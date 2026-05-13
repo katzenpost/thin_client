@@ -410,11 +410,16 @@ impl ThinClient {
         services.into_iter().next().ok_or(ThinClientError::ServiceNotFound)
     }
 
-    /// Returns a courier service destination for the current epoch.
-    /// This method finds and randomly selects a courier service from the current
-    /// PKI document. The returned destination information is used with SendChannelQuery
-    /// and SendChannelQueryAwaitReply to transmit prepared channel operations.
-    /// Returns (dest_node, dest_queue) on success.
+    /// Returns one courier destination, drawn uniformly at random from
+    /// the couriers advertised in the current PKI document, as the
+    /// `(identity_hash, queue_id)` pair the rest of the API expects. This
+    /// spares the caller from handling a list when one courier will do.
+    ///
+    /// The principal use is the routine "pick a courier, send a copy
+    /// command to it" pattern; for the nested-copy-command case where two
+    /// distinct couriers are required, draw them with a single call to
+    /// the underlying service helpers in `helpers.rs` rather than calling
+    /// this method twice and risking the same draw.
     pub async fn get_courier_destination(&self) -> Result<(Vec<u8>, Vec<u8>), ThinClientError> {
         let courier_service = self.get_service("courier").await?;
         let (dest_node, dest_queue) = courier_service.to_destination();
