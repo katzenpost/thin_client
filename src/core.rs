@@ -27,6 +27,32 @@ use crate::helpers::find_services;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ThinCloseRequest {}
 
+/// Request the cert.Certificate-wrapped signed PKI document for an
+/// epoch, with every directory authority signature intact. Pass
+/// `epoch = 0` to ask the daemon for the document it believes is
+/// current.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct GetPKIDocumentRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    epoch: u64,
+}
+
+/// Reply to a `GetPKIDocument` request. `payload` carries the
+/// cert.Certificate-wrapped signed PKI document; `epoch` is the
+/// epoch of the returned document; `error_code` is zero on success.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct GetPKIDocumentReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default, with = "serde_bytes")]
+    payload: Vec<u8>,
+    #[serde(default)]
+    epoch: u64,
+    #[serde(default)]
+    error_code: u8,
+}
+
 /// The size in bytes of a SURB (Single-Use Reply Block) identifier.
 const SURB_ID_SIZE: usize = 16;
 
@@ -292,6 +318,65 @@ impl ThinClient {
     ///   client, before the first `NewDocumentEvent` has arrived).
     pub async fn pki_document(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
         self.pki_doc.read().await.clone().ok_or(ThinClientError::MissingPkiDocument)
+    }
+
+    /// Returns the cert.Certificate-wrapped signed PKI document for the
+    /// requested epoch, with every directory authority signature intact.
+    ///
+    /// The thin client receives the stripped PKI document by default
+    /// (forwarded by the daemon through `NewPKIDocumentEvent`, and
+    /// surfaced via [`pki_document`](Self::pki_document)); the daemon
+    /// nils the signature map before forwarding it. Use this method
+    /// when the caller wishes to verify the directory authority
+    /// signatures itself: the returned payload may be deserialized and
+    /// verified with the katzenpost `core/pki.FromPayload` routine
+    /// against the authorities listed in `client.toml`.
+    ///
+    /// # Arguments
+    ///
+    /// * `epoch` — the epoch for which the signed PKI document should
+    ///   be returned. Pass `0` to request the document the daemon
+    ///   believes is current.
+    ///
+    /// # Returns
+    ///
+    /// `(payload, epoch)` where `payload` is the cert.Certificate-
+    /// wrapped signed PKI document and `epoch` is the epoch of the
+    /// returned document. When `0` was passed in, `epoch` echoes the
+    /// epoch the daemon resolved to.
+    ///
+    /// # Errors
+    ///
+    /// * `ThinClientError::Other` — the daemon has no cached document
+    ///   for the requested epoch, or any other non-zero error code is
+    ///   returned. The diagnostic string includes the requested epoch.
+    pub async fn get_pki_document_raw(&self, epoch: u64) -> Result<(Vec<u8>, u64), ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let request_inner = GetPKIDocumentRequest {
+            query_id: query_id.clone(),
+            epoch,
+        };
+
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(ThinClientError::CborError)?;
+
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("get_pki_document".to_string()), request_value);
+
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
+
+        let reply: GetPKIDocumentReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(ThinClientError::CborError)?;
+
+        if reply.error_code != 0 {
+            return Err(ThinClientError::Other(format!(
+                "get_pki_document_raw failed for epoch {}: error code {}",
+                epoch, reply.error_code
+            )));
+        }
+
+        Ok((reply.payload, reply.epoch))
     }
 
     /// Returns the pigeonhole geometry from the config.

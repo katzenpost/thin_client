@@ -1213,6 +1213,57 @@ class ThinClient:
             return self.pki_doc
         raise Exception("no PKI document available for the requested epoch")
 
+    async def get_pki_document_raw(self, epoch:int = 0) -> "Tuple[bytes,int]":
+        """
+        Return the cert.Certificate-wrapped signed PKI document for the
+        requested epoch, with every directory authority signature intact.
+
+        The thin client receives the stripped PKI document by default
+        (via the ``on_new_pki_document`` callback, also available through
+        :py:meth:`pki_document` and :py:meth:`pki_document_for_epoch`);
+        the daemon nils the signature map before forwarding it. Use this
+        method when the caller wishes to verify the directory authority
+        signatures itself: the returned payload may be deserialized and
+        verified with the katzenpost ``core/pki.FromPayload`` routine
+        against the authorities listed in ``client.toml``.
+
+        Args:
+            epoch (int): Epoch for which the signed PKI document should
+                be returned. Pass ``0`` (the default) to request the
+                document the daemon believes is current.
+
+        Returns:
+            Tuple[bytes, int]: ``(payload, epoch)`` where ``payload`` is
+            the cert.Certificate-wrapped signed PKI document and
+            ``epoch`` is the epoch of the returned document. When ``0``
+            was passed in, ``epoch`` echoes the epoch the daemon
+            resolved to.
+
+        Raises:
+            Exception: If the daemon has no cached document for the
+                requested epoch, or any other error code is returned.
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "get_pki_document": {
+                "query_id": query_id,
+                "epoch": epoch,
+            }
+        }
+
+        reply = await self._send_and_wait(query_id=query_id, request=request)
+
+        returned_epoch = reply.get("epoch", 0)
+        error_code = reply.get("error_code", 0)
+        if error_code != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(error_code)
+            raise Exception(
+                f"get_pki_document_raw failed for epoch {epoch}: {error_msg}"
+            )
+
+        return reply.get("payload"), returned_epoch
+
     def parse_pki_doc(self, event: "Dict[str,Any]") -> None:
         """
         Parse and store a new PKI document received from the daemon.
