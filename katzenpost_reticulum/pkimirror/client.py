@@ -19,6 +19,7 @@ from katzenpost_reticulum.pkimirror.errors import (
     PkiMirrorProtocolError,
     decode_envelope,
 )
+from katzenpost_reticulum.pkimirror.verifier import verify_and_unwrap
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,11 @@ class PkiResult:
     doc: Optional[bytes]
     msg: Optional[str]
     stale: bool
+    # True when ``doc`` is the Certified payload of a cert.Certificate
+    # whose dirauth signatures were verified against the configured
+    # DirauthConfig. False when no verification was performed (no
+    # dirauth_config supplied) or the response carried no doc.
+    verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,12 +89,20 @@ class PkiMirrorClient:
         self._transport = transport
         if transport is None:
             self._init_reticulum(reticulum_config)
-        if dirauth_config is not None:
+        if dirauth_config is not None and dirauth_config.identities:
             logger.info(
-                "PkiMirrorClient configured with %d dirauth identities "
-                "(verification deferred); schemes: %s",
+                "PkiMirrorClient will verify cert.Certificate wrappers "
+                "against %d dirauth identit%s; schemes: %s",
                 len(dirauth_config.identities),
-                ",".join(sorted({i.scheme for i in dirauth_config.identities})) or "none",
+                "y" if len(dirauth_config.identities) == 1 else "ies",
+                ",".join(sorted({i.scheme for i in dirauth_config.identities})),
+            )
+        else:
+            logger.warning(
+                "PkiMirrorClient has no dirauth identities configured; "
+                "received PKI documents will be returned without "
+                "signature verification. Supply DirauthConfig to "
+                "enable verification.",
             )
 
     def _init_reticulum(self, config_path: Optional[str]) -> None:
@@ -182,16 +196,14 @@ class PkiMirrorClient:
         if use_cache:
             cached = self._cache.get_current()
             if cached is not None:
-                return PkiResult(
+                return self._present(
                     code=PKIMIRROR_OK,
                     epoch=self._cache.current_epoch(),
-                    doc=cached,
+                    raw_doc=cached,
                     msg=None,
                     stale=False,
                 )
-        result = self._fetch("/pki/current", b"", timeout)
-        self._maybe_cache(result)
-        return result
+        return self._fetch("/pki/current", b"", timeout)
 
     def get_for_epoch(
         self,
@@ -202,16 +214,14 @@ class PkiMirrorClient:
         if use_cache:
             cached = self._cache.get_for_epoch(epoch)
             if cached is not None:
-                return PkiResult(
+                return self._present(
                     code=PKIMIRROR_OK,
                     epoch=epoch,
-                    doc=cached,
+                    raw_doc=cached,
                     msg=None,
                     stale=False,
                 )
-        result = self._fetch("/pki/epoch", cbor2.dumps(epoch), timeout)
-        self._maybe_cache(result)
-        return result
+        return self._fetch("/pki/epoch", cbor2.dumps(epoch), timeout)
 
     def _fetch(self, path: str, data: bytes, timeout: float) -> PkiResult:
         if self._transport is None:
@@ -223,21 +233,60 @@ class PkiMirrorClient:
             raise PkiMirrorProtocolError(
                 f"server returned unknown response code: {env['code']}"
             )
-        return PkiResult(
+        # Cache the raw wire bytes (cert.Certificate-wrapped on the
+        # successful path) before verification, so future cache hits
+        # exercise the same verify-and-unwrap path as fresh fetches.
+        if (
+            env["code"] == PKIMIRROR_OK
+            and env["doc"] is not None
+            and env["epoch"] is not None
+        ):
+            self._cache.put(env["epoch"], env["doc"])
+        return self._present(
             code=env["code"],
             epoch=env["epoch"],
-            doc=env["doc"],
+            raw_doc=env["doc"],
             msg=env["msg"],
             stale=env["stale"],
         )
 
-    def _maybe_cache(self, result: PkiResult) -> None:
+    def _present(
+        self,
+        *,
+        code: int,
+        epoch: Optional[int],
+        raw_doc: Optional[bytes],
+        msg: Optional[str],
+        stale: bool,
+    ) -> PkiResult:
+        """Build a PkiResult, verifying and unwrapping the cert.Certificate
+        wrapper when ``raw_doc`` is present, the response is OK, and a
+        non-empty DirauthConfig was supplied at construction. Without a
+        DirauthConfig the wire bytes are returned unchanged with
+        ``verified=False``."""
         if (
-            result.code == PKIMIRROR_OK
-            and result.doc is not None
-            and result.epoch is not None
+            code == PKIMIRROR_OK
+            and raw_doc is not None
+            and self._dirauth_config is not None
+            and self._dirauth_config.identities
         ):
-            self._cache.put(result.epoch, result.doc)
+            certified = verify_and_unwrap(raw_doc, self._dirauth_config)
+            return PkiResult(
+                code=code,
+                epoch=epoch,
+                doc=certified,
+                msg=msg,
+                stale=stale,
+                verified=True,
+            )
+        return PkiResult(
+            code=code,
+            epoch=epoch,
+            doc=raw_doc,
+            msg=msg,
+            stale=stale,
+            verified=False,
+        )
 
     def cached_epochs(self) -> List[int]:
         return self._cache.cached_epochs()
