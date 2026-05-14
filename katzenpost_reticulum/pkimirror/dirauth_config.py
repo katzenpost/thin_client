@@ -22,7 +22,7 @@ class DirauthConfigError(Exception):
 @dataclass(frozen=True)
 class DirauthIdentity:
     name: str
-    scheme: str  # PEM label, e.g. "ED25519" or "ML-DSA-44-ED25519"
+    scheme: str  # PEM label, e.g. "ED25519" or "FALCON-PADDED-512-ED25519"
     pubkey: bytes
 
 
@@ -43,7 +43,8 @@ def _parse_pem_public_key(text: str) -> Tuple[str, bytes]:
     """Extract the scheme label and raw public-key bytes from a PEM block.
 
     Accepts the katzenpost-style "BEGIN <SCHEME> PUBLIC KEY" preamble where
-    <SCHEME> is a free-form label such as ED25519 or ML-DSA-44-ED25519.
+    <SCHEME> is a free-form label such as ED25519 or
+    FALCON-PADDED-512-ED25519.
     """
     if not isinstance(text, str):
         raise ValueError("PEM input must be a string")
