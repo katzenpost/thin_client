@@ -95,8 +95,7 @@ class ThinClientBridge:
             self._client = None
 
     async def _on_pki(self, event: dict) -> None:
-        raw = event.get("payload")
-        if not isinstance(raw, (bytes, bytearray)) or self._client is None:
+        if self._client is None:
             return
         parsed = self._client.pki_document()
         if not isinstance(parsed, dict):
@@ -104,7 +103,22 @@ class ThinClientBridge:
         epoch = parsed.get("Epoch")
         if not isinstance(epoch, int):
             return
-        self._cache.put(epoch, bytes(raw))
+        try:
+            raw, returned_epoch = await self._client.get_pki_document_raw(epoch)
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch signed PKI document for epoch %d: %s",
+                epoch, exc,
+            )
+            return
+        if not raw:
+            logger.warning(
+                "get_pki_document_raw returned empty payload for epoch %d",
+                epoch,
+            )
+            return
+        self._cache.put(returned_epoch, bytes(raw))
         logger.info(
-            "Cached PKI document for epoch %d (%d bytes).", epoch, len(raw),
+            "Cached signed PKI document for epoch %d (%d bytes).",
+            returned_epoch, len(raw),
         )
