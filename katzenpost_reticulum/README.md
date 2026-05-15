@@ -175,33 +175,37 @@ authority identity public keys. Each entry carries a name and a
 PEM-encoded public key, matching the format used by katzenpost's own
 `authority.toml` so an operator may copy the relevant block across
 verbatim. The PEM marker label names the signature scheme (e.g.
-`ED25519`, `ML-DSA-44-ED25519`) and the parser captures it on each
-loaded `DirauthIdentity`.
+`ED25519`, `FALCON-PADDED-512-ED25519`) and the parser captures it on
+each loaded `DirauthIdentity`.
 
 ```toml
 [[dirauths]]
 name = "auth1"
 identity_public_key = """
------BEGIN ML-DSA-44-ED25519 PUBLIC KEY-----
+-----BEGIN FALCON-PADDED-512-ED25519 PUBLIC KEY-----
 <base64-encoded public key>
------END ML-DSA-44-ED25519 PUBLIC KEY-----
+-----END FALCON-PADDED-512-ED25519 PUBLIC KEY-----
 """
 
 [[dirauths]]
 name = "auth2"
 identity_public_key = """
------BEGIN ML-DSA-44-ED25519 PUBLIC KEY-----
+-----BEGIN FALCON-PADDED-512-ED25519 PUBLIC KEY-----
 <base64-encoded public key>
------END ML-DSA-44-ED25519 PUBLIC KEY-----
+-----END FALCON-PADDED-512-ED25519 PUBLIC KEY-----
 """
 ```
 
-For the present revision the loaded keys are not yet put to work: the
-Python thin client delivers PKI documents stripped of their signatures,
-so a Reticulum-side observer has nothing to verify against. The slot
-exists now so that when a forthcoming thin-client API method returns the
-fully signed document, signature verification can be inserted without
-a config-format change. See "Roadmap" below.
+The client consumes these keys to verify the `cert.Certificate` wrapper
+around each PKI document received from a pkimirror. The bridge inside
+the service fetches the signed wrapper from `kpclientd` via its
+`get_pki_document_raw` API and serves those bytes over Reticulum; the
+client decodes the wrapper, reconstructs the canonical signed message
+(`u32-LE Version || u64-LE Expiration || ASCII KeyType || Certified`)
+per `katzenpost/core/cert`, and requires a simple majority of
+configured dirauth signatures to verify before returning the stripped
+`Certified` document to the caller. A `PkiResult.verified` flag
+records whether verification was performed.
 
 
 ## Signature scheme caveat
@@ -217,19 +221,26 @@ balloons to a size that is uncomfortable on most low-bandwidth meshes
 and well beyond what a sensible Reticulum deployment ought to relay.
 Sphincs+ is therefore unsuitable for use with this integration.
 
-For deployments behind pkimirror we recommend the **ML-DSA-44-Ed25519**
-hybrid signature scheme, added to hpqc in v0.0.79. It restores
-post-quantum signature security at a size that traverses Reticulum
-comfortably. Set `PKISignatureScheme = "ML-DSA-44-Ed25519"` in each
-dirauth's `authority.toml`, then copy each authority's public key block
-into pkimirror's dirauth config (see above).
+For deployments behind pkimirror we recommend the
+**Falcon-padded-512-Ed25519** hybrid signature scheme. Two factors
+converge on this choice. First, signature size: at roughly 730 bytes
+the hybrid signature is smaller than ML-DSA-44-Ed25519's ~2.5 KB,
+keeping the on-wire footprint of a multi-dirauth-signed PKI document
+manageable on low-bandwidth links. Second, verifier availability: this
+is presently the only post-quantum hybrid scheme that hpqc's Python
+bindings can verify, so it is the only scheme under which a
+Reticulum-side pkimirror client can actually check directory authority
+signatures today. Set
+`PKISignatureScheme = "Falcon-padded-512-Ed25519"` in each dirauth's
+`authority.toml`, then copy each authority's public key block into
+pkimirror's dirauth config (see above).
 
-If a deployment cannot adopt ML-DSA-44-Ed25519 immediately, the
-classical **Ed25519** scheme remains acceptable on the wire, with the
-understanding that one forfeits post-quantum signature security until
-the upgrade is made. We expect to revisit this recommendation in turn
-as more compact post-quantum signature schemes find their way into
-hpqc.
+If a deployment cannot adopt Falcon-padded-512-Ed25519 immediately,
+the classical **Ed25519** scheme remains acceptable on the wire and
+will likewise verify under pkimirror's client, with the understanding
+that one forfeits post-quantum signature security until the upgrade is
+made. We expect to revisit this recommendation in turn as more compact
+post-quantum signature schemes find their way into hpqc.
 
 
 ## Roadmap
@@ -237,15 +248,11 @@ hpqc.
 These items are not in the present revision; they are signposted here
 so callers may plan accordingly.
 
-- A new thin-client API method that returns the fully signed PKI
-  document (working title: `pki_document_signed()`), so a
-  Reticulum-side client may verify dirauth signatures itself. This
-  belongs in the katzenpost monorepo and is a prerequisite for the
-  loaded dirauth keys to be put to work.
 - A more compact post-quantum signature scheme in hpqc, after which
   the recommendation in "Signature scheme caveat" may be revisited.
-  ML-DSA-44-Ed25519 is the present recommendation (added in hpqc
-  v0.0.79).
+  Falcon-padded-512-Ed25519 is the present recommendation; should hpqc
+  expose a verifier for an even smaller scheme, the choice should be
+  reconsidered.
 - A multi-homed pigeonhole courier service on Reticulum, which will
   use pkimirror's client API to keep abreast of the consensus and
   route pigeonhole traffic accordingly. The shape of pkimirror (the
