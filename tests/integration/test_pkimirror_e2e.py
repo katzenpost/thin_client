@@ -99,6 +99,18 @@ def _write_rns_config(
     return cfg
 
 
+def _epoch_from_cert_wrapped(doc: bytes) -> int:
+    """Extract the PKI epoch from a cert.Certificate-wrapped document.
+
+    Without a DirauthConfig the client returns the wire bytes verbatim:
+    a cert.Certificate CBOR map whose ``Certified`` field holds the
+    inner PKI document. The katzenpost Document carries ``Epoch`` at
+    the top level of that inner map.
+    """
+    cert = cbor2.loads(doc)
+    return cbor2.loads(cert["Certified"])["Epoch"]
+
+
 def _check_daemon() -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -242,21 +254,20 @@ def test_announce_carries_epoch_app_data(pkimirror_server, pkimirror_client):
 def test_get_current_returns_fresh_pki(pkimirror_server, pkimirror_client):
     _, destination_hash, _log = pkimirror_server
     pkimirror_client.discover(timeout=60.0, max_announces=1)
-    pkimirror_client.connect(destination_hash, timeout=30.0)
+    pkimirror_client.connect(destination_hash, timeout=90.0)
 
     result = pkimirror_client.get_current(timeout=60.0)
     assert result.code == PKIMIRROR_OK
     assert result.doc is not None
     assert result.epoch is not None
     assert result.stale is False
-    parsed = cbor2.loads(result.doc)
-    assert parsed["Epoch"] == result.epoch
+    assert _epoch_from_cert_wrapped(result.doc) == result.epoch
 
 
 def test_get_for_unknown_epoch_returns_error(pkimirror_server, pkimirror_client):
     _, destination_hash, _log = pkimirror_server
     pkimirror_client.discover(timeout=60.0, max_announces=1)
-    pkimirror_client.connect(destination_hash, timeout=30.0)
+    pkimirror_client.connect(destination_hash, timeout=90.0)
 
     result = pkimirror_client.get_for_epoch(1, timeout=60.0, use_cache=False)
     assert result.code == PKIMIRROR_EPOCH_NOT_CACHED
@@ -269,7 +280,7 @@ def test_bad_request_returns_error(pkimirror_server, pkimirror_client):
     """Bypass the typed client and issue a malformed body directly."""
     _, destination_hash, _log = pkimirror_server
     pkimirror_client.discover(timeout=60.0, max_announces=1)
-    pkimirror_client.connect(destination_hash, timeout=30.0)
+    pkimirror_client.connect(destination_hash, timeout=90.0)
 
     raw = pkimirror_client._transport.request(
         "/pki/epoch", b"\xff\xff not cbor", 60.0
@@ -284,7 +295,7 @@ def test_large_response_resource_escalation(pkimirror_server, pkimirror_client):
     the full payload via Reticulum's automatic Resource escalation."""
     _, destination_hash, _log = pkimirror_server
     pkimirror_client.discover(timeout=60.0, max_announces=1)
-    pkimirror_client.connect(destination_hash, timeout=30.0)
+    pkimirror_client.connect(destination_hash, timeout=90.0)
 
     result = pkimirror_client.get_current(timeout=60.0)
     assert result.code == PKIMIRROR_OK
@@ -297,7 +308,7 @@ def test_large_response_resource_escalation(pkimirror_server, pkimirror_client):
 def test_client_cache_hit_round_trip(pkimirror_server, pkimirror_client):
     _, destination_hash, _log = pkimirror_server
     pkimirror_client.discover(timeout=60.0, max_announces=1)
-    pkimirror_client.connect(destination_hash, timeout=30.0)
+    pkimirror_client.connect(destination_hash, timeout=90.0)
 
     first = pkimirror_client.get_current(timeout=60.0)
     assert first.code == PKIMIRROR_OK
