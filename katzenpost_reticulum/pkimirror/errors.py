@@ -14,6 +14,13 @@ class PkiMirrorProtocolError(Exception):
     pkimirror envelope schema, or carries an unrecognised code."""
 
 
+class PkiMirrorVerificationError(Exception):
+    """Raised by the client when the cert.Certificate wrapper around a
+    received PKI document fails verification against the configured
+    directory authority public keys, or when the wrapper itself is
+    malformed."""
+
+
 _ENVELOPE_KEYS = ("code", "epoch", "doc", "msg", "stale")
 
 

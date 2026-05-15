@@ -51,5 +51,9 @@ test = [
 reticulum = [
     "rns>=0.9",
     "tomli; python_version<'3.11'",
+    # pkimirror verifies cert.Certificate signatures against the
+    # configured dirauth identities; 0.0.2 added the
+    # hpqc.sign.hybrid.FalconPadded512Ed25519 verifier required here.
+    "hpqc>=0.0.2",
 ]
 
