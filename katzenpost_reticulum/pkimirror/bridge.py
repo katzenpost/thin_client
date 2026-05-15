@@ -32,6 +32,7 @@ class ThinClientBridge:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop_future: Optional[asyncio.Future] = None
         self._client: Optional[ThinClient] = None
+        self._started: Optional[asyncio.Event] = None
         self._ready: "concurrent.futures.Future[None]" = concurrent.futures.Future()
 
     def start(self) -> None:
@@ -84,10 +85,14 @@ class ThinClientBridge:
     async def _main(self) -> None:
         loop = asyncio.get_running_loop()
         self._stop_future = loop.create_future()
+        self._started = asyncio.Event()
         cfg = Config(self._cfg_path, on_new_pki_document=self._on_pki)
         self._client = ThinClient(cfg)
         await self._client.start(loop)
-        self._ready.set_result(None)
+        # Readiness is signalled by _fetch_and_cache once the first
+        # signed document is actually cached, not merely once start()
+        # returns.
+        self._started.set()
         try:
             await self._stop_future
         finally:
@@ -102,6 +107,18 @@ class ThinClientBridge:
             return
         epoch = parsed.get("Epoch")
         if not isinstance(epoch, int):
+            return
+        # This callback fires inline during ThinClient.start()'s
+        # handshake, before the reply pump (worker_loop) and the
+        # session handshake exist. Awaiting a request/reply here would
+        # deadlock, so defer the signed-document fetch to a task that
+        # waits for start() to finish.
+        asyncio.create_task(self._fetch_and_cache(epoch))
+
+    async def _fetch_and_cache(self, epoch: int) -> None:
+        assert self._started is not None
+        await self._started.wait()
+        if self._client is None:
             return
         try:
             raw, returned_epoch = await self._client.get_pki_document_raw(epoch)
@@ -122,3 +139,5 @@ class ThinClientBridge:
             "Cached signed PKI document for epoch %d (%d bytes).",
             returned_epoch, len(raw),
         )
+        if not self._ready.done():
+            self._ready.set_result(None)
