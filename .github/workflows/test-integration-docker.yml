@@ -132,6 +132,10 @@ jobs:
       - name: Capture kpclientd container logs
         if: always()
         run: |
+          if [ ! -d katzenpost/docker/voting_mixnet ]; then
+            echo "voting_mixnet directory absent; the mixnet never started, nothing to capture"
+            exit 0
+          fi
           cd katzenpost/docker/voting_mixnet
           DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock" \
             podman compose logs --no-color --no-log-prefix kpclientd \
