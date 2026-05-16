@@ -56,22 +56,22 @@ async def setup_thin_client():
     return client
 
 
-async def await_copy_stream_propagated(client, read_cap, last_box_index):
-    """Block until the temp copy stream's final box is readable.
+async def await_box_propagated(client, read_cap, box_index):
+    """Block until the given box is readable.
 
-    The copy stream is ready for the courier once its last box has
-    propagated to a serving replica; the boxes before it were written
-    earlier and so have had at least as long to settle. The default
-    ARQ behaviour auto-retries on BoxIDNotFound, so this single read
-    returns only once that box is populated, a deterministic
-    replacement for a blind propagation sleep that does not incur the
-    traffic of re-reading every box.
+    The default ARQ behaviour auto-retries on BoxIDNotFound, so this
+    single read returns only once the box has propagated to a serving
+    replica, a deterministic replacement for a blind propagation
+    sleep. For a sequentially written stream, pass the last written
+    box: the boxes before it were written earlier and so have had at
+    least as long to settle, and this avoids the traffic of re-reading
+    every box.
     """
-    read_request = await client.encrypt_read(read_cap, last_box_index)
+    read_request = await client.encrypt_read(read_cap, box_index)
     await client.start_resending_encrypted_message(
         read_cap=read_cap,
         write_cap=None,
-        message_box_index=last_box_index,
+        message_box_index=box_index,
         reply_index=0,
         envelope_descriptor=read_request.envelope_descriptor,
         message_ciphertext=read_request.message_ciphertext,
@@ -434,7 +434,7 @@ async def test_create_courier_envelopes_from_payload():
 
         # Deterministic ARQ propagation gate in place of a blind sleep.
         print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_copy_stream_propagated(
+        await await_box_propagated(
             alice_client, temp_keypair.read_cap, last_temp_index
         )
 
@@ -600,7 +600,7 @@ async def test_copy_command_multi_channel():
 
         # Deterministic ARQ propagation gate in place of a blind sleep.
         print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_copy_stream_propagated(
+        await await_box_propagated(
             alice_client, temp_keypair.read_cap, last_temp_index
         )
 
@@ -767,7 +767,7 @@ async def test_copy_command_multi_channel_efficient():
 
         # Deterministic ARQ propagation gate in place of a blind sleep.
         print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_copy_stream_propagated(
+        await await_box_propagated(
             alice_client, temp_keypair.read_cap, last_temp_index
         )
 
@@ -1393,7 +1393,7 @@ async def test_copy_onto_already_existing_box_error():
 
         # Deterministic ARQ propagation gate in place of a blind sleep.
         print("--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_copy_stream_propagated(
+        await await_box_propagated(
             client, temp_keypair.read_cap, last_temp_index
         )
 
@@ -1500,7 +1500,7 @@ async def test_from_payload_multi_call():
             print(f"Wrote temp element {i+1}/{len(all_temp_elements)}")
 
         print("Awaiting temp stream propagation (ARQ read of final box)")
-        await await_copy_stream_propagated(
+        await await_box_propagated(
             alice_client, temp_keypair.read_cap, last_temp_index
         )
 
@@ -1603,7 +1603,7 @@ async def test_from_multi_payload_multi_call():
             print(f"Wrote temp element {i+1}/{len(all_elements)}")
 
         print("Awaiting temp stream propagation (ARQ read of final box)")
-        await await_copy_stream_propagated(
+        await await_box_propagated(
             alice_client, temp_keypair.read_cap, last_temp_index
         )
 
