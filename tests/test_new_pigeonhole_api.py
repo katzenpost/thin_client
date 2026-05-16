@@ -56,6 +56,29 @@ async def setup_thin_client():
     return client
 
 
+async def await_copy_stream_propagated(client, read_cap, last_box_index):
+    """Block until the temp copy stream's final box is readable.
+
+    The copy stream is ready for the courier once its last box has
+    propagated to a serving replica; the boxes before it were written
+    earlier and so have had at least as long to settle. The default
+    ARQ behaviour auto-retries on BoxIDNotFound, so this single read
+    returns only once that box is populated, a deterministic
+    replacement for a blind propagation sleep that does not incur the
+    traffic of re-reading every box.
+    """
+    read_request = await client.encrypt_read(read_cap, last_box_index)
+    await client.start_resending_encrypted_message(
+        read_cap=read_cap,
+        write_cap=None,
+        message_box_index=last_box_index,
+        reply_index=0,
+        envelope_descriptor=read_request.envelope_descriptor,
+        message_ciphertext=read_request.message_ciphertext,
+        envelope_hash=read_request.envelope_hash,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.timeout(3600)
 async def test_alice_sends_bob_complete_workflow():
@@ -111,9 +134,9 @@ async def test_alice_sends_bob_complete_workflow():
         # For write operations, plaintext should be empty (ACK only)
         print(f"✓ Alice received ACK (plaintext length: {len(alice_plaintext) if alice_plaintext else 0})")
 
-        # Wait for message propagation to storage replicas
-        print("\n--- Waiting for message propagation to storage replicas (30 seconds) ---")
-        await asyncio.sleep(45)
+        # No propagation sleep: Bob's read below uses the default ARQ
+        # behaviour, which auto-retries on BoxIDNotFound and so returns
+        # only once the box has propagated. The read is itself the gate.
 
         # Step 4: Bob encrypts a read request
         print("\n--- Step 4: Bob encrypts read request ---")
@@ -290,9 +313,9 @@ async def test_multiple_messages_bulk():
             print(f"✓ Alice sent message {i+1}")
             alice_current_index = write_result.next_message_box_index
 
-        # Wait for propagation
-        print("\nWaiting for message propagation (30 seconds)")
-        await asyncio.sleep(45)
+        # No propagation sleep: each of Bob's per-box reads below is an
+        # ARQ read that auto-retries on BoxIDNotFound, gating itself on
+        # that box's propagation.
 
         # Bob reads ALL messages
         bob_current_index = alice_keypair.first_message_index
@@ -405,12 +428,15 @@ async def test_create_courier_envelopes_from_payload():
             )
             print(f"✓ Alice sent copy stream chunk {i+1} to temporary channel")
 
-            # Increment temp index for next chunk
+            # Track the box just written, then advance for the next chunk.
+            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
 
-        # Wait for all chunks to propagate to the copy stream
-        print("\n--- Waiting for copy stream chunks to propagate (30 seconds) ---")
-        await asyncio.sleep(45)
+        # Deterministic ARQ propagation gate in place of a blind sleep.
+        print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
+        await await_copy_stream_propagated(
+            alice_client, temp_keypair.read_cap, last_temp_index
+        )
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
@@ -568,12 +594,15 @@ async def test_copy_command_multi_channel():
             )
             print(f"✓ Alice sent chunk {i+1} to temporary channel")
 
-            # Increment temp index for next chunk
+            # Track the box just written, then advance for the next chunk.
+            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
 
-        # Wait for chunks to propagate
-        print("\n--- Waiting for copy stream chunks to propagate (30 seconds) ---")
-        await asyncio.sleep(45)
+        # Deterministic ARQ propagation gate in place of a blind sleep.
+        print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
+        await await_copy_stream_propagated(
+            alice_client, temp_keypair.read_cap, last_temp_index
+        )
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
@@ -732,12 +761,15 @@ async def test_copy_command_multi_channel_efficient():
             )
             print(f"✓ Alice sent chunk {i+1} to temporary channel")
 
-            # Increment temp index for next chunk
+            # Track the box just written, then advance for the next chunk.
+            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
 
-        # Wait for chunks to propagate
-        print("\n--- Waiting for copy stream chunks to propagate (30 seconds) ---")
-        await asyncio.sleep(45)
+        # Deterministic ARQ propagation gate in place of a blind sleep.
+        print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
+        await await_copy_stream_propagated(
+            alice_client, temp_keypair.read_cap, last_temp_index
+        )
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
@@ -837,9 +869,8 @@ async def test_tombstoning():
         )
         print("✓ Alice wrote message")
 
-        # Wait for message propagation
-        print("--- Waiting for message propagation (30 seconds) ---")
-        await asyncio.sleep(45)
+        # No propagation sleep: Bob's ARQ read below auto-retries on
+        # BoxIDNotFound and so gates itself on propagation.
 
         # Step 2: Bob reads and verifies
         print("\n--- Step 2: Bob reads and verifies ---")
@@ -966,9 +997,8 @@ async def test_tombstone_range():
             print(f"✓ Alice wrote message {i+1}")
             write_idx = await alice_client.next_message_box_index(write_idx)
 
-        # Wait for messages to propagate
-        print("--- Waiting for message propagation (30 seconds) ---")
-        await asyncio.sleep(45)
+        # No propagation sleep: each per-box ARQ read below auto-retries
+        # on BoxIDNotFound, gating itself on that box's propagation.
 
         # Bob reads and verifies all messages
         read_idx = keypair.first_message_index
@@ -1358,11 +1388,14 @@ async def test_copy_onto_already_existing_box_error():
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash
             )
+            last_temp_index = temp_index
             temp_index = await client.next_message_box_index(temp_index)
 
-        # Wait for chunks to propagate
-        print("--- Waiting for copy stream chunks to propagate (30 seconds) ---")
-        await asyncio.sleep(45)
+        # Deterministic ARQ propagation gate in place of a blind sleep.
+        print("--- Awaiting copy stream propagation (ARQ read of final box) ---")
+        await await_copy_stream_propagated(
+            client, temp_keypair.read_cap, last_temp_index
+        )
 
         # Send Copy command - should fail because destination box already exists
         print("--- Sending Copy command (should fail) ---")
@@ -1462,11 +1495,14 @@ async def test_from_payload_multi_call():
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash)
+            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
             print(f"Wrote temp element {i+1}/{len(all_temp_elements)}")
 
-        print("Waiting for temp stream to propagate (30 seconds)")
-        await asyncio.sleep(45)
+        print("Awaiting temp stream propagation (ARQ read of final box)")
+        await await_copy_stream_propagated(
+            alice_client, temp_keypair.read_cap, last_temp_index
+        )
 
         # Send copy command
         await alice_client.start_resending_copy_command(temp_keypair.write_cap)
@@ -1562,11 +1598,14 @@ async def test_from_multi_payload_multi_call():
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash)
+            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
             print(f"Wrote temp element {i+1}/{len(all_elements)}")
 
-        print("Waiting for temp stream to propagate (30 seconds)")
-        await asyncio.sleep(45)
+        print("Awaiting temp stream propagation (ARQ read of final box)")
+        await await_copy_stream_propagated(
+            alice_client, temp_keypair.read_cap, last_temp_index
+        )
 
         # Send copy command
         await alice_client.start_resending_copy_command(temp_keypair.write_cap)
