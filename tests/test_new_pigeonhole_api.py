@@ -1327,12 +1327,15 @@ async def test_copy_onto_already_existing_box_error():
         temp_keypair = await client.new_keypair(temp_seed)
         print("✓ Created temporary copy stream WriteCap")
 
-        # Create large payload
-        large_payload = os.urandom(2000)
+        # The copy aborts on the first envelope (the destination box
+        # already exists), so a single chunk proves the failure; a
+        # larger payload only writes and propagates boxes the copy
+        # never reaches.
+        small_payload = os.urandom(64)
 
         # Create copy stream chunks targeting the already-written box
         result = await client.create_courier_envelopes_from_payload(
-            large_payload, keypair.write_cap, keypair.first_message_index, True, True
+            small_payload, keypair.write_cap, keypair.first_message_index, True, True
         )
         assert result.envelopes, "create_courier_envelopes_from_payload returned empty chunks"
         copy_stream_chunks = result.envelopes
@@ -1410,8 +1413,11 @@ async def test_from_payload_multi_call():
         temp_seed = os.urandom(32)
         temp_keypair = await alice_client.new_keypair(temp_seed)
 
-        # Create payload large enough to split into 3 chunks (each ~2000 bytes)
-        chunk_size = 2000
+        # This test exercises the three-call stateless API, not large
+        # payloads; a small per-call chunk produces one temp element
+        # each and keeps every assertion intact while sparing the
+        # courier a needless copy-and-tombstone of many boxes.
+        chunk_size = 128
         full_payload = os.urandom(3 * chunk_size)
         chunk1 = full_payload[:chunk_size]
         chunk2 = full_payload[chunk_size:2 * chunk_size]
