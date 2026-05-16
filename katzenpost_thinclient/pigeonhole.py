@@ -362,11 +362,23 @@ async def start_resending_encrypted_message_return_box_exists(
     envelope_hash: bytes
 ) -> StartResendingResult:
     """
-    Like start_resending_encrypted_message but returns BoxAlreadyExists errors.
+    Behaves exactly like ``start_resending_encrypted_message`` save that
+    it raises ``BoxAlreadyExistsError`` when the replica reports the
+    destination box has already been written, rather than swallowing the
+    condition as idempotent success. Use this when one needs to
+    distinguish a fresh write from a repeat: for instance, when
+    implementing optimistic concurrency on top of the channel, or when
+    establishing whether a particular call actually caused a state
+    change at the replica.
 
-    This is a convenience method that calls start_resending_encrypted_message with
-    no_idempotent_box_already_exists=True. Use this when you want to detect whether
-    a write was actually performed or if the box already existed.
+    Note that this variant costs an additional mixnet round trip: the
+    BoxAlreadyExists code is carried by the replica's reply rather than
+    the courier's ACK, so the daemon must dispatch a second SURB before
+    it can return the answer.
+
+    As with ``start_resending_encrypted_message``, an in-flight call
+    can be cancelled from another task via
+    ``cancel_resending_encrypted_message``.
 
     Args:
         read_cap: Read capability (can be None for write operations, required for reads).
@@ -389,7 +401,7 @@ async def start_resending_encrypted_message_return_box_exists(
         ...     await client.start_resending_encrypted_message_return_box_exists(
         ...         None, write_cap, None, None, env_desc, ciphertext, env_hash)
         ... except BoxAlreadyExistsError:
-        ...     print("Box already has data - write was idempotent")
+        ...     print("Box already has data; write was idempotent")
     """
     return await self.start_resending_encrypted_message(
         read_cap=read_cap,
@@ -414,11 +426,19 @@ async def start_resending_encrypted_message_no_retry(
     envelope_hash: bytes
 ) -> StartResendingResult:
     """
-    Like start_resending_encrypted_message but disables automatic retries on BoxIDNotFound.
+    Behaves exactly like ``start_resending_encrypted_message`` save that
+    it disables the daemon's automatic retry of ``BoxIDNotFoundError``.
+    The caller learns at once that the box is absent rather than waiting
+    for replication to settle.
 
-    This is a convenience method that calls start_resending_encrypted_message with
-    no_retry_on_box_id_not_found=True. Use this when you want immediate error feedback
-    rather than waiting for potential replication lag to resolve.
+    Use this when polling a box that may not yet have been written: for
+    instance, when a reader peeks ahead at a peer's next message before
+    that peer has produced it. The regular variant would block until
+    the box appeared, which can be many round trips.
+
+    As with ``start_resending_encrypted_message``, an in-flight call
+    can be cancelled from another task via
+    ``cancel_resending_encrypted_message``.
 
     Args:
         read_cap: Read capability (can be None for write operations, required for reads).
@@ -441,7 +461,7 @@ async def start_resending_encrypted_message_no_retry(
         ...     result = await client.start_resending_encrypted_message_no_retry(
         ...         read_cap, None, message_box_index, reply_idx, env_desc, ciphertext, env_hash)
         ... except BoxIDNotFoundError:
-        ...     print("Box not found - message not yet written")
+        ...     print("Box not found; message not yet written")
     """
     return await self.start_resending_encrypted_message(
         read_cap=read_cap,
@@ -723,14 +743,25 @@ async def create_courier_envelopes_from_payload(
     is_last: bool
 ) -> "CreateEnvelopesResult":
     """
-    Creates multiple CourierEnvelopes from a payload of any size.
+    Packs a payload of arbitrary size (up to 10 MB) into properly sized
+    ``CopyStreamElement`` chunks for one destination channel. Each chunk
+    is a serialised ``CopyStreamElement``, ready to be written to a box
+    via ``encrypt_write`` followed by ``start_resending_encrypted_message``;
+    the caller marks the boundaries of the stream with the ``is_start``
+    and ``is_last`` flags.
 
-    This method is stateless — no daemon state is kept between calls. Each call
-    creates a fresh encoder, encodes all envelopes, flushes, and returns. The
-    caller controls the copy stream boundaries via is_start and is_last flags.
+    This method is stateless: no daemon state is kept between calls,
+    each invocation runs a fresh encoder and flushes before returning.
+    The 10 MB cap guards against accidental memory exhaustion.
 
-    Multiple calls can target the same destination stream by using next_dest_index
-    from the result as the dest_start_index for the next call.
+    Once the chunks have been written to a temporary copy stream, a
+    copy command (``start_resending_copy_command``) is dispatched to a
+    courier with the write capability for that temporary stream; the
+    courier reads the chunks back and writes each envelope to its
+    destination box.
+
+    Multiple calls can target the same destination stream by passing
+    ``next_dest_index`` from the previous result as ``dest_start_index``.
 
     Args:
         payload: The data to be encoded into courier envelopes (max 10MB).
@@ -782,15 +813,17 @@ async def create_courier_envelopes_from_multi_payload(
     buffer: "bytes | None" = None
 ) -> "CreateEnvelopesResult":
     """
-    Creates CourierEnvelopes from multiple payloads going to different destinations.
+    Packs payloads bound for several destination channels into a single
+    stream of ``CopyStreamElement`` chunks. This is more space-efficient
+    than calling ``create_courier_envelopes_from_payload`` once per
+    destination, because the shared encoder runs all envelopes together
+    rather than padding the final box of each destination independently.
 
-    This is more space-efficient than calling create_courier_envelopes_from_payload
-    multiple times because envelopes from different destinations are packed
-    together in the copy stream without wasting space.
-
-    This method is stateless — the buffer parameter enables continuation across
-    multiple calls without daemon-side state. Pass the buffer from the previous
-    call's result to avoid wasting space. On the first call, pass None.
+    This method is stateless: the ``buffer`` argument carries any residual
+    encoder state across calls in place of daemon-side bookkeeping. Pass
+    ``None`` for ``buffer`` on the first call and the ``buffer`` returned
+    by the previous call thereafter; set ``is_last`` on the final call so
+    the encoder flushes its tail.
 
     Args:
         destinations: List of destination payloads, each a dict with:
@@ -891,17 +924,17 @@ async def tombstone_range(
     max_count: int
 ) -> TombstoneRangeResult:
     """
-    Create tombstones for a range of pigeonhole boxes.
+    Prepares the encrypted envelopes needed to tombstone a consecutive
+    range of pigeonhole boxes beginning at the supplied
+    ``MessageBoxIndex``. A tombstone is a signed empty payload that the
+    replica recognises as a deletion marker; the daemon constructs one
+    by signing rather than encrypting whenever ``encrypt_write`` is
+    invoked with an empty plaintext.
 
-    This method creates tombstones for up to max_count boxes,
-    starting from the specified box index and advancing through consecutive
-    indices. The caller must send each envelope via start_resending_encrypted_message
-    to complete the tombstone operations.
-
-    To tombstone a single box, use max_count=1.
-
-    If an error occurs during the operation, a partial result is returned
-    containing the envelopes created so far and the next index.
+    This method does not itself touch the network: it returns the
+    envelopes for the caller to dispatch one by one, typically via
+    ``start_resending_encrypted_message``. To tombstone a single box,
+    pass ``max_count=1``.
 
     Args:
         write_cap: Write capability for the boxes.
@@ -957,12 +990,18 @@ async def create_courier_envelopes_from_tombstone_range(
     buffer: "bytes | None" = None
 ) -> "CreateEnvelopesResult":
     """
-    Creates tombstone CourierEnvelopes for a range of destination indices,
-    encoded as copy stream elements.
+    Packs tombstones for a consecutive range of destination boxes into
+    ``CopyStreamElement`` chunks. The chunks are written to a temporary
+    copy stream and then dispatched as a copy command; the courier
+    applies all the tombstones atomically, which is the natural way to
+    retire a range of boxes as part of the same copy transaction that
+    writes their successors.
 
-    This method is stateless — the buffer parameter enables continuation across
-    multiple calls without daemon-side state. Pass the buffer from the previous
-    call's result to avoid wasting space. On the first call, pass None.
+    This method is stateless: the ``buffer`` argument carries any residual
+    encoder state across calls in place of daemon-side bookkeeping. Pass
+    ``None`` for ``buffer`` on the first call and the ``buffer`` returned
+    by the previous call thereafter; set ``is_last`` on the final call so
+    the encoder flushes its tail.
 
     Args:
         dest_write_cap: Write capability for the destination channel.

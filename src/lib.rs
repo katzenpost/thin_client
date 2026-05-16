@@ -366,12 +366,6 @@ impl PigeonholeGeometry {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigFile {
-    #[serde(rename = "SphinxGeometry")]
-    pub sphinx_geometry: Geometry,
-
-    #[serde(rename = "PigeonholeGeometry")]
-    pub pigeonhole_geometry: PigeonholeGeometry,
-
     /// The subtable-discriminated dial-transport configuration.
     /// Exactly one of its inner variants ([Dial.Unix] / [Dial.Tcp])
     /// must be populated.
@@ -394,8 +388,6 @@ impl ConfigFile {
 #[derive(Clone)]
 pub struct Config {
     pub dial: DialConfig,
-    pub sphinx_geometry: Geometry,
-    pub pigeonhole_geometry: PigeonholeGeometry,
 
     pub on_connection_status: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
     pub on_new_pki_document: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
@@ -412,8 +404,6 @@ impl Config {
 
         Ok(Self {
             dial: parsed.dial,
-            sphinx_geometry: parsed.sphinx_geometry,
-            pigeonhole_geometry: parsed.pigeonhole_geometry,
             on_connection_status: None,
             on_new_pki_document: None,
             on_message_sent: None,

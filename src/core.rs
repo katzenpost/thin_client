@@ -19,7 +19,7 @@ use rand::RngCore;
 use log::{debug, error};
 
 use crate::error::ThinClientError;
-use crate::{Config, ServiceDescriptor, PigeonholeGeometry};
+use crate::{Config, ServiceDescriptor, Geometry, PigeonholeGeometry};
 use crate::helpers::find_services;
 
 /// Request to close the thin client connection.
@@ -116,6 +116,11 @@ pub struct ThinClient {
     response_channels: Arc<Mutex<HashMap<Vec<u8>, oneshot::Sender<BTreeMap<Value, Value>>>>>,
     // Instance token from the daemon for reconnect detection
     daemon_instance_token: RwLock<Vec<u8>>,
+    // Geometry the daemon supplies in its ConnectionStatusEvent during
+    // the handshake. Not configured client-side; runtime state. None
+    // until the first connection status event has been processed.
+    sphinx_geometry: std::sync::RwLock<Option<Geometry>>,
+    pigeonhole_geometry: std::sync::RwLock<Option<PigeonholeGeometry>>,
     // In-flight StartResending requests for replay on reconnect to new daemon
     pub(crate) in_flight_resends: Mutex<HashMap<Vec<u8>, BTreeMap<Value, Value>>>,
     // Track if daemon sent ShutdownEvent before disconnect
@@ -152,6 +157,8 @@ impl ThinClient {
             drain_remove: drain_remove_tx,
             response_channels,
             daemon_instance_token: RwLock::new(Vec::new()),
+            sphinx_geometry: std::sync::RwLock::new(None),
+            pigeonhole_geometry: std::sync::RwLock::new(None),
             in_flight_resends: Mutex::new(HashMap::new()),
             received_shutdown: AtomicBool::new(false),
             instance_token: {
@@ -379,10 +386,30 @@ impl ThinClient {
         Ok((reply.payload, reply.epoch))
     }
 
-    /// Returns the pigeonhole geometry from the config.
-    /// This geometry defines the payload sizes and envelope formats for the pigeonhole protocol.
-    pub fn pigeonhole_geometry(&self) -> &PigeonholeGeometry {
-        &self.config.pigeonhole_geometry
+    /// Returns the pigeonhole geometry the daemon supplied during the
+    /// connection handshake. This geometry defines the payload sizes and
+    /// envelope formats for the pigeonhole protocol.
+    ///
+    /// Panics if called before the daemon's first ConnectionStatusEvent
+    /// has been processed, or if the daemon did not supply the geometry
+    /// (an incompatible daemon).
+    pub fn pigeonhole_geometry(&self) -> PigeonholeGeometry {
+        self.pigeonhole_geometry
+            .read()
+            .unwrap()
+            .clone()
+            .expect("pigeonhole geometry not yet received from daemon (incompatible daemon, or called before connect)")
+    }
+
+    /// Returns the Sphinx geometry the daemon supplied during the
+    /// connection handshake. Same panic semantics as
+    /// [`Self::pigeonhole_geometry`].
+    pub fn sphinx_geometry(&self) -> Geometry {
+        self.sphinx_geometry
+            .read()
+            .unwrap()
+            .clone()
+            .expect("sphinx geometry not yet received from daemon (incompatible daemon, or called before connect)")
     }
 
     /// Returns a random instance of the named service from the current PKI
@@ -410,11 +437,16 @@ impl ThinClient {
         services.into_iter().next().ok_or(ThinClientError::ServiceNotFound)
     }
 
-    /// Returns a courier service destination for the current epoch.
-    /// This method finds and randomly selects a courier service from the current
-    /// PKI document. The returned destination information is used with SendChannelQuery
-    /// and SendChannelQueryAwaitReply to transmit prepared channel operations.
-    /// Returns (dest_node, dest_queue) on success.
+    /// Returns one courier destination, drawn uniformly at random from
+    /// the couriers advertised in the current PKI document, as the
+    /// `(identity_hash, queue_id)` pair the rest of the API expects. This
+    /// spares the caller from handling a list when one courier will do.
+    ///
+    /// The principal use is the routine "pick a courier, send a copy
+    /// command to it" pattern; for the nested-copy-command case where two
+    /// distinct couriers are required, draw them with a single call to
+    /// the underlying service helpers in `helpers.rs` rather than calling
+    /// this method twice and risking the same draw.
     pub async fn get_courier_destination(&self) -> Result<(Vec<u8>, Vec<u8>), ThinClientError> {
         let courier_service = self.get_service("courier").await?;
         let (dest_node, dest_queue) = courier_service.to_destination();
@@ -467,6 +499,24 @@ impl ThinClient {
         if let Some(Value::Bytes(token)) = event.get(&Value::Text("instance_token".to_string())) {
             let mut t = self.daemon_instance_token.write().await;
             *t = token.clone();
+        }
+
+        // The daemon supplies the geometries here rather than the thin
+        // client carrying them in its config file. A daemon that omits
+        // them is incompatible.
+        match event.get(&Value::Text("sphinx_geometry".to_string())) {
+            Some(v) => match serde_cbor::value::from_value::<Geometry>(v.clone()) {
+                Ok(g) => *self.sphinx_geometry.write().unwrap() = Some(g),
+                Err(e) => error!("Failed to decode sphinx_geometry from daemon: {:?}", e),
+            },
+            None => error!("Daemon did not supply sphinx_geometry in its ConnectionStatusEvent (incompatible daemon)"),
+        }
+        match event.get(&Value::Text("pigeonhole_geometry".to_string())) {
+            Some(v) => match serde_cbor::value::from_value::<PigeonholeGeometry>(v.clone()) {
+                Ok(g) => *self.pigeonhole_geometry.write().unwrap() = Some(g),
+                Err(e) => error!("Failed to decode pigeonhole_geometry from daemon: {:?}", e),
+            },
+            None => error!("Daemon did not supply pigeonhole_geometry in its ConnectionStatusEvent (incompatible daemon)"),
         }
 
         if is_connected {

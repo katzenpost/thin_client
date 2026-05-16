@@ -526,9 +526,6 @@ async fn test_tombstone_range() {
 
     let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
 
-    // Get the geometry from the config
-    let _geometry = alice_client.pigeonhole_geometry().clone();
-
     // Create keypair
     let seed: [u8; 32] = rand::random();
     let KeypairResult { write_cap, read_cap: _read_cap, first_message_index: first_index } =

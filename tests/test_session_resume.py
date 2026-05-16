@@ -20,8 +20,6 @@ def make_config():
     cfg = Config.__new__(Config)
     cfg.network = "tcp"
     cfg.address = "127.0.0.1:0"
-    cfg.sphinx_geometry = None
-    cfg.pigeonhole_geometry = None
 
     # Set up no-op callbacks
     async def noop_event(event):
