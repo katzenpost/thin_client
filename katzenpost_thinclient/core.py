@@ -460,13 +460,14 @@ class PigeonholeGeometry:
 
 
 # Canonical set of top-level keys the thin-client TOML config must
-# contain. kpclientd's genconfig emits exactly these three; anything
-# else indicates a stale or drifted file.
-_EXPECTED_TOP_LEVEL_KEYS = frozenset({"Dial", "SphinxGeometry", "PigeonholeGeometry"})
+# contain. The geometries are no longer configured client-side; the
+# daemon delivers them over the handshake, so the file carries only
+# the Dial section. Anything else indicates a stale or drifted file.
+_EXPECTED_TOP_LEVEL_KEYS = frozenset({"Dial"})
 
-# Mapping from the PascalCase keys that genconfig emits under
-# [PigeonholeGeometry] to the snake_case kwargs that the
-# PigeonholeGeometry class accepts.
+# Mapping from the PascalCase keys the daemon sends in its
+# ConnectionStatusEvent's pigeonhole_geometry to the snake_case kwargs
+# that the PigeonholeGeometry class accepts.
 _PIGEONHOLE_TOML_TO_KWARG = {
     "MaxPlaintextPayloadLength": "max_plaintext_payload_length",
     "CourierQueryReadLength": "courier_query_read_length",
@@ -480,19 +481,15 @@ _PIGEONHOLE_TOML_TO_KWARG = {
 
 class ConfigFile:
     """
-    ConfigFile represents everything loaded from a TOML file: the
-    subtable-discriminated Dial transport config, the Sphinx geometry,
-    and the Pigeonhole geometry.
+    ConfigFile represents everything loaded from a TOML file: only the
+    subtable-discriminated Dial transport config. The geometries are
+    supplied by the daemon over the handshake, not configured here.
     """
     def __init__(
         self,
         dial: "DialConfig",
-        geometry: Geometry,
-        pigeonhole_geometry: PigeonholeGeometry,
     ) -> None:
         self.dial : "DialConfig" = dial
-        self.geometry : Geometry = geometry
-        self.pigeonhole_geometry : PigeonholeGeometry = pigeonhole_geometry
 
     @classmethod
     def load(cls, toml_path:str) -> "ConfigFile":
@@ -500,11 +497,12 @@ class ConfigFile:
         Parse a kpclientd-style thin-client TOML config.
 
         Raises ConfigError eagerly on any structural problem: unknown
-        top-level sections, missing required sections, wrong types, or
-        unknown / missing keys within the SphinxGeometry,
-        PigeonholeGeometry, or Dial subtables. The intent is that a
-        stale or drifted config fails here at startup rather than
-        producing a mysterious runtime failure later.
+        top-level sections (a leftover [SphinxGeometry] or
+        [PigeonholeGeometry] is now rejected here), missing required
+        sections, wrong types, or unknown / missing keys within the
+        Dial subtable. The intent is that a stale or drifted config
+        fails here at startup rather than producing a mysterious
+        runtime failure later.
         """
         try:
             with open(toml_path, 'r') as f:
@@ -530,16 +528,10 @@ class ConfigFile:
             )
 
         dial = _load_dial(data["Dial"], toml_path)
-        geometry = _load_sphinx_geometry(data["SphinxGeometry"], toml_path)
-        pigeonhole_geometry = _load_pigeonhole_geometry(data["PigeonholeGeometry"], toml_path)
-        return cls(dial, geometry, pigeonhole_geometry)
+        return cls(dial)
 
     def __str__(self) -> str:
-        return (
-            f"Dial: {self.dial}\n"
-            f"Geometry:\n{self.geometry}\n"
-            f"{self.pigeonhole_geometry}"
-        )
+        return f"Dial: {self.dial}"
 
 
 def _load_dial(dial_data: "Any", toml_path: str) -> "DialConfig":
@@ -554,31 +546,41 @@ def _load_dial(dial_data: "Any", toml_path: str) -> "DialConfig":
         raise ConfigError(f"config: {toml_path}: [Dial]: {e}") from e
 
 
-def _load_sphinx_geometry(geometry_data: "Any", toml_path: str) -> Geometry:
+def _sphinx_geometry_from_event(geometry_data: "Any") -> Geometry:
+    """Build a Geometry from the daemon's ConnectionStatusEvent.
+
+    The daemon serialises the geometry with the Go struct's PascalCase
+    field names, which is exactly what Geometry's constructor accepts.
+    """
     if not isinstance(geometry_data, dict):
-        raise ConfigError(f"config: {toml_path}: [SphinxGeometry] must be a table")
+        raise ConfigError("daemon sent a malformed sphinx_geometry (not a map)")
     try:
         return Geometry(**geometry_data)
     except TypeError as e:
         raise ConfigError(
-            f"config: {toml_path}: [SphinxGeometry] has unknown or missing keys: {e}"
+            f"daemon sent a sphinx_geometry with unknown or missing keys: {e}"
         ) from e
 
 
-def _load_pigeonhole_geometry(geometry_data: "Any", toml_path: str) -> PigeonholeGeometry:
+def _pigeonhole_geometry_from_event(geometry_data: "Any") -> PigeonholeGeometry:
+    """Build a PigeonholeGeometry from the daemon's ConnectionStatusEvent.
+
+    The daemon sends PascalCase keys; PigeonholeGeometry's constructor
+    takes snake_case, so translate via _PIGEONHOLE_TOML_TO_KWARG.
+    """
     if not isinstance(geometry_data, dict):
-        raise ConfigError(f"config: {toml_path}: [PigeonholeGeometry] must be a table")
+        raise ConfigError("daemon sent a malformed pigeonhole_geometry (not a map)")
     unknown = set(geometry_data.keys()) - set(_PIGEONHOLE_TOML_TO_KWARG.keys())
     if unknown:
         raise ConfigError(
-            f"config: {toml_path}: [PigeonholeGeometry] has unknown key(s) {sorted(unknown)}"
+            f"daemon sent a pigeonhole_geometry with unknown key(s) {sorted(unknown)}"
         )
     kwargs = {_PIGEONHOLE_TOML_TO_KWARG[k]: v for k, v in geometry_data.items()}
     try:
         return PigeonholeGeometry(**kwargs)
     except TypeError as e:
         raise ConfigError(
-            f"config: {toml_path}: [PigeonholeGeometry] has unknown or missing keys: {e}"
+            f"daemon sent a pigeonhole_geometry with unknown or missing keys: {e}"
         ) from e
 
 
@@ -751,8 +753,6 @@ class Config:
         cfgfile = ConfigFile.load(filepath)
 
         self.dial = cfgfile.dial
-        self.geometry = cfgfile.geometry
-        self.pigeonhole_geometry = cfgfile.pigeonhole_geometry
 
         self.on_connection_status = on_connection_status
         self.on_new_pki_document = on_new_pki_document
@@ -808,6 +808,11 @@ class ThinClient:
         self.pki_doc : Dict[Any,Any] | None = None
         self._pki_doc_cache : Dict[int, Dict[Any,Any]] = {}  # epoch -> parsed PKI doc
         self.config = config
+        # Geometry is runtime state the daemon supplies in its
+        # ConnectionStatusEvent during the handshake; None until the
+        # first connection status event has been parsed.
+        self.geometry : "Geometry | None" = None
+        self.pigeonhole_geometry : "PigeonholeGeometry | None" = None
         self.reply_received_event = asyncio.Event()
         self._is_connected : bool = False  # Track connection state
         self._stopping : bool = False  # Track shutdown state to suppress expected errors
@@ -1163,6 +1168,20 @@ class ThinClient:
         token = event.get("instance_token")
         if token is not None:
             self._daemon_instance_token = bytes(token) if not isinstance(token, bytes) else token
+
+        # The daemon supplies the geometries here rather than the thin
+        # client carrying them in its config file. A daemon that omits
+        # them is incompatible.
+        sphinx_geo = event.get("sphinx_geometry")
+        if sphinx_geo is not None:
+            self.geometry = _sphinx_geometry_from_event(sphinx_geo)
+        else:
+            self.logger.error("Daemon did not supply sphinx_geometry in its ConnectionStatusEvent (incompatible daemon)")
+        pigeonhole_geo = event.get("pigeonhole_geometry")
+        if pigeonhole_geo is not None:
+            self.pigeonhole_geometry = _pigeonhole_geometry_from_event(pigeonhole_geo)
+        else:
+            self.logger.error("Daemon did not supply pigeonhole_geometry in its ConnectionStatusEvent (incompatible daemon)")
 
         if self._is_connected:
             self.logger.debug("Daemon is connected to mixnet - full functionality available")
