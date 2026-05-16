@@ -318,3 +318,34 @@ def test_client_cache_hit_round_trip(pkimirror_server, pkimirror_client):
     assert cached.code == PKIMIRROR_OK
     assert cached.doc == first.doc
     assert pkimirror_client.cached_epochs() == [epoch]
+
+
+def test_fetch_cli_retrieves_pki(pkimirror_server, client_rns_config, tmp_path):
+    """Drive the pkimirror-fetch CLI as an operator would: a separate
+    process that connects to the live mirror and writes the consensus
+    to a file. Exercises the exact path the console script provides."""
+    _, destination_hash, _log = pkimirror_server
+    out = tmp_path / "pki.cbor"
+
+    proc = subprocess.run(
+        [
+            sys.executable, "-m", "katzenpost_reticulum.pkimirror.fetch",
+            "--rns-config", client_rns_config,
+            "--destination", destination_hash.hex(),
+            "--connect-timeout", "90",
+            "--request-timeout", "60",
+            "--output", str(out),
+            "--log-level", "INFO",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=200,
+    )
+
+    assert proc.returncode == 0, (
+        f"pkimirror-fetch exited {proc.returncode}\n"
+        f"stderr:\n{proc.stderr[-4000:]}"
+    )
+    doc = out.read_bytes()
+    assert len(doc) > 4 * 1024, f"document smaller than expected: {len(doc)}"
+    assert _epoch_from_cert_wrapped(doc) > 0

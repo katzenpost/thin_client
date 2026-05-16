@@ -35,6 +35,7 @@ packages = ["katzenpost_thinclient", "katzenpost_reticulum"]
 
 [project.scripts]
 pkimirror = "katzenpost_reticulum.pkimirror.__main__:main"
+pkimirror-fetch = "katzenpost_reticulum.pkimirror.fetch:main"
 
 [project.optional-dependencies]
 dev = [

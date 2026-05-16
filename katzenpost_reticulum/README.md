@@ -142,6 +142,33 @@ Notes on semantics:
   decides whether `PKIMIRROR_EPOCH_NOT_CACHED` is fatal.
 
 
+## Fetching from the command line
+
+For one-off retrieval without writing Python, the `pkimirror-fetch`
+console script wraps the client. It discovers a mirror (or takes one
+by `--destination`), opens a Link, fetches the consensus, and writes
+the raw document bytes to a file or stdout; the epoch, staleness, and
+verification status are reported on stderr.
+
+```
+# Discover the freshest mirror and write the current consensus
+pkimirror-fetch --rns-config /etc/reticulum --output pki.cbor
+
+# A specific mirror and epoch, verified against the dirauth identities
+pkimirror-fetch \
+    --rns-config /etc/reticulum \
+    --destination 3a7f... \
+    --epoch 12345 \
+    --dirauth-config dirauth.toml \
+    --output pki.cbor
+```
+
+It exits non-zero if no mirror answers or the mirror returns an error
+code. Diagnostics go to stderr so stdout remains a clean document
+stream suitable for piping. Equivalent to
+`python -m katzenpost_reticulum.pkimirror.fetch`.
+
+
 ## Response envelope
 
 Every server response is a CBOR-encoded map with this schema, regardless
