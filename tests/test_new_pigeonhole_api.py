@@ -358,11 +358,14 @@ async def test_create_courier_envelopes_from_payload():
         temp_keypair = await alice_client.new_keypair(temp_seed)
         print("✓ Alice created temporary copy stream WriteCap")
 
-        # Step 3: Create a large payload that will be chunked
-        print("\n--- Step 3: Creating large payload ---")
-        # Create a payload large enough to require multiple chunks
-        # Use a 4-byte length prefix so Bob knows when to stop reading
-        random_data = os.urandom(5 * 1024)  # 5KB of random data
+        # Step 3: Create a payload spanning a few chunks
+        print("\n--- Step 3: Creating chunked payload ---")
+        # A few hundred bytes is enough to span several copy stream
+        # chunks and so exercise the chunk/reconstruct path; a larger
+        # payload only multiplies the boxes the courier must copy and
+        # then tombstone, lengthening the test for no added coverage.
+        # Use a 4-byte length prefix so Bob knows when to stop reading.
+        random_data = os.urandom(512)  # spans a handful of chunks
         # Length-prefix the payload: [4 bytes length][random data]
         large_payload = struct.pack(">I", len(random_data)) + random_data
         print(f"✓ Alice created large payload ({len(large_payload)} bytes = 4 byte length prefix + {len(random_data)} bytes data)")
