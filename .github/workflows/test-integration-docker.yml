@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: katzenpost/katzenpost
-          ref: 4b88e2ce4ee8c32b8745ca9282a367cb20818084
+          ref: 28f28c7286cacc8d0d324206bec95ae87648ce47
           path: katzenpost
 
       - name: Set up Docker Buildx
@@ -142,6 +142,18 @@ jobs:
             podman compose logs --no-color --no-log-prefix kpclientd \
               > kpclientd.log 2>&1 || true
 
+      - name: Collect pkimirror server logs
+        if: always()
+        run: |
+          mkdir -p thinclient/pkimirror-logs
+          i=0
+          for f in $(find /tmp -name pkimirror.log -path '*pkimirror-srv*' 2>/dev/null); do
+            cp "$f" "thinclient/pkimirror-logs/pkimirror-$i.log" 2>/dev/null || true
+            i=$((i + 1))
+          done
+          echo "collected $i pkimirror server log(s)"
+          ls -la thinclient/pkimirror-logs/ || true
+
       - name: Stop the mixnet
         if: always()
         run: |
@@ -156,3 +168,4 @@ jobs:
             katzenpost/docker/voting_mixnet/*/*.log
             katzenpost/docker/voting_mixnet/kpclientd.log
             katzenpost/docker/voting_mixnet/servicenode*/courier/*.log
+            thinclient/pkimirror-logs/*.log
