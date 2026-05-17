@@ -227,9 +227,9 @@ async def test_multiple_messages_sequence():
             )
             print(f"Alice: Started resending message {i+1}")
 
-            # Wait for message propagation
-            print(f"Waiting for message {i+1} propagation (10 seconds)")
-            await asyncio.sleep(10)
+            # No propagation sleep: Bob's ARQ read below auto-retries
+            # on BoxIDNotFound, gating itself on this message's
+            # propagation. The wait was redundant on every iteration.
 
             # Bob encrypts read request
             print(f"Bob: Encrypting read request for message {i+1}")
@@ -1040,30 +1040,52 @@ async def test_tombstone_range():
             )
             print(f"✓ Sent tombstone envelope {i+1}")
 
-        # Wait for tombstone propagation
-        print("--- Waiting for tombstone propagation (60 seconds) ---")
-        await asyncio.sleep(60)
+        # Poll for tombstone propagation rather than waiting a fixed
+        # interval. These boxes already hold data, so the read does
+        # not auto-retry (that is gated on BoxIDNotFound); we reread
+        # until it raises TombstoneError. The boxes propagate together,
+        # so once the first verifies the rest follow on the first
+        # check with no further wait.
+        max_attempts = 6
+        poll_interval = 10
 
-        # Bob reads all boxes and verifies each returns TombstoneError
-        read_idx = keypair.first_message_index
-        for i in range(num_messages):
+        async def _box_tombstoned(idx) -> bool:
             read_result = await bob_client.encrypt_read(
-                keypair.read_cap, read_idx
+                keypair.read_cap, idx
             )
             try:
                 await bob_client.start_resending_encrypted_message(
                     read_cap=keypair.read_cap,
                     write_cap=None,
-                    message_box_index=read_idx,
+                    message_box_index=idx,
                     reply_index=0,
                     envelope_descriptor=read_result.envelope_descriptor,
                     message_ciphertext=read_result.message_ciphertext,
                     envelope_hash=read_result.envelope_hash
                 )
-                assert False, f"Expected TombstoneError for box {i+1}"
+                return False
             except TombstoneError:
-                print(f"✓ Bob verified tombstone {i+1}")
+                return True
+
+        read_idx = keypair.first_message_index
+        box_indices = []
+        for _ in range(num_messages):
+            box_indices.append(read_idx)
             read_idx = await bob_client.next_message_box_index(read_idx)
+
+        for i, idx in enumerate(box_indices):
+            verified = False
+            for attempt in range(1, max_attempts + 1):
+                if await _box_tombstoned(idx):
+                    verified = True
+                    print(f"✓ Bob verified tombstone {i+1} on attempt {attempt}")
+                    break
+                if attempt < max_attempts:
+                    print(f"  Box {i+1} not yet tombstoned, retrying...")
+                    await asyncio.sleep(poll_interval)
+            assert verified, (
+                f"box {i+1} not tombstoned after {max_attempts} attempts"
+            )
 
         print(f"\n✅ All {num_messages} boxes successfully tombstoned and verified!")
 
