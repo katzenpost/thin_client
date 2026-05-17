@@ -91,6 +91,7 @@ jobs:
 
           # Run Python tests in background
           python -m pytest tests/ -vvv -s --tb=short --timeout=1200 -n 3 \
+            --durations=25 \
             > /tmp/python-test-output.txt 2>&1 &
           PYTHON_PID=$!
 
