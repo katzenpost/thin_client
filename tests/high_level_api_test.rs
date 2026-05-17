@@ -80,8 +80,7 @@ async fn test_high_level_send_receive() {
     writer.send(message).await.expect("Failed to send message");
     println!("✓ Alice sent message: {:?}", String::from_utf8_lossy(message));
 
-    println!("\n--- Waiting 30 seconds for message propagation ---");
-    tokio::time::sleep(Duration::from_secs(30)).await;
+    // No propagation sleep: the retrying read below gates itself on BoxIDNotFound until the box propagates.
 
     println!("\n--- Step 3: Bob receives the message ---");
     let received = reader.receive().await.expect("Failed to receive message");
@@ -117,8 +116,7 @@ async fn test_high_level_multiple_messages() {
         println!("✓ Sent message {}: {:?}", i + 1, String::from_utf8_lossy(msg));
     }
 
-    println!("\n--- Waiting 45 seconds for message propagation ---");
-    tokio::time::sleep(Duration::from_secs(45)).await;
+    // No propagation sleep: the retrying read below gates itself on BoxIDNotFound until the box propagates.
 
     println!("\n--- Bob receives messages ---");
     for (i, expected_msg) in messages.iter().enumerate() {
@@ -152,8 +150,7 @@ async fn test_low_level_box_operations() {
         .expect("Failed to write box");
     println!("✓ Alice wrote to box at index");
 
-    println!("\n--- Waiting 30 seconds for propagation ---");
-    tokio::time::sleep(Duration::from_secs(30)).await;
+    // No propagation sleep: the retrying read below gates itself on BoxIDNotFound until the box propagates.
 
     println!("\n--- Bob reads from box using read_box ---");
     let (received, _next_index) = reader
@@ -209,8 +206,7 @@ async fn test_copy_stream_multi_payload() {
     let boxes_written = builder.finish().await.expect("Failed to finish copy stream");
     println!("✓ Copy stream finished, {} boxes written", boxes_written);
 
-    println!("\n--- Waiting 60 seconds for copy command execution ---");
-    tokio::time::sleep(Duration::from_secs(60)).await;
+    // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
 
     println!("\n--- Bob reads from Channel 1 ---");
     let (received1, _) = bob_channel1
@@ -251,8 +247,7 @@ async fn test_tombstone_single_box() {
     writer.send(message).await.expect("Failed to send message");
     println!("✓ Alice sent message");
 
-    println!("\n--- Waiting 30 seconds for propagation ---");
-    tokio::time::sleep(Duration::from_secs(30)).await;
+    // No propagation sleep: the retrying read below gates itself on BoxIDNotFound until the box propagates.
 
     println!("\n--- Step 2: Bob reads the message ---");
     let received = reader.receive().await.expect("Failed to receive");
@@ -266,19 +261,32 @@ async fn test_tombstone_single_box() {
         .expect("Failed to tombstone");
     println!("✓ Alice tombstoned the box");
 
-    println!("\n--- Waiting 60 seconds for tombstone propagation ---");
-    tokio::time::sleep(Duration::from_secs(60)).await;
-
-    println!("\n--- Step 4: Bob reads the tombstoned box ---");
+    println!("\n--- Step 4: Bob polls the box until tombstoned ---");
     reader.refresh().expect("Failed to refresh");
-    match reader.read_box(&start_index).await {
-        Err(katzenpost_thin_client::persistent::PigeonholeDbError::ThinClient(
-            katzenpost_thin_client::ThinClientError::Tombstone,
-        )) => {
-            println!("✓ Bob verified tombstone");
+    const MAX_ATTEMPTS: u32 = 6;
+    const POLL_INTERVAL_SECS: u64 = 10;
+    let mut tombstone_verified = false;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        println!("Polling for tombstone (attempt {}/{})...", attempt, MAX_ATTEMPTS);
+        tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
+
+        match reader.read_box(&start_index).await {
+            Err(katzenpost_thin_client::persistent::PigeonholeDbError::ThinClient(
+                katzenpost_thin_client::ThinClientError::Tombstone,
+            )) => {
+                tombstone_verified = true;
+                println!("✓ Bob verified tombstone on attempt {}", attempt);
+                break;
+            }
+            Ok(_) => {
+                println!("  Still seeing original message, retrying...");
+            }
+            other => panic!("Unexpected outcome reading tombstone: {:?}", other),
         }
-        other => panic!("Expected Tombstone error, got: {:?}", other),
     }
+
+    assert!(tombstone_verified, "Tombstone not propagated after {} attempts", MAX_ATTEMPTS);
 
     println!("\n✅ Tombstone single box test passed!");
 }
@@ -305,8 +313,7 @@ async fn test_tombstone_range() {
         println!("✓ Sent message {}", i + 1);
     }
 
-    println!("\n--- Waiting 45 seconds for propagation ---");
-    tokio::time::sleep(Duration::from_secs(45)).await;
+    // No propagation sleep: the retrying read below gates itself on BoxIDNotFound until the box propagates.
 
     println!("\n--- Step 2: Verify Bob can read messages ---");
     for i in 0..num_messages {
@@ -321,10 +328,32 @@ async fn test_tombstone_range() {
         .expect("Failed to tombstone range");
     println!("✓ Alice sent tombstone range");
 
-    println!("\n--- Waiting 60 seconds for tombstone propagation ---");
-    tokio::time::sleep(Duration::from_secs(60)).await;
+    println!("\n--- Step 4: Poll the first box until tombstoned, then verify all ---");
+    const MAX_ATTEMPTS: u32 = 6;
+    const POLL_INTERVAL_SECS: u64 = 10;
+    let mut tombstone_verified = false;
 
-    println!("\n--- Step 4: Verify all boxes are tombstoned ---");
+    for attempt in 1..=MAX_ATTEMPTS {
+        println!("Polling for tombstone (attempt {}/{})...", attempt, MAX_ATTEMPTS);
+        tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
+
+        match reader.read_box(&start_index).await {
+            Err(katzenpost_thin_client::persistent::PigeonholeDbError::ThinClient(
+                katzenpost_thin_client::ThinClientError::Tombstone,
+            )) => {
+                tombstone_verified = true;
+                println!("✓ First box tombstoned on attempt {}", attempt);
+                break;
+            }
+            Ok(_) => {
+                println!("  Still seeing original message, retrying...");
+            }
+            other => panic!("Unexpected outcome reading tombstone: {:?}", other),
+        }
+    }
+
+    assert!(tombstone_verified, "Tombstone not propagated after {} attempts", MAX_ATTEMPTS);
+
     let mut current_index = start_index;
     for i in 0..num_messages {
         match reader.read_box(&current_index).await {
@@ -530,6 +559,9 @@ async fn test_write_box_return_box_exists() {
     let writer = alice
         .load_write_channel("write-box-exists-test", &kp.write_cap, &kp.first_message_index)
         .expect("Failed to load write channel");
+    let reader = alice
+        .load_read_channel("write-box-exists-test", &kp.read_cap, &kp.first_message_index)
+        .expect("Failed to load read channel");
     let start_index = kp.first_message_index.clone();
 
     println!("\n--- First write_box ---");
@@ -540,8 +572,8 @@ async fn test_write_box_return_box_exists() {
         .expect("First write should succeed");
     println!("✓ First write succeeded");
 
-    println!("\n--- Waiting 30 seconds for propagation ---");
-    tokio::time::sleep(Duration::from_secs(30)).await;
+    // Deterministic propagation gate: a retrying read of the just-written box returns only once it has landed, replacing a blind sleep.
+    let _ = reader.read_box(&start_index).await;
 
     println!("\n--- Second write_box_return_box_exists to same index ---");
     let message2 = b"Second message";
@@ -574,7 +606,7 @@ async fn test_send_return_box_exists() {
     let bob = PigeonholeClient::new_in_memory(bob_thin.clone())
         .expect("Failed to create Bob's PigeonholeClient");
 
-    let ChannelPair { mut writer, reader: _reader, .. } =
+    let ChannelPair { mut writer, reader, .. } =
         make_pair(&alice, &bob, &alice_thin, "send-box-exists-test").await;
 
     println!("\n--- First send ---");
@@ -582,8 +614,9 @@ async fn test_send_return_box_exists() {
     writer.send(message1).await.expect("First send should succeed");
     println!("✓ First send succeeded");
 
-    println!("\n--- Waiting 30 seconds for propagation ---");
-    tokio::time::sleep(Duration::from_secs(30)).await;
+    // Deterministic propagation gate: a retrying read of the just-written box returns only once it has landed, replacing a blind sleep.
+    let mut reader = reader;
+    let _ = reader.receive().await;
 
     // Manually write to the channel's CURRENT next_index (already advanced past
     // the first send) to set up a conflict for the next send.
@@ -595,8 +628,8 @@ async fn test_send_return_box_exists() {
         .expect("Direct write should succeed");
     println!("✓ Conflict message written");
 
-    println!("\n--- Waiting 30 seconds for propagation ---");
-    tokio::time::sleep(Duration::from_secs(30)).await;
+    // Deterministic propagation gate: a retrying read of the just-written box returns only once it has landed, replacing a blind sleep.
+    let _ = reader.read_box(&current_next).await;
 
     println!("\n--- Attempting send_return_box_exists ---");
     let result = writer.send_return_box_exists(b"This should fail").await;
