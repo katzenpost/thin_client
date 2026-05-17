@@ -231,15 +231,32 @@ def client_rns_config(tmp_path, loopback_port) -> str:
     return str(d)
 
 
-@pytest.fixture
-def pkimirror_client(client_rns_config) -> Iterator[PkiMirrorClient]:
-    with PkiMirrorClient(reticulum_config=client_rns_config) as client:
+@pytest.fixture(scope="module")
+def connected_client(
+    pkimirror_server, tmp_path_factory, loopback_port
+) -> Iterator[PkiMirrorClient]:
+    """One client, discovered and connected once for the whole module.
+
+    Every library test below reuses this single Link. Connecting per
+    test meant six independent Reticulum link establishments, each
+    racing a heavily loaded CI host; one starving past its budget
+    failed the suite. A single connect with a generous budget both
+    removes that flake surface and spares five redundant handshakes.
+    Tests that care about cache contents call clear_cache() first, so
+    sharing the client does not couple them.
+    """
+    _, destination_hash, _log = pkimirror_server
+    d = tmp_path_factory.mktemp("rns-client-shared")
+    _write_rns_config(d, "client", loopback_port)
+    with PkiMirrorClient(reticulum_config=str(d)) as client:
+        client.discover(timeout=60.0, max_announces=1)
+        client.connect(destination_hash, timeout=150.0)
         yield client
 
 
-def test_announce_carries_epoch_app_data(pkimirror_server, pkimirror_client):
+def test_announce_carries_epoch_app_data(pkimirror_server, connected_client):
     _, destination_hash, _log = pkimirror_server
-    announces = pkimirror_client.discover(timeout=60.0, max_announces=1)
+    announces = connected_client.discover(timeout=60.0, max_announces=1)
     assert len(announces) >= 1
     matched = [a for a in announces if a.destination_hash == destination_hash]
     assert matched, (
@@ -251,38 +268,33 @@ def test_announce_carries_epoch_app_data(pkimirror_server, pkimirror_client):
     assert ann.epoch > 0
 
 
-def test_get_current_returns_fresh_pki(pkimirror_server, pkimirror_client):
-    _, destination_hash, _log = pkimirror_server
-    pkimirror_client.discover(timeout=60.0, max_announces=1)
-    pkimirror_client.connect(destination_hash, timeout=90.0)
-
-    result = pkimirror_client.get_current(timeout=60.0)
+def test_get_current_returns_fresh_pki(connected_client):
+    """A fresh fetch of the current consensus. Also asserts the
+    document exceeds the link MDU, so it is delivered intact via
+    Reticulum's automatic Resource escalation (formerly a separate
+    test against the same fetched document)."""
+    result = connected_client.get_current(timeout=60.0)
     assert result.code == PKIMIRROR_OK
     assert result.doc is not None
     assert result.epoch is not None
     assert result.stale is False
     assert _epoch_from_cert_wrapped(result.doc) == result.epoch
+    assert len(result.doc) > 4 * 1024, (
+        f"PKI document smaller than expected: {len(result.doc)} bytes"
+    )
 
 
-def test_get_for_unknown_epoch_returns_error(pkimirror_server, pkimirror_client):
-    _, destination_hash, _log = pkimirror_server
-    pkimirror_client.discover(timeout=60.0, max_announces=1)
-    pkimirror_client.connect(destination_hash, timeout=90.0)
-
-    result = pkimirror_client.get_for_epoch(1, timeout=60.0, use_cache=False)
+def test_get_for_unknown_epoch_returns_error(connected_client):
+    result = connected_client.get_for_epoch(1, timeout=60.0, use_cache=False)
     assert result.code == PKIMIRROR_EPOCH_NOT_CACHED
     assert result.doc is None
     assert result.epoch is not None
     assert result.epoch > 1
 
 
-def test_bad_request_returns_error(pkimirror_server, pkimirror_client):
+def test_bad_request_returns_error(connected_client):
     """Bypass the typed client and issue a malformed body directly."""
-    _, destination_hash, _log = pkimirror_server
-    pkimirror_client.discover(timeout=60.0, max_announces=1)
-    pkimirror_client.connect(destination_hash, timeout=90.0)
-
-    raw = pkimirror_client._transport.request(
+    raw = connected_client._transport.request(
         "/pki/epoch", b"\xff\xff not cbor", 60.0
     )
     out = cbor2.loads(raw)
@@ -290,34 +302,19 @@ def test_bad_request_returns_error(pkimirror_server, pkimirror_client):
     assert out["doc"] is None
 
 
-def test_large_response_resource_escalation(pkimirror_server, pkimirror_client):
-    """A real PKI document is far above the link MDU; confirm we receive
-    the full payload via Reticulum's automatic Resource escalation."""
-    _, destination_hash, _log = pkimirror_server
-    pkimirror_client.discover(timeout=60.0, max_announces=1)
-    pkimirror_client.connect(destination_hash, timeout=90.0)
+def test_client_cache_hit_round_trip(connected_client):
+    # Self-isolate from other tests sharing this client: start from an
+    # empty cache so cached_epochs() reflects only this test's fetch.
+    connected_client.clear_cache()
 
-    result = pkimirror_client.get_current(timeout=60.0)
-    assert result.code == PKIMIRROR_OK
-    assert result.doc is not None
-    assert len(result.doc) > 4 * 1024, (
-        f"PKI document smaller than expected: {len(result.doc)} bytes"
-    )
-
-
-def test_client_cache_hit_round_trip(pkimirror_server, pkimirror_client):
-    _, destination_hash, _log = pkimirror_server
-    pkimirror_client.discover(timeout=60.0, max_announces=1)
-    pkimirror_client.connect(destination_hash, timeout=90.0)
-
-    first = pkimirror_client.get_current(timeout=60.0)
+    first = connected_client.get_current(timeout=60.0)
     assert first.code == PKIMIRROR_OK
     epoch = first.epoch
 
-    cached = pkimirror_client.get_for_epoch(epoch, timeout=60.0)
+    cached = connected_client.get_for_epoch(epoch, timeout=60.0)
     assert cached.code == PKIMIRROR_OK
     assert cached.doc == first.doc
-    assert pkimirror_client.cached_epochs() == [epoch]
+    assert connected_client.cached_epochs() == [epoch]
 
 
 def test_fetch_cli_retrieves_pki(pkimirror_server, client_rns_config, tmp_path):
