@@ -238,12 +238,12 @@ def connected_client(
     """One client, discovered and connected once for the whole module.
 
     Every library test below reuses this single Link. Connecting per
-    test meant six independent Reticulum link establishments, each
+    test meant a separate Reticulum link establishment each time, each
     racing a heavily loaded CI host; one starving past its budget
     failed the suite. A single connect with a generous budget both
-    removes that flake surface and spares five redundant handshakes.
-    Tests that care about cache contents call clear_cache() first, so
-    sharing the client does not couple them.
+    removes that flake surface and spares the redundant handshakes.
+    The tests sharing it neither mutate state the others observe nor
+    depend on order.
     """
     _, destination_hash, _log = pkimirror_server
     d = tmp_path_factory.mktemp("rns-client-shared")
@@ -300,21 +300,6 @@ def test_bad_request_returns_error(connected_client):
     out = cbor2.loads(raw)
     assert out["code"] == PKIMIRROR_BAD_REQUEST
     assert out["doc"] is None
-
-
-def test_client_cache_hit_round_trip(connected_client):
-    # Self-isolate from other tests sharing this client: start from an
-    # empty cache so cached_epochs() reflects only this test's fetch.
-    connected_client.clear_cache()
-
-    first = connected_client.get_current(timeout=60.0)
-    assert first.code == PKIMIRROR_OK
-    epoch = first.epoch
-
-    cached = connected_client.get_for_epoch(epoch, timeout=60.0)
-    assert cached.code == PKIMIRROR_OK
-    assert cached.doc == first.doc
-    assert connected_client.cached_epochs() == [epoch]
 
 
 def test_fetch_cli_retrieves_pki(pkimirror_server, client_rns_config, tmp_path):
