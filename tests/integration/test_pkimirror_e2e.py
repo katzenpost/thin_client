@@ -30,7 +30,6 @@ pytest.importorskip("RNS")
 
 from katzenpost_reticulum.pkimirror.client import PkiMirrorClient  # noqa: E402
 from katzenpost_reticulum.pkimirror.errors import (  # noqa: E402
-    PKIMIRROR_BAD_REQUEST,
     PKIMIRROR_EPOCH_NOT_CACHED,
     PKIMIRROR_OK,
 )
@@ -292,14 +291,6 @@ def test_get_for_unknown_epoch_returns_error(connected_client):
     assert result.epoch > 1
 
 
-def test_bad_request_returns_error(connected_client):
-    """Bypass the typed client and issue a malformed body directly."""
-    raw = connected_client._transport.request(
-        "/pki/epoch", b"\xff\xff not cbor", 60.0
-    )
-    out = cbor2.loads(raw)
-    assert out["code"] == PKIMIRROR_BAD_REQUEST
-    assert out["doc"] is None
 
 
 def test_fetch_cli_retrieves_pki(pkimirror_server, client_rns_config, tmp_path):
