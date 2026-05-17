@@ -285,8 +285,9 @@ async def start_resending_encrypted_message(
         envelope_hash: Hash of the courier envelope.
         no_retry_on_box_id_not_found: If True, BoxIDNotFound errors on reads trigger
             immediate error instead of automatic retries. By default (False), reads
-            will retry up to 10 times to handle replication lag. Set to True to get
-            immediate BoxIDNotFound error without retries.
+            retry on BoxIDNotFound until the box is found or the operation is
+            cancelled, riding out replication lag; the retries are not capped. Set
+            to True to get an immediate BoxIDNotFound error without retries.
         no_idempotent_box_already_exists: If True, BoxAlreadyExists errors on writes are
             returned as errors instead of being treated as idempotent success.
             By default (False), BoxAlreadyExists is treated as success (the write

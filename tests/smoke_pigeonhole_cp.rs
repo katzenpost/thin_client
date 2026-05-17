@@ -16,7 +16,6 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use assert_cmd::Command;
 use rand::RngCore;
@@ -98,8 +97,7 @@ async fn round_trip(label: &str, no_copy: bool) {
         String::from_utf8_lossy(&send_out.stdout).trim()
     );
 
-    println!("==> [{label}] waiting 60s for mixnet propagation");
-    tokio::time::sleep(Duration::from_secs(60)).await;
+    // No propagation sleep: the retrying read below gates itself on BoxIDNotFound until the box propagates.
 
     let dest_dir = work.path().join("dest");
     fs::create_dir(&dest_dir).expect("create dest dir");
