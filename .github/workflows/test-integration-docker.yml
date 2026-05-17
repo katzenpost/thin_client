@@ -89,8 +89,13 @@ jobs:
         run: |
           cd thinclient
 
-          # Run Python tests in background
-          python -m pytest tests/ -vvv -s --tb=short --timeout=1200 -n 3 \
+          # Run Python tests in background. tests/integration is
+          # excluded here and run serially in its own step afterwards:
+          # its client-side Reticulum link handshake is starved when
+          # the runner is saturated by this parallel mixnet + Rust +
+          # xdist workload.
+          python -m pytest tests/ --ignore=tests/integration \
+            -vvv -s --tb=short --timeout=1200 -n 3 \
             --durations=25 \
             > /tmp/python-test-output.txt 2>&1 &
           PYTHON_PID=$!
@@ -122,6 +127,21 @@ jobs:
           if [ $PYTHON_RC -ne 0 ] || [ $RUST_RC -ne 0 ]; then
             exit 1
           fi
+
+      - name: Run pkimirror e2e tests serially
+        if: always()
+        timeout-minutes: 15
+        run: |
+          cd thinclient
+          # Proven by the captured pkimirror server log: the server
+          # announces healthily throughout while the client cannot
+          # establish a Reticulum link within 150s, because the
+          # client RNS stack is CPU/scheduling-starved by the
+          # concurrent mixnet + Rust + xdist load. Running this here,
+          # after the parallel step has finished, gives it a quiet
+          # runner and a single process (no xdist co-tenancy).
+          python -m pytest tests/integration -vvv -s --tb=short \
+            --timeout=1200
 
       - name: Run pigeonhole-cp smoke test
         if: steps.smoke_filter.outputs.smoke == 'true'
