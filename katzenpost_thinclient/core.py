@@ -27,6 +27,15 @@ from typing import Tuple, Any, Dict, List, Callable
 
 from .transport import DialConfig, TcpDialConfig, UnixDialConfig
 
+# Upper bound on a single length-prefixed frame from the daemon. The
+# 4-byte big-endian prefix is daemon-controlled; without a ceiling a
+# hostile or buggy daemon could declare a multi-gigabyte frame and
+# drive this client to allocate it before any payload arrives. 16 MiB
+# is far above any legitimate CBOR message yet far below a
+# memory-exhaustion threat. Must match the Go daemon's
+# thin.MaxMessageSize.
+MAX_MESSAGE_SIZE = 16 * 1024 * 1024
+
 # Pigeonhole Replica Error Codes (matching Go pigeonhole/errors.go)
 # These are error codes returned by storage replicas, passed through by the daemon
 # for the StartResendingEncryptedMessage API.
@@ -1015,6 +1024,10 @@ class ThinClient:
         async with self._recv_lock:
           length_prefix = await self.__recv_exactly(4, loop)
           message_length = struct.unpack('>I', length_prefix)[0]
+          if message_length > MAX_MESSAGE_SIZE:
+              raise ValueError(
+                  f"daemon response frame too large: {message_length} bytes "
+                  f"(max {MAX_MESSAGE_SIZE})")
           raw_data = await self.__recv_exactly(message_length, loop)
         try:
           response = cbor2.loads(raw_data)

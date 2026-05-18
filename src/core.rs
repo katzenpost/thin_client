@@ -59,6 +59,15 @@ const SURB_ID_SIZE: usize = 16;
 /// The size in bytes of a message identifier.
 const MESSAGE_ID_SIZE: usize = 16;
 
+/// Upper bound on a single length-prefixed frame from the daemon. The
+/// 4-byte big-endian prefix is daemon-controlled; without a ceiling a
+/// hostile or buggy daemon could declare a multi-gigabyte frame and
+/// drive this client to allocate it before any payload arrives. 16 MiB
+/// is far above any legitimate CBOR message yet far below a
+/// memory-exhaustion threat. Must match the Go daemon's
+/// thin.MaxMessageSize.
+const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
 /// The size in bytes of a query identifier.
 const QUERY_ID_SIZE: usize = 16;
 
@@ -464,6 +473,12 @@ impl ThinClient {
                 };
         }
         let message_length = u32::from_be_bytes(length_prefix) as usize;
+        if message_length > MAX_MESSAGE_SIZE {
+            return Err(ThinClientError::Other(format!(
+                "daemon response frame too large: {} bytes (max {})",
+                message_length, MAX_MESSAGE_SIZE
+            )));
+        }
         let mut buffer = vec![0; message_length];
         {
                 let mut read_half = self.read_half.lock().await;
