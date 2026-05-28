@@ -177,11 +177,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// handshake (ConnectionStatusEvent + NewPKIDocumentEvent + SessionToken),
 /// so issuing a request immediately can race and hang. A short pause lets
 /// the handshake settle before the caller tries to use the client.
+///
+/// Before returning, a background task is spawned that waits for
+/// SIGINT or SIGTERM and then calls `ThinClient::stop` so the daemon
+/// receives `thin_close` and retires any in-flight ARQ entries cleanly,
+/// mirroring what the Go `ping` and docker integration tests do.
+/// `ThinClient` has no async `Drop`, so this explicit cleanup is the
+/// equivalent.
 async fn init_client(config_path: PathBuf) -> Result<Arc<ThinClient>, Box<dyn std::error::Error>> {
     let cfg = Config::new(config_path.to_str().ok_or("Invalid config path")?)?;
     let client = ThinClient::new(cfg).await?;
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    install_shutdown_handler(Arc::clone(&client));
     Ok(client)
+}
+
+/// Spawn a task that waits for SIGINT or SIGTERM and shuts the thin
+/// client down cleanly, then exits the process.
+fn install_shutdown_handler(client: Arc<ThinClient>) {
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        eprintln!("\npigeonhole-cp: received shutdown signal, closing thin client");
+        client.stop().await;
+        std::process::exit(130);
+    });
+}
+
+/// Resolve as soon as either SIGINT (Ctrl-C) or SIGTERM arrives.
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Generate a fresh capability triple and print the three values.
