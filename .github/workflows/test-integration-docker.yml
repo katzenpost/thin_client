@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: katzenpost/katzenpost
-          ref: edebb94d997b09403fba51b33ea6d18a7415432e
+          ref: d70099591fc6065503338a62034bbc281f4762d3 # v0.0.77
           path: katzenpost
 
       - name: Set up Docker Buildx
