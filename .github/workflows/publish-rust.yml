@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: © 2026 David Stainton
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Builds the katzenpost_thin_client Rust crate and publishes it to
+# crates.io via the trusted-publishing flow (OIDC). No long-lived
+# CARGO_REGISTRY_TOKEN is stored anywhere; crates.io authenticates the
+# workflow run by matching its OIDC claims against a Trusted Publisher
+# rule registered at https://crates.io/settings/tokens (Trusted
+# Publishing) for crate "katzenpost_thin_client", repository
+# "katzenpost/thin_client", and workflow "publish-rust.yml".
+#
+# This mirrors publish-py.yml, but the two languages version
+# independently: the crate uses its own "rust/v<version>" tag rather
+# than the Python "py/v<version>" tag.
+#
+# Release flow:
+#   - bump version in Cargo.toml
+#   - tag the commit "rust/v<version>" and push the tag
+#   - this workflow builds, dry-run packages, then publishes to crates.io
+#
+# A dry run (build + cargo publish --dry-run, no upload) is available
+# via the "Run workflow" button in the Actions tab (workflow_dispatch).
+
+name: Publish katzenpost_thin_client to crates.io
+
+on:
+  push:
+    tags:
+      - 'rust/v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and dry-run package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --locked --all-features
+
+      - name: Package (dry run)
+        run: cargo publish --locked --dry-run
+
+  publish-crate:
+    name: Publish to crates.io
+    if: startsWith(github.ref, 'refs/tags/rust/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Authenticate to crates.io via OIDC
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
