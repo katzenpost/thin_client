@@ -71,6 +71,10 @@ pub enum ThinClientError {
         failed_envelope_index: u64,
     },
 
+    /// A WriteStream plaintext or a ReadStream result exceeded the daemon's
+    /// configured maximum stream payload size (error code 27).
+    PayloadTooLarge,
+
     /// `blocking_send_message` did not receive a reply within the caller's
     /// supplied timeout. The message may still have been sent and may still
     /// elicit a reply that is later dropped.
@@ -100,6 +104,7 @@ pub fn error_code_to_error(error_code: u8) -> ThinClientError {
         23 => ThinClientError::BacapDecryptionFailed,
         24 => ThinClientError::StartResendingCancelled,
         25 => ThinClientError::InvalidTombstoneSignature,
+        27 => ThinClientError::PayloadTooLarge,
         code => ThinClientError::Other(format!("unknown error code: {}", code)),
     }
 }
@@ -136,6 +141,7 @@ impl fmt::Display for ThinClientError {
                 "Copy command failed: replica_error_code={}, failed_envelope_index={}",
                 replica_error_code, failed_envelope_index
             ),
+            ThinClientError::PayloadTooLarge => write!(f, "Payload too large"),
             ThinClientError::Timeout(msg) => write!(f, "Timeout: {}", msg),
             ThinClientError::Other(msg) => write!(f, "Error: {}", msg),
         }

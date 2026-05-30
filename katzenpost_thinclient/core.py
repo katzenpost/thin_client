@@ -81,6 +81,7 @@ THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED = 23
 THIN_CLIENT_ERROR_START_RESENDING_CANCELLED = 24
 THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG = 25
 THIN_CLIENT_ERROR_COPY_COMMAND_FAILED = 26
+THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE = 27
 
 def thin_client_error_to_string(error_code: int) -> str:
     """Convert a thin client error code to a human-readable string."""
@@ -112,6 +113,7 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_START_RESENDING_CANCELLED: "Start resending cancelled",
         THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG: "Invalid tombstone signature",
         THIN_CLIENT_ERROR_COPY_COMMAND_FAILED: "Copy command failed",
+        THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE: "Payload too large",
     }
     return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
 
@@ -221,6 +223,12 @@ class CopyCommandFailedError(Exception):
         )
 
 
+class PayloadTooLargeError(Exception):
+    """A WriteStream plaintext or a ReadStream result exceeded the daemon's
+    configured maximum stream payload size."""
+    pass
+
+
 def error_code_to_exception(error_code: int) -> Exception:
     """
     Maps error codes to exception instances for StartResendingEncryptedMessage.
@@ -267,6 +275,8 @@ def error_code_to_exception(error_code: int) -> Exception:
         return StartResendingCancelledError("start resending cancelled")
     elif error_code == THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG:  # 25
         return InvalidTombstoneSignatureError("invalid tombstone signature")
+    elif error_code == THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE:  # 27
+        return PayloadTooLargeError("payload too large")
 
     # Note: THIN_CLIENT_ERROR_COPY_COMMAND_FAILED (26) is not handled here because
     # constructing CopyCommandFailedError requires the reply's diagnostic fields

@@ -88,6 +88,7 @@ from .core import (
     THIN_CLIENT_ERROR_START_RESENDING_CANCELLED,
     THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG,
     THIN_CLIENT_ERROR_COPY_COMMAND_FAILED,
+    THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE,
     thin_client_error_to_string,
     error_code_to_exception,
     copy_reply_to_exception,
@@ -111,6 +112,7 @@ from .core import (
     BACAPDecryptionFailedError,
     StartResendingCancelledError,
     CopyCommandFailedError,
+    PayloadTooLargeError,
     ThinClientOfflineError,
     ConfigError,
     # Constants
@@ -248,6 +250,8 @@ __all__ = [
     'THIN_CLIENT_ERROR_START_RESENDING_CANCELLED',
     'THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG',
     'THIN_CLIENT_ERROR_COPY_COMMAND_FAILED',
+    'THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE',
+    'PayloadTooLargeError',
     # Replica exceptions (matching Go sentinel errors)
     'ReplicaError',
     'BoxIDNotFoundError',
