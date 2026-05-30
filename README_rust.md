@@ -79,10 +79,13 @@ It has three subcommands:
   - `--no-copy` writes each Box directly with the per-box ARQ.
   - `--sack` uses the windowed SACK ARQ, keeping many Boxes in flight
     at once; it takes precedence over `--no-copy`.
-  - `--window <n>` bounds the Boxes in flight under `--sack`
-    (0 lets the daemon choose).
 - `receive -c <config> -r <read-cap> -i <index> -d <dest-dir>` reads a
-  channel and writes the file to disk.
+  channel and writes the file to disk. `--sack` reads it with the same
+  windowed SACK ARQ instead of one Box per round trip.
+
+Under `--sack`, in either direction, the daemon sizes the window itself
+from the PKI document (routing layers and Mu), so there is no window
+flag to tune.
 
 Its source is at
 [`src/bin/pigeonhole_cp.rs`](https://github.com/katzenpost/thin_client/blob/main/src/bin/pigeonhole_cp.rs)
