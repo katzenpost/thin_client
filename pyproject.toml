@@ -7,7 +7,7 @@ authors = [
 ]
 description = "A thinclient for the Katzenpost client daemon"
 readme = "README_python.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
