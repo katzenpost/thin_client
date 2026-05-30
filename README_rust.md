@@ -48,7 +48,7 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-katzenpost_thin_client = "0.0.11"
+katzenpost_thin_client = "0.0.16"
 ```
 
 Please consult
@@ -67,6 +67,25 @@ It is gated behind the `cli` feature:
 ```bash
 cargo build --release --features cli --bin pigeonhole-cp
 ```
+
+It has three subcommands:
+
+- `genkey -c <config>` prints a fresh write and read capability pair.
+- `send -c <config> -w <write-cap> -i <index> -f <file>` reads a file
+  and writes it to a channel. The transfer mode is chosen by these
+  flags:
+  - (default, no flag) uses the courier COPY command, which is atomic
+    but caps the payload near 9 MiB.
+  - `--no-copy` writes each Box directly with the per-box ARQ.
+  - `--sack` uses the windowed SACK ARQ, keeping many Boxes in flight
+    at once; it takes precedence over `--no-copy`.
+- `receive -c <config> -r <read-cap> -i <index> -d <dest-dir>` reads a
+  channel and writes the file to disk. `--sack` reads it with the same
+  windowed SACK ARQ instead of one Box per round trip.
+
+Under `--sack`, in either direction, the daemon sizes the window itself
+from the PKI document (routing layers and Mu), so there is no window
+flag to tune.
 
 Its source is at
 [`src/bin/pigeonhole_cp.rs`](https://github.com/katzenpost/thin_client/blob/main/src/bin/pigeonhole_cp.rs)

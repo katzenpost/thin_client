@@ -62,11 +62,11 @@ const MESSAGE_ID_SIZE: usize = 16;
 /// Upper bound on a single length-prefixed frame from the daemon. The
 /// 4-byte big-endian prefix is daemon-controlled; without a ceiling a
 /// hostile or buggy daemon could declare a multi-gigabyte frame and
-/// drive this client to allocate it before any payload arrives. 16 MiB
+/// drive this client to allocate it before any payload arrives. 40 MiB
 /// is far above any legitimate CBOR message yet far below a
 /// memory-exhaustion threat. Must match the Go daemon's
 /// thin.MaxMessageSize.
-const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+const MAX_MESSAGE_SIZE: usize = 40 * 1024 * 1024;
 
 /// The size in bytes of a query identifier.
 const QUERY_ID_SIZE: usize = 16;

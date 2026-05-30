@@ -133,6 +133,14 @@ enum Commands {
         /// destination but caps the payload at roughly 9 MiB per transfer.
         #[arg(long)]
         no_copy: bool,
+
+        /// Use the windowed SACK ARQ to write the payload, keeping many
+        /// boxes in flight at once instead of the per-box stop-and-wait of
+        /// --no-copy. Takes precedence over --no-copy. The window is
+        /// computed automatically by the daemon from the PKI document
+        /// (routing layers and Mu).
+        #[arg(long)]
+        sack: bool,
     },
 
     /// Read from a Pigeonhole channel and write to a file
@@ -152,6 +160,13 @@ enum Commands {
         /// Output directory (file name comes from the FileMetaData header)
         #[arg(short, long)]
         dest_dir: PathBuf,
+
+        /// Use the windowed SACK ARQ to read the payload, keeping many
+        /// boxes in flight at once instead of reading one box per round
+        /// trip. The window is computed automatically by the daemon from
+        /// the PKI document (routing layers and Mu).
+        #[arg(long)]
+        sack: bool,
     },
 }
 
@@ -162,11 +177,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Genkey { config } => run_genkey(config).await,
-        Commands::Send { config, write_cap, index, file, no_copy } => {
-            run_send(config, write_cap, index, file, no_copy).await
+        Commands::Send { config, write_cap, index, file, no_copy, sack } => {
+            run_send(config, write_cap, index, file, no_copy, sack).await
         }
-        Commands::Receive { config, read_cap, index, dest_dir } => {
-            run_receive(config, read_cap, index, dest_dir).await
+        Commands::Receive { config, read_cap, index, dest_dir, sack } => {
+            run_receive(config, read_cap, index, dest_dir, sack).await
         }
     }
 }
@@ -265,6 +280,7 @@ async fn run_send(
     next_index_b64: String,
     input_file: PathBuf,
     no_copy: bool,
+    sack: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let write_cap = BASE64.decode(&write_cap_b64)?;
     let next_index = BASE64.decode(&next_index_b64)?;
@@ -280,11 +296,97 @@ async fn run_send(
     let client = init_client(config).await?;
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
 
-    if no_copy {
-        send_direct(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await
-    } else {
-        send_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await
+    // --no-copy chooses direct-vs-copy; --sack chooses the windowed ARQ over
+    // per-box stop-and-wait. The four combinations are all valid.
+    match (no_copy, sack) {
+        (true, true) => send_sack(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
+        (true, false) => send_direct(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
+        (false, true) => send_sack_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
+        (false, false) => send_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
     }
+}
+
+/// SACK + COPY path: stage the payload into a temporary channel using the
+/// windowed SACK ARQ, then issue the courier Copy command to dispatch it to
+/// the destination atomically. The temporary channel is just a BACAP byte
+/// stream of copy-stream elements, so filling it with `write_stream` produces
+/// the same stream the per-box `send_copy` builds, only windowed.
+async fn send_sack_copy(
+    pigeonhole: &PigeonholeClient,
+    dest_write_cap: &[u8],
+    dest_index: &[u8],
+    input_file: &Path,
+    total_len: u64,
+    header: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut payload = Vec::with_capacity(header.len() + total_len as usize);
+    payload.extend_from_slice(header);
+    File::open(input_file)?.read_to_end(&mut payload)?;
+
+    let client = pigeonhole.thin_client();
+
+    // A fresh temporary channel to stage the copy stream.
+    let mut seed = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut seed);
+    let kp = client.new_keypair(&seed).await?;
+
+    // Encode the payload into copy-stream elements addressed at the
+    // destination, then concatenate them into the byte stream the temp
+    // channel must carry.
+    let result = client
+        .create_courier_envelopes_from_payload(&payload, dest_write_cap, dest_index, true, true)
+        .await?;
+    let element_count = result.envelopes.len();
+    let mut stream = Vec::new();
+    for chunk in &result.envelopes {
+        stream.extend_from_slice(chunk);
+    }
+
+    let box_payload_size = client.pigeonhole_geometry().max_plaintext_payload_length;
+    let boxes = stream.len().div_ceil(box_payload_size - 4);
+
+    let start = std::time::Instant::now();
+    client
+        .write_stream(&kp.write_cap, &kp.first_message_index, &stream, 0)
+        .await?;
+    client
+        .start_resending_copy_command(&kp.write_cap, None, None)
+        .await?;
+    print_throughput("sack-copy", total_len, boxes, start.elapsed());
+    println!("(staged {} copy-stream elements via temp channel, then COPY)", element_count);
+    Ok(())
+}
+
+/// SACK path: assemble the whole payload and write it with the daemon's
+/// windowed selective-ack ARQ in a single call, keeping `window` boxes in
+/// flight at once. This is the bulk-write counterpart to the per-box
+/// `send_direct`; the daemon does all chunking and encryption.
+async fn send_sack(
+    pigeonhole: &PigeonholeClient,
+    write_cap: &[u8],
+    next_index: &[u8],
+    input_file: &Path,
+    total_len: u64,
+    header: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut payload = Vec::with_capacity(header.len() + total_len as usize);
+    payload.extend_from_slice(header);
+    File::open(input_file)?.read_to_end(&mut payload)?;
+
+    let box_payload_size = pigeonhole
+        .thin_client()
+        .pigeonhole_geometry()
+        .max_plaintext_payload_length;
+    let per_box = box_payload_size - 4;
+    let boxes = payload.len().div_ceil(per_box);
+
+    let start = std::time::Instant::now();
+    pigeonhole
+        .thin_client()
+        .write_stream(write_cap, next_index, &payload, 0)
+        .await?;
+    print_throughput("sack", total_len, boxes, start.elapsed());
+    Ok(())
 }
 
 /// Direct path: write each box to the destination via per-box ARQ.
@@ -313,6 +415,7 @@ async fn send_direct(
     let mut input_reader = BufReader::new(File::open(input_file)?);
     let mut writer = pigeonhole.load_write_channel("pigeonhole-cp", write_cap, next_index)?;
 
+    let start = std::time::Instant::now();
     let first_room = box_payload_size - header.len();
     let mut first_chunk = vec![0u8; first_room];
     let n = read_fill(&mut input_reader, &mut first_chunk)?;
@@ -342,7 +445,7 @@ async fn send_direct(
         .into());
     }
 
-    println!("sent {} bytes in {} box(es) (direct)", bytes_sent, box_count);
+    print_throughput("direct", bytes_sent, box_count, start.elapsed());
     Ok(())
 }
 
@@ -372,12 +475,26 @@ async fn send_copy(
     payload.extend_from_slice(header);
     File::open(input_file)?.read_to_end(&mut payload)?;
 
+    let start = std::time::Instant::now();
     let mut builder = pigeonhole.copy_stream_builder().await?;
     builder.add_payload(&payload, write_cap, next_index, true).await?;
     let boxes = builder.finish().await?;
 
-    println!("sent {} bytes in {} box(es) (copy)", total_len, boxes);
+    print_throughput("copy", total_len, boxes as usize, start.elapsed());
     Ok(())
+}
+
+/// Print a transfer's throughput: total bytes and boxes, the wall time
+/// spent in the send, and the derived boxes/sec and bytes/sec. Used to
+/// compare ARQ strategies (per-box, copy, SACK) on equal footing.
+fn print_throughput(mode: &str, bytes: u64, boxes: usize, elapsed: std::time::Duration) {
+    let secs = elapsed.as_secs_f64();
+    let boxes_per_sec = if secs > 0.0 { boxes as f64 / secs } else { 0.0 };
+    let kib_per_sec = if secs > 0.0 { (bytes as f64 / secs) / 1024.0 } else { 0.0 };
+    println!(
+        "sent {} bytes in {} box(es) ({}) in {:.3}s: {:.2} boxes/s, {:.1} KiB/s",
+        bytes, boxes, mode, secs, boxes_per_sec, kib_per_sec
+    );
 }
 
 /// Read until `buf` is full or EOF. Returns the number of bytes read.
@@ -409,11 +526,17 @@ async fn run_receive(
     read_cap_b64: String,
     next_index_b64: String,
     dest_dir: PathBuf,
+    sack: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let read_cap = BASE64.decode(&read_cap_b64)?;
     let next_index = BASE64.decode(&next_index_b64)?;
 
     let client = init_client(config).await?;
+
+    if sack {
+        return run_receive_sack(client, &read_cap, &next_index, dest_dir).await;
+    }
+
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
     let mut reader =
         pigeonhole.load_read_channel("pigeonhole-cp", &read_cap, &next_index)?;
@@ -456,6 +579,58 @@ async fn run_receive(
         "received {} bytes in {} box(es) -> {}",
         metadata.size,
         box_count,
+        final_path.display()
+    );
+    Ok(())
+}
+
+/// SACK receive: the windowed counterpart to `run_receive`. The read needs
+/// the box count up front, so it first reads box zero to recover the file
+/// size from its `FileMetaData` header, computes how many boxes the payload
+/// spans (the daemon chunks a write at `MaxPlaintextPayloadLength - 4` per
+/// box), then reads the remainder in a single windowed `read_stream` call.
+/// The daemon computes the window itself from the PKI document.
+async fn run_receive_sack(
+    client: Arc<ThinClient>,
+    read_cap: &[u8],
+    start_index: &[u8],
+    dest_dir: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let start = std::time::Instant::now();
+
+    let (first, second_index) = client.read_stream(read_cap, start_index, 1, 0).await?;
+    let mut deserializer = serde_cbor::Deserializer::from_slice(&first);
+    let metadata = FileMetaData::deserialize(&mut deserializer)?;
+    let header_end = deserializer.byte_offset();
+
+    let per_box = client.pigeonhole_geometry().max_plaintext_payload_length - 4;
+    let total_payload_len = header_end + metadata.size as usize;
+    let total_boxes = total_payload_len.div_ceil(per_box);
+
+    let mut file_bytes = Vec::with_capacity(metadata.size as usize);
+    file_bytes.extend_from_slice(&first[header_end..]);
+    if total_boxes > 1 {
+        let (rest, _next) = client
+            .read_stream(read_cap, &second_index, (total_boxes - 1) as u32, 0)
+            .await?;
+        file_bytes.extend_from_slice(&rest);
+    }
+    file_bytes.truncate(metadata.size as usize);
+
+    let final_path = sanitize_for_receive(&metadata.name, &dest_dir)?;
+    let parent = final_path
+        .parent()
+        .expect("sanitize_for_receive guarantees a parent");
+    let mut tmp = NamedTempFile::new_in(parent)?;
+    tmp.write_all(&file_bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist_noclobber(&final_path).map_err(|e| e.error)?;
+
+    println!(
+        "received {} bytes in {} box(es) (sack) in {:.3}s -> {}",
+        metadata.size,
+        total_boxes,
+        start.elapsed().as_secs_f64(),
         final_path.display()
     );
     Ok(())
