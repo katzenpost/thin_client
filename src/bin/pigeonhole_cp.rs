@@ -133,6 +133,17 @@ enum Commands {
         /// destination but caps the payload at roughly 9 MiB per transfer.
         #[arg(long)]
         no_copy: bool,
+
+        /// Use the windowed SACK ARQ to write the payload, keeping many
+        /// boxes in flight at once instead of the per-box stop-and-wait of
+        /// --no-copy. Takes precedence over --no-copy.
+        #[arg(long)]
+        sack: bool,
+
+        /// SACK window: maximum boxes in flight at once (0 = daemon default).
+        /// Only meaningful with --sack.
+        #[arg(long, default_value_t = 0)]
+        window: i64,
     },
 
     /// Read from a Pigeonhole channel and write to a file
@@ -162,8 +173,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Genkey { config } => run_genkey(config).await,
-        Commands::Send { config, write_cap, index, file, no_copy } => {
-            run_send(config, write_cap, index, file, no_copy).await
+        Commands::Send { config, write_cap, index, file, no_copy, sack, window } => {
+            run_send(config, write_cap, index, file, no_copy, sack, window).await
         }
         Commands::Receive { config, read_cap, index, dest_dir } => {
             run_receive(config, read_cap, index, dest_dir).await
@@ -265,6 +276,8 @@ async fn run_send(
     next_index_b64: String,
     input_file: PathBuf,
     no_copy: bool,
+    sack: bool,
+    window: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let write_cap = BASE64.decode(&write_cap_b64)?;
     let next_index = BASE64.decode(&next_index_b64)?;
@@ -280,11 +293,46 @@ async fn run_send(
     let client = init_client(config).await?;
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
 
-    if no_copy {
+    if sack {
+        send_sack(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header, window).await
+    } else if no_copy {
         send_direct(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await
     } else {
         send_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await
     }
+}
+
+/// SACK path: assemble the whole payload and write it with the daemon's
+/// windowed selective-ack ARQ in a single call, keeping `window` boxes in
+/// flight at once. This is the bulk-write counterpart to the per-box
+/// `send_direct`; the daemon does all chunking and encryption.
+async fn send_sack(
+    pigeonhole: &PigeonholeClient,
+    write_cap: &[u8],
+    next_index: &[u8],
+    input_file: &Path,
+    total_len: u64,
+    header: &[u8],
+    window: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut payload = Vec::with_capacity(header.len() + total_len as usize);
+    payload.extend_from_slice(header);
+    File::open(input_file)?.read_to_end(&mut payload)?;
+
+    let box_payload_size = pigeonhole
+        .thin_client()
+        .pigeonhole_geometry()
+        .max_plaintext_payload_length;
+    let per_box = box_payload_size - 4;
+    let boxes = payload.len().div_ceil(per_box);
+
+    let start = std::time::Instant::now();
+    pigeonhole
+        .thin_client()
+        .write_stream(write_cap, next_index, &payload, window)
+        .await?;
+    print_throughput(&format!("sack w={}", window), total_len, boxes, start.elapsed());
+    Ok(())
 }
 
 /// Direct path: write each box to the destination via per-box ARQ.
@@ -313,6 +361,7 @@ async fn send_direct(
     let mut input_reader = BufReader::new(File::open(input_file)?);
     let mut writer = pigeonhole.load_write_channel("pigeonhole-cp", write_cap, next_index)?;
 
+    let start = std::time::Instant::now();
     let first_room = box_payload_size - header.len();
     let mut first_chunk = vec![0u8; first_room];
     let n = read_fill(&mut input_reader, &mut first_chunk)?;
@@ -342,7 +391,7 @@ async fn send_direct(
         .into());
     }
 
-    println!("sent {} bytes in {} box(es) (direct)", bytes_sent, box_count);
+    print_throughput("direct", bytes_sent, box_count, start.elapsed());
     Ok(())
 }
 
@@ -372,12 +421,26 @@ async fn send_copy(
     payload.extend_from_slice(header);
     File::open(input_file)?.read_to_end(&mut payload)?;
 
+    let start = std::time::Instant::now();
     let mut builder = pigeonhole.copy_stream_builder().await?;
     builder.add_payload(&payload, write_cap, next_index, true).await?;
     let boxes = builder.finish().await?;
 
-    println!("sent {} bytes in {} box(es) (copy)", total_len, boxes);
+    print_throughput("copy", total_len, boxes as usize, start.elapsed());
     Ok(())
+}
+
+/// Print a transfer's throughput: total bytes and boxes, the wall time
+/// spent in the send, and the derived boxes/sec and bytes/sec. Used to
+/// compare ARQ strategies (per-box, copy, SACK) on equal footing.
+fn print_throughput(mode: &str, bytes: u64, boxes: usize, elapsed: std::time::Duration) {
+    let secs = elapsed.as_secs_f64();
+    let boxes_per_sec = if secs > 0.0 { boxes as f64 / secs } else { 0.0 };
+    let kib_per_sec = if secs > 0.0 { (bytes as f64 / secs) / 1024.0 } else { 0.0 };
+    println!(
+        "sent {} bytes in {} box(es) ({}) in {:.3}s: {:.2} boxes/s, {:.1} KiB/s",
+        bytes, boxes, mode, secs, boxes_per_sec, kib_per_sec
+    );
 }
 
 /// Read until `buf` is full or EOF. Returns the number of bytes read.
