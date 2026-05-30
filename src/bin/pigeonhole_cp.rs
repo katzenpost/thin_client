@@ -293,13 +293,66 @@ async fn run_send(
     let client = init_client(config).await?;
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
 
-    if sack {
-        send_sack(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header, window).await
-    } else if no_copy {
-        send_direct(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await
-    } else {
-        send_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await
+    // --no-copy chooses direct-vs-copy; --sack chooses the windowed ARQ over
+    // per-box stop-and-wait. The four combinations are all valid.
+    match (no_copy, sack) {
+        (true, true) => send_sack(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header, window).await,
+        (true, false) => send_direct(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
+        (false, true) => send_sack_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header, window).await,
+        (false, false) => send_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
     }
+}
+
+/// SACK + COPY path: stage the payload into a temporary channel using the
+/// windowed SACK ARQ, then issue the courier Copy command to dispatch it to
+/// the destination atomically. The temporary channel is just a BACAP byte
+/// stream of copy-stream elements, so filling it with `write_stream` produces
+/// the same stream the per-box `send_copy` builds, only windowed.
+async fn send_sack_copy(
+    pigeonhole: &PigeonholeClient,
+    dest_write_cap: &[u8],
+    dest_index: &[u8],
+    input_file: &Path,
+    total_len: u64,
+    header: &[u8],
+    window: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut payload = Vec::with_capacity(header.len() + total_len as usize);
+    payload.extend_from_slice(header);
+    File::open(input_file)?.read_to_end(&mut payload)?;
+
+    let client = pigeonhole.thin_client();
+
+    // A fresh temporary channel to stage the copy stream.
+    let mut seed = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut seed);
+    let kp = client.new_keypair(&seed).await?;
+
+    // Encode the payload into copy-stream elements addressed at the
+    // destination, then concatenate them into the byte stream the temp
+    // channel must carry.
+    let result = client
+        .create_courier_envelopes_from_payload(&payload, dest_write_cap, dest_index, true, true)
+        .await?;
+    let element_count = result.envelopes.len();
+    let mut stream = Vec::new();
+    for chunk in &result.envelopes {
+        stream.extend_from_slice(chunk);
+    }
+
+    let box_payload_size = client.pigeonhole_geometry().max_plaintext_payload_length;
+    let boxes = stream.len().div_ceil(box_payload_size - 4);
+
+    let start = std::time::Instant::now();
+    client
+        .write_stream(&kp.write_cap, &kp.first_message_index, &stream, window)
+        .await?;
+    client
+        .start_resending_copy_command(&kp.write_cap, None, None)
+        .await?;
+    print_throughput(&format!("sack-copy w={}", window), total_len, boxes, start.elapsed());
+    println!("(staged {} copy-stream elements via temp channel, then COPY)", element_count);
+    Ok(())
 }
 
 /// SACK path: assemble the whole payload and write it with the daemon's
