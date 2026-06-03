@@ -63,6 +63,58 @@ class StartResendingResult:
     """Queue ID of the courier that handled this message."""
 
 
+@dataclass
+class VoucherMintResult:
+    """Result from voucher_mint.
+
+    Hand ``voucher`` to the inductor out of band and publish
+    ``voucher_payload`` to VoucherStream box 0. Persist ``voucher_secret_key``
+    to open the inductor's reply later.
+    """
+    voucher: bytes
+    voucher_payload: bytes
+    voucher_write_cap: bytes
+    voucher_read_cap: bytes
+    voucher_secret_key: bytes
+    voucher_public_key: bytes
+
+
+@dataclass
+class VoucherInductResult:
+    """Result from voucher_induct.
+
+    ``mutated_message_read_cap`` is the joiner's salt-mutated read cap: the
+    live read cap the inductor hands the group. Write ``sealed_reply`` to
+    VoucherStream box 1.
+    """
+    display_name: str
+    mutated_message_read_cap: bytes
+    sealed_reply: bytes
+    voucher_write_cap: bytes
+    voucher_read_cap: bytes
+    salt: bytes
+
+
+@dataclass
+class VoucherOpenResult:
+    """Result from voucher_open.
+
+    ``mutated_message_write_cap`` is the joiner's salt-mutated write cap: the
+    live write cap for real messages, which lands on the same box sequence as
+    the read cap the inductor handed the group.
+    """
+    who_reply: bytes
+    salt: bytes
+    mutated_message_write_cap: bytes
+
+
+@dataclass
+class VoucherStreamResult:
+    """Result from voucher_derive_stream: the rendezvous stream caps."""
+    voucher_write_cap: bytes
+    voucher_read_cap: bytes
+
+
 # New Pigeonhole API methods - these will be attached to ThinClient class
 
 
@@ -1135,5 +1187,181 @@ async def create_courier_envelopes_from_tombstone_range(
         envelopes=reply.get("envelopes", []),
         buffer=reply.get("buffer", b""),
         next_dest_index=reply.get("next_dest_index", None)
+    )
+
+
+# Contact Voucher API methods. Each sends a pure-crypto request to the daemon
+# (served from hpqc/voucher with no mixnet IO) and awaits the matching reply.
+# All capability and key material is opaque bytes; the thin client performs no
+# cryptography. Seeds are never carried over the wire, so the daemon supplies
+# fresh randomness for the reply keypair, the salt, and the seal.
+
+
+async def voucher_mint(self, message_write_cap: bytes, display_name: str) -> VoucherMintResult:
+    """
+    Mints a Voucher from the joiner's MessageStream write cap.
+
+    Args:
+        message_write_cap: The joiner's MessageStream write capability.
+        display_name: The joiner's chosen display name.
+
+    Returns:
+        VoucherMintResult: The Voucher, the payload to publish, the rendezvous
+            stream caps, and the reply keypair.
+
+    Raises:
+        Exception: If minting fails.
+    """
+    query_id = self.new_query_id()
+    request = {
+        "voucher_mint": {
+            "query_id": query_id,
+            "message_write_cap": message_write_cap,
+            "display_name": display_name,
+        }
+    }
+    try:
+        reply = await self._send_and_wait(query_id=query_id, request=request)
+    except Exception as e:
+        self.logger.error(f"Error minting voucher: {e}")
+        raise
+
+    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply['error_code'])
+        raise Exception(f"voucher_mint failed: {error_msg}")
+
+    return VoucherMintResult(
+        voucher=reply["voucher"],
+        voucher_payload=reply["voucher_payload"],
+        voucher_write_cap=reply["voucher_write_cap"],
+        voucher_read_cap=reply["voucher_read_cap"],
+        voucher_secret_key=reply["voucher_secret_key"],
+        voucher_public_key=reply["voucher_public_key"],
+    )
+
+
+async def voucher_induct(self, voucher: bytes, voucher_payload: bytes, who_reply: bytes) -> VoucherInductResult:
+    """
+    Verifies a published VoucherPayload and seals a reply to the joiner.
+
+    Args:
+        voucher: The 32-byte token received out of band.
+        voucher_payload: The payload read from VoucherStream box 0.
+        who_reply: The opaque group-membership blob to seal for the joiner.
+
+    Returns:
+        VoucherInductResult: The joiner's salt-mutated read cap, the sealed
+            reply to write to VoucherStream box 1, and the salt.
+
+    Raises:
+        Exception: If induction fails (e.g. hash mismatch or bad signature).
+    """
+    query_id = self.new_query_id()
+    request = {
+        "voucher_induct": {
+            "query_id": query_id,
+            "voucher": voucher,
+            "voucher_payload": voucher_payload,
+            "who_reply": who_reply,
+        }
+    }
+    try:
+        reply = await self._send_and_wait(query_id=query_id, request=request)
+    except Exception as e:
+        self.logger.error(f"Error inducting voucher: {e}")
+        raise
+
+    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply['error_code'])
+        raise Exception(f"voucher_induct failed: {error_msg}")
+
+    return VoucherInductResult(
+        display_name=reply.get("display_name", ""),
+        mutated_message_read_cap=reply["mutated_message_read_cap"],
+        sealed_reply=reply["sealed_reply"],
+        voucher_write_cap=reply["voucher_write_cap"],
+        voucher_read_cap=reply["voucher_read_cap"],
+        salt=reply["salt"],
+    )
+
+
+async def voucher_open(self, voucher_secret_key: bytes, sealed_reply: bytes, message_write_cap: bytes) -> VoucherOpenResult:
+    """
+    Opens the inductor's sealed reply with the joiner's voucher secret key,
+    recovers the salt, and mutates the joiner's MessageStream write cap by it.
+
+    Args:
+        voucher_secret_key: The joiner's persisted voucher secret key.
+        sealed_reply: The bytes read from VoucherStream box 1.
+        message_write_cap: The joiner's MessageStream write cap, mutated by the
+            recovered salt to yield the live write cap for real messages.
+
+    Returns:
+        VoucherOpenResult: The opaque WhoReply, the salt, and the salt-mutated
+            write cap.
+
+    Raises:
+        Exception: If opening fails (e.g. wrong key).
+    """
+    query_id = self.new_query_id()
+    request = {
+        "voucher_open": {
+            "query_id": query_id,
+            "voucher_secret_key": voucher_secret_key,
+            "sealed_reply": sealed_reply,
+            "message_write_cap": message_write_cap,
+        }
+    }
+    try:
+        reply = await self._send_and_wait(query_id=query_id, request=request)
+    except Exception as e:
+        self.logger.error(f"Error opening voucher reply: {e}")
+        raise
+
+    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply['error_code'])
+        raise Exception(f"voucher_open failed: {error_msg}")
+
+    return VoucherOpenResult(
+        who_reply=reply["who_reply"],
+        salt=reply["salt"],
+        mutated_message_write_cap=reply["mutated_message_write_cap"],
+    )
+
+
+async def voucher_derive_stream(self, voucher: bytes) -> VoucherStreamResult:
+    """
+    Derives the VoucherStream caps from the Voucher, which the inductor needs
+    to read box 0 before inducting.
+
+    Args:
+        voucher: The 32-byte token.
+
+    Returns:
+        VoucherStreamResult: The rendezvous stream caps.
+
+    Raises:
+        Exception: If derivation fails.
+    """
+    query_id = self.new_query_id()
+    request = {
+        "voucher_derive_stream": {
+            "query_id": query_id,
+            "voucher": voucher,
+        }
+    }
+    try:
+        reply = await self._send_and_wait(query_id=query_id, request=request)
+    except Exception as e:
+        self.logger.error(f"Error deriving voucher stream: {e}")
+        raise
+
+    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply['error_code'])
+        raise Exception(f"voucher_derive_stream failed: {error_msg}")
+
+    return VoucherStreamResult(
+        voucher_write_cap=reply["voucher_write_cap"],
+        voucher_read_cap=reply["voucher_read_cap"],
     )
 
