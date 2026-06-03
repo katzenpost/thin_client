@@ -82,6 +82,9 @@ THIN_CLIENT_ERROR_START_RESENDING_CANCELLED = 24
 THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG = 25
 THIN_CLIENT_ERROR_COPY_COMMAND_FAILED = 26
 THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE = 27
+THIN_CLIENT_ERROR_VOUCHER_HASH_MISMATCH = 28
+THIN_CLIENT_ERROR_VOUCHER_SIGNATURE_INVALID = 29
+THIN_CLIENT_ERROR_VOUCHER_SEAL_OPEN_FAILED = 30
 
 def thin_client_error_to_string(error_code: int) -> str:
     """Convert a thin client error code to a human-readable string."""
@@ -114,6 +117,9 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG: "Invalid tombstone signature",
         THIN_CLIENT_ERROR_COPY_COMMAND_FAILED: "Copy command failed",
         THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE: "Payload too large",
+        THIN_CLIENT_ERROR_VOUCHER_HASH_MISMATCH: "Voucher payload does not hash to the voucher",
+        THIN_CLIENT_ERROR_VOUCHER_SIGNATURE_INVALID: "Voucher signed please-add did not verify",
+        THIN_CLIENT_ERROR_VOUCHER_SEAL_OPEN_FAILED: "Voucher sealed reply could not be opened",
     }
     return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
 

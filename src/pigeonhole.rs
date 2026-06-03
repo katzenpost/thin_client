@@ -458,6 +458,125 @@ struct CreateCourierEnvelopesFromTombstoneRangeReply {
     error_code: u8,
 }
 
+// ========================================================================
+// Contact Voucher API Protocol Message Structs
+// ========================================================================
+
+/// Request to mint a Voucher from the joiner's MessageStream write cap.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct VoucherMintRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    message_write_cap: Vec<u8>,
+    display_name: String,
+}
+
+/// Reply containing the minted Voucher and the joiner's reply keypair.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct VoucherMintReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    voucher: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    voucher_payload: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    voucher_write_cap: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    voucher_read_cap: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    voucher_secret_key: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    voucher_public_key: Option<Vec<u8>>,
+    #[serde(default)]
+    error_code: u8,
+}
+
+/// Request to verify a published VoucherPayload and seal a reply.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct VoucherInductRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    voucher: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    voucher_payload: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    who_reply: Vec<u8>,
+}
+
+/// Reply containing the sealed reply and the joiner's salt-mutated read cap.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct VoucherInductReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default, with = "optional_bytes")]
+    mutated_message_read_cap: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    sealed_reply: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    voucher_write_cap: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    voucher_read_cap: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    salt: Option<Vec<u8>>,
+    #[serde(default)]
+    error_code: u8,
+}
+
+/// Request to open the inductor's sealed reply for the joiner.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct VoucherOpenRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    voucher_secret_key: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    sealed_reply: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    message_write_cap: Vec<u8>,
+}
+
+/// Reply containing the opened WhoReply and the joiner's salt-mutated write cap.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct VoucherOpenReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    who_reply: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    salt: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    mutated_message_write_cap: Option<Vec<u8>>,
+    #[serde(default)]
+    error_code: u8,
+}
+
+/// Request to derive the VoucherStream caps from a Voucher.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct VoucherDeriveStreamRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    voucher: Vec<u8>,
+}
+
+/// Reply containing the derived VoucherStream caps.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct VoucherDeriveStreamReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    voucher_write_cap: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    voucher_read_cap: Option<Vec<u8>>,
+    #[serde(default)]
+    error_code: u8,
+}
+
 /// Result from new_keypair containing the generated capabilities.
 #[derive(Debug, Clone)]
 pub struct KeypairResult {
@@ -498,6 +617,49 @@ pub struct CreateEnvelopesResult {
     /// The next destination indices for each destination, in request order.
     /// Only populated by create_courier_envelopes_from_multi_payload.
     pub next_dest_indices: Option<Vec<Vec<u8>>>,
+}
+
+/// Result from voucher_mint. Persist `voucher_secret_key` to open the
+/// inductor's reply later; hand `voucher` to the inductor out of band and
+/// publish `voucher_payload` to VoucherStream box 0.
+#[derive(Debug, Clone)]
+pub struct VoucherMintResult {
+    pub voucher: Vec<u8>,
+    pub voucher_payload: Vec<u8>,
+    pub voucher_write_cap: Vec<u8>,
+    pub voucher_read_cap: Vec<u8>,
+    pub voucher_secret_key: Vec<u8>,
+    pub voucher_public_key: Vec<u8>,
+}
+
+/// Result from voucher_induct. `mutated_message_read_cap` is the joiner's
+/// salt-mutated read cap: the live read cap the inductor hands the group.
+/// Write `sealed_reply` to VoucherStream box 1.
+#[derive(Debug, Clone)]
+pub struct VoucherInductResult {
+    pub display_name: String,
+    pub mutated_message_read_cap: Vec<u8>,
+    pub sealed_reply: Vec<u8>,
+    pub voucher_write_cap: Vec<u8>,
+    pub voucher_read_cap: Vec<u8>,
+    pub salt: Vec<u8>,
+}
+
+/// Result from voucher_open. `mutated_message_write_cap` is the joiner's
+/// salt-mutated write cap: the live write cap for real messages, which lands
+/// on the same box sequence as the read cap the inductor handed the group.
+#[derive(Debug, Clone)]
+pub struct VoucherOpenResult {
+    pub who_reply: Vec<u8>,
+    pub salt: Vec<u8>,
+    pub mutated_message_write_cap: Vec<u8>,
+}
+
+/// Result from voucher_derive_stream: the rendezvous stream caps.
+#[derive(Debug, Clone)]
+pub struct VoucherStreamResult {
+    pub voucher_write_cap: Vec<u8>,
+    pub voucher_read_cap: Vec<u8>,
 }
 
 // ========================================================================
@@ -1516,6 +1678,152 @@ impl ThinClient {
     }
 }
 
+// ========================================================================
+// Contact Voucher API Methods
+// ========================================================================
+
+impl ThinClient {
+    /// Mints a Voucher from the joiner's MessageStream write cap.
+    ///
+    /// The result carries the Voucher to hand the inductor out of band, the
+    /// payload to publish to VoucherStream box 0, the rendezvous stream caps,
+    /// and the reply keypair. Persist `voucher_secret_key` to open the
+    /// inductor's reply later.
+    pub async fn voucher_mint(
+        &self,
+        message_write_cap: &[u8],
+        display_name: &str,
+    ) -> Result<VoucherMintResult, ThinClientError> {
+        let query_id = Self::new_query_id();
+        let request_inner = VoucherMintRequest {
+            query_id: query_id.clone(),
+            message_write_cap: message_write_cap.to_vec(),
+            display_name: display_name.to_string(),
+        };
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(ThinClientError::CborError)?;
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("voucher_mint".to_string()), request_value);
+
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
+        let reply: VoucherMintReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(ThinClientError::CborError)?;
+        if reply.error_code != 0 {
+            return Err(error_code_to_error(reply.error_code));
+        }
+        Ok(VoucherMintResult {
+            voucher: reply.voucher.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher is None".to_string()))?,
+            voucher_payload: reply.voucher_payload.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher_payload is None".to_string()))?,
+            voucher_write_cap: reply.voucher_write_cap.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher_write_cap is None".to_string()))?,
+            voucher_read_cap: reply.voucher_read_cap.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher_read_cap is None".to_string()))?,
+            voucher_secret_key: reply.voucher_secret_key.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher_secret_key is None".to_string()))?,
+            voucher_public_key: reply.voucher_public_key.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher_public_key is None".to_string()))?,
+        })
+    }
+
+    /// Verifies a published VoucherPayload and seals a reply to the joiner.
+    ///
+    /// The result carries the joiner's salt-mutated read cap (the live read
+    /// cap to hand the group), the sealed reply to write to VoucherStream
+    /// box 1, and the salt the inductor minted.
+    pub async fn voucher_induct(
+        &self,
+        voucher: &[u8],
+        voucher_payload: &[u8],
+        who_reply: &[u8],
+    ) -> Result<VoucherInductResult, ThinClientError> {
+        let query_id = Self::new_query_id();
+        let request_inner = VoucherInductRequest {
+            query_id: query_id.clone(),
+            voucher: voucher.to_vec(),
+            voucher_payload: voucher_payload.to_vec(),
+            who_reply: who_reply.to_vec(),
+        };
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(ThinClientError::CborError)?;
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("voucher_induct".to_string()), request_value);
+
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
+        let reply: VoucherInductReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(ThinClientError::CborError)?;
+        if reply.error_code != 0 {
+            return Err(error_code_to_error(reply.error_code));
+        }
+        Ok(VoucherInductResult {
+            display_name: reply.display_name,
+            mutated_message_read_cap: reply.mutated_message_read_cap.ok_or_else(|| ThinClientError::Other("voucher_induct: mutated_message_read_cap is None".to_string()))?,
+            sealed_reply: reply.sealed_reply.ok_or_else(|| ThinClientError::Other("voucher_induct: sealed_reply is None".to_string()))?,
+            voucher_write_cap: reply.voucher_write_cap.ok_or_else(|| ThinClientError::Other("voucher_induct: voucher_write_cap is None".to_string()))?,
+            voucher_read_cap: reply.voucher_read_cap.ok_or_else(|| ThinClientError::Other("voucher_induct: voucher_read_cap is None".to_string()))?,
+            salt: reply.salt.ok_or_else(|| ThinClientError::Other("voucher_induct: salt is None".to_string()))?,
+        })
+    }
+
+    /// Opens the inductor's sealed reply with the joiner's voucher secret key,
+    /// recovers the salt, and mutates the joiner's MessageStream write cap by
+    /// it. The result carries the opaque WhoReply, the salt, and the
+    /// salt-mutated write cap with which the joiner writes real messages.
+    pub async fn voucher_open(
+        &self,
+        voucher_secret_key: &[u8],
+        sealed_reply: &[u8],
+        message_write_cap: &[u8],
+    ) -> Result<VoucherOpenResult, ThinClientError> {
+        let query_id = Self::new_query_id();
+        let request_inner = VoucherOpenRequest {
+            query_id: query_id.clone(),
+            voucher_secret_key: voucher_secret_key.to_vec(),
+            sealed_reply: sealed_reply.to_vec(),
+            message_write_cap: message_write_cap.to_vec(),
+        };
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(ThinClientError::CborError)?;
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("voucher_open".to_string()), request_value);
+
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
+        let reply: VoucherOpenReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(ThinClientError::CborError)?;
+        if reply.error_code != 0 {
+            return Err(error_code_to_error(reply.error_code));
+        }
+        Ok(VoucherOpenResult {
+            who_reply: reply.who_reply.ok_or_else(|| ThinClientError::Other("voucher_open: who_reply is None".to_string()))?,
+            salt: reply.salt.ok_or_else(|| ThinClientError::Other("voucher_open: salt is None".to_string()))?,
+            mutated_message_write_cap: reply.mutated_message_write_cap.ok_or_else(|| ThinClientError::Other("voucher_open: mutated_message_write_cap is None".to_string()))?,
+        })
+    }
+
+    /// Derives the VoucherStream caps from the Voucher, which the inductor
+    /// needs to read box 0 before inducting.
+    pub async fn voucher_derive_stream(
+        &self,
+        voucher: &[u8],
+    ) -> Result<VoucherStreamResult, ThinClientError> {
+        let query_id = Self::new_query_id();
+        let request_inner = VoucherDeriveStreamRequest {
+            query_id: query_id.clone(),
+            voucher: voucher.to_vec(),
+        };
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(ThinClientError::CborError)?;
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text("voucher_derive_stream".to_string()), request_value);
+
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
+        let reply: VoucherDeriveStreamReply = serde_cbor::value::from_value(Value::Map(reply_map))
+            .map_err(ThinClientError::CborError)?;
+        if reply.error_code != 0 {
+            return Err(error_code_to_error(reply.error_code));
+        }
+        Ok(VoucherStreamResult {
+            voucher_write_cap: reply.voucher_write_cap.ok_or_else(|| ThinClientError::Other("voucher_derive_stream: voucher_write_cap is None".to_string()))?,
+            voucher_read_cap: reply.voucher_read_cap.ok_or_else(|| ThinClientError::Other("voucher_derive_stream: voucher_read_cap is None".to_string()))?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod sack_request_tests {
     use super::*;
@@ -1562,6 +1870,59 @@ mod sack_request_tests {
         };
         let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
         for expected in ["query_id", "read_cap", "start_index", "box_count", "window"] {
+            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+        }
+    }
+
+    #[test]
+    fn voucher_mint_request_field_names() {
+        let req = VoucherMintRequest {
+            query_id: vec![1],
+            message_write_cap: vec![2],
+            display_name: "bob".to_string(),
+        };
+        let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
+        for expected in ["query_id", "message_write_cap", "display_name"] {
+            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+        }
+    }
+
+    #[test]
+    fn voucher_induct_request_field_names() {
+        let req = VoucherInductRequest {
+            query_id: vec![1],
+            voucher: vec![2],
+            voucher_payload: vec![3],
+            who_reply: vec![4],
+        };
+        let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
+        for expected in ["query_id", "voucher", "voucher_payload", "who_reply"] {
+            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+        }
+    }
+
+    #[test]
+    fn voucher_open_request_field_names() {
+        let req = VoucherOpenRequest {
+            query_id: vec![1],
+            voucher_secret_key: vec![2],
+            sealed_reply: vec![3],
+            message_write_cap: vec![4],
+        };
+        let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
+        for expected in ["query_id", "voucher_secret_key", "sealed_reply", "message_write_cap"] {
+            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+        }
+    }
+
+    #[test]
+    fn voucher_derive_stream_request_field_names() {
+        let req = VoucherDeriveStreamRequest {
+            query_id: vec![1],
+            voucher: vec![2],
+        };
+        let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
+        for expected in ["query_id", "voucher"] {
             assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
         }
     }

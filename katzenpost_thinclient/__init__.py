@@ -89,6 +89,9 @@ from .core import (
     THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG,
     THIN_CLIENT_ERROR_COPY_COMMAND_FAILED,
     THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE,
+    THIN_CLIENT_ERROR_VOUCHER_HASH_MISMATCH,
+    THIN_CLIENT_ERROR_VOUCHER_SIGNATURE_INVALID,
+    THIN_CLIENT_ERROR_VOUCHER_SEAL_OPEN_FAILED,
     thin_client_error_to_string,
     error_code_to_exception,
     copy_reply_to_exception,
@@ -150,6 +153,10 @@ from .pigeonhole import (
     create_courier_envelopes_from_multi_payload,
     create_courier_envelopes_from_tombstone_range,
     tombstone_range,
+    voucher_mint,
+    voucher_induct,
+    voucher_open,
+    voucher_derive_stream,
     # Result dataclasses
     KeypairResult,
     EncryptReadResult,
@@ -158,6 +165,10 @@ from .pigeonhole import (
     StartResendingResult,
     TombstoneEnvelope,
     TombstoneRangeResult,
+    VoucherMintResult,
+    VoucherInductResult,
+    VoucherOpenResult,
+    VoucherStreamResult,
 )
 
 
@@ -179,6 +190,10 @@ ThinClient.create_courier_envelopes_from_payload = create_courier_envelopes_from
 ThinClient.create_courier_envelopes_from_multi_payload = create_courier_envelopes_from_multi_payload
 ThinClient.create_courier_envelopes_from_tombstone_range = create_courier_envelopes_from_tombstone_range
 ThinClient.tombstone_range = tombstone_range
+ThinClient.voucher_mint = voucher_mint
+ThinClient.voucher_induct = voucher_induct
+ThinClient.voucher_open = voucher_open
+ThinClient.voucher_derive_stream = voucher_derive_stream
 
 
 # Export public API
@@ -200,6 +215,10 @@ __all__ = [
     'StartResendingResult',
     'TombstoneEnvelope',
     'TombstoneRangeResult',
+    'VoucherMintResult',
+    'VoucherInductResult',
+    'VoucherOpenResult',
+    'VoucherStreamResult',
     # Utility functions
     'find_services',
     'pretty_print_obj',
@@ -251,6 +270,9 @@ __all__ = [
     'THIN_CLIENT_ERROR_INVALID_TOMBSTONE_SIG',
     'THIN_CLIENT_ERROR_COPY_COMMAND_FAILED',
     'THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE',
+    'THIN_CLIENT_ERROR_VOUCHER_HASH_MISMATCH',
+    'THIN_CLIENT_ERROR_VOUCHER_SIGNATURE_INVALID',
+    'THIN_CLIENT_ERROR_VOUCHER_SEAL_OPEN_FAILED',
     'PayloadTooLargeError',
     # Replica exceptions (matching Go sentinel errors)
     'ReplicaError',

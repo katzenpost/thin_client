@@ -75,6 +75,16 @@ pub enum ThinClientError {
     /// configured maximum stream payload size (error code 27).
     PayloadTooLarge,
 
+    /// A Contact Voucher payload did not hash to the Voucher token handed
+    /// over out of band (error code 28).
+    VoucherHashMismatch,
+    /// The signed please-add in a Contact Voucher payload did not verify
+    /// under the read cap's root public key (error code 29).
+    VoucherSignatureInvalid,
+    /// A sealed Contact Voucher reply could not be opened with the joiner's
+    /// voucher secret key (error code 30).
+    VoucherSealOpenFailed,
+
     /// `blocking_send_message` did not receive a reply within the caller's
     /// supplied timeout. The message may still have been sent and may still
     /// elicit a reply that is later dropped.
@@ -105,6 +115,9 @@ pub fn error_code_to_error(error_code: u8) -> ThinClientError {
         24 => ThinClientError::StartResendingCancelled,
         25 => ThinClientError::InvalidTombstoneSignature,
         27 => ThinClientError::PayloadTooLarge,
+        28 => ThinClientError::VoucherHashMismatch,
+        29 => ThinClientError::VoucherSignatureInvalid,
+        30 => ThinClientError::VoucherSealOpenFailed,
         code => ThinClientError::Other(format!("unknown error code: {}", code)),
     }
 }
@@ -142,6 +155,9 @@ impl fmt::Display for ThinClientError {
                 replica_error_code, failed_envelope_index
             ),
             ThinClientError::PayloadTooLarge => write!(f, "Payload too large"),
+            ThinClientError::VoucherHashMismatch => write!(f, "Voucher payload does not hash to the voucher"),
+            ThinClientError::VoucherSignatureInvalid => write!(f, "Voucher signed please-add did not verify"),
+            ThinClientError::VoucherSealOpenFailed => write!(f, "Voucher sealed reply could not be opened"),
             ThinClientError::Timeout(msg) => write!(f, "Timeout: {}", msg),
             ThinClientError::Other(msg) => write!(f, "Error: {}", msg),
         }
