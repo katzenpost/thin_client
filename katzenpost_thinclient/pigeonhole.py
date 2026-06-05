@@ -29,7 +29,6 @@ class KeypairResult:
     """Result from new_keypair containing the generated capabilities."""
     write_cap: bytes
     read_cap: bytes
-    first_message_index: bytes
 
 
 @dataclass
@@ -38,7 +37,7 @@ class EncryptReadResult:
     message_ciphertext: bytes
     envelope_descriptor: bytes
     envelope_hash: bytes
-    next_message_box_index: bytes
+    read_cap: bytes
 
 
 @dataclass
@@ -47,7 +46,7 @@ class EncryptWriteResult:
     message_ciphertext: bytes
     envelope_descriptor: bytes
     envelope_hash: bytes
-    next_message_box_index: bytes
+    write_cap: bytes
 
 
 @dataclass
@@ -131,7 +130,7 @@ async def new_keypair(self, seed: bytes) -> KeypairResult:
         seed: 32-byte seed used to derive the keypair.
 
     Returns:
-        KeypairResult: Contains write_cap, read_cap, and first_message_index.
+        KeypairResult: Contains write_cap and read_cap.
 
     Raises:
         Exception: If the keypair creation fails.
@@ -168,32 +167,33 @@ async def new_keypair(self, seed: bytes) -> KeypairResult:
 
     return KeypairResult(
         write_cap=reply["write_cap"],
-        read_cap=reply["read_cap"],
-        first_message_index=reply["first_message_index"]
+        read_cap=reply["read_cap"]
     )
 
 
-async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> EncryptReadResult:
+async def encrypt_read(self, read_cap: bytes) -> EncryptReadResult:
     """
     Encrypts a read operation for a given read capability.
 
     This method prepares an encrypted read request that can be sent to the
     courier service to retrieve a message from a pigeonhole box. The returned
-    ciphertext should be sent via start_resending_encrypted_message.
+    ciphertext should be sent via start_resending_encrypted_message. The box
+    position is folded into the read cap; the returned ``read_cap`` is the cap
+    advanced to the next box.
 
     Args:
-        read_cap: Read capability that grants access to the channel.
-        message_box_index: Starting read position for the channel.
+        read_cap: Read capability that grants access to the channel and
+            carries the current read position.
 
     Returns:
         EncryptReadResult: Contains message_ciphertext, envelope_descriptor,
-            and envelope_hash.
+            envelope_hash, and read_cap (advanced to the next box).
 
     Raises:
         Exception: If the encryption fails.
 
     Example:
-        >>> result = await client.encrypt_read(read_cap, message_box_index)
+        >>> result = await client.encrypt_read(read_cap)
         >>> # Send result.message_ciphertext via start_resending_encrypted_message
     """
     query_id = self.new_query_id()
@@ -201,8 +201,7 @@ async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> Encry
     request = {
         "encrypt_read": {
             "query_id": query_id,
-            "read_cap": read_cap,
-            "message_box_index": message_box_index
+            "read_cap": read_cap
         }
     }
 
@@ -220,11 +219,11 @@ async def encrypt_read(self, read_cap: bytes, message_box_index: bytes) -> Encry
         message_ciphertext=reply["message_ciphertext"],
         envelope_descriptor=reply["envelope_descriptor"],
         envelope_hash=reply["envelope_hash"],
-        next_message_box_index=reply["next_message_box_index"]
+        read_cap=reply["read_cap"]
     )
 
 
-async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_index: bytes) -> EncryptWriteResult:
+async def encrypt_write(self, plaintext: bytes, write_cap: bytes) -> EncryptWriteResult:
     """
     Encrypts a write operation for a given write capability.
 
@@ -244,19 +243,19 @@ async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_in
     Args:
         plaintext: The plaintext message to encrypt. Must be at most
             PigeonholeGeometry.max_plaintext_payload_length bytes.
-        write_cap: Write capability that grants access to the channel.
-        message_box_index: The message box index for this write operation.
+        write_cap: Write capability that grants access to the channel and
+            carries the current write position.
 
     Returns:
         EncryptWriteResult: Contains message_ciphertext, envelope_descriptor,
-            and envelope_hash.
+            envelope_hash, and write_cap (advanced to the next box).
 
     Raises:
         Exception: If the encryption fails (including if plaintext is too large).
 
     Example:
         >>> plaintext = b"Hello, Bob!"
-        >>> result = await client.encrypt_write(plaintext, write_cap, message_box_index)
+        >>> result = await client.encrypt_write(plaintext, write_cap)
         >>> # Send result.message_ciphertext via start_resending_encrypted_message
     """
     query_id = self.new_query_id()
@@ -265,8 +264,7 @@ async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_in
         "encrypt_write": {
             "query_id": query_id,
             "plaintext": plaintext,
-            "write_cap": write_cap,
-            "message_box_index": message_box_index
+            "write_cap": write_cap
         }
     }
 
@@ -284,7 +282,7 @@ async def encrypt_write(self, plaintext: bytes, write_cap: bytes, message_box_in
         message_ciphertext=reply["message_ciphertext"],
         envelope_descriptor=reply["envelope_descriptor"],
         envelope_hash=reply["envelope_hash"],
-        next_message_box_index=reply["next_message_box_index"]
+        write_cap=reply["write_cap"]
     )
 
 
@@ -292,7 +290,6 @@ async def start_resending_encrypted_message(
     self,
     read_cap: "bytes|None",
     write_cap: "bytes|None",
-    message_box_index: "bytes|None",
     reply_index: "int|None",
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
@@ -330,7 +327,6 @@ async def start_resending_encrypted_message(
     Args:
         read_cap: Read capability (can be None for write operations, required for reads).
         write_cap: Write capability (can be None for read operations, required for writes).
-        message_box_index: Current message box index being operated on (required for reads).
         reply_index: Index of the reply to use (typically 0 or 1).
         envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
         message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
@@ -358,7 +354,7 @@ async def start_resending_encrypted_message(
 
     Example:
         >>> result = await client.start_resending_encrypted_message(
-        ...     read_cap, None, message_box_index, reply_idx, env_desc, ciphertext, env_hash)
+        ...     read_cap, None, reply_idx, env_desc, ciphertext, env_hash)
         >>> print(f"Received: {result.plaintext}")
     """
     query_id = self.new_query_id()
@@ -368,7 +364,6 @@ async def start_resending_encrypted_message(
             "query_id": query_id,
             "read_cap": read_cap,
             "write_cap": write_cap,
-            "message_box_index": message_box_index,
             "reply_index": reply_index,
             "envelope_descriptor": envelope_descriptor,
             "message_ciphertext": message_ciphertext,
@@ -404,7 +399,7 @@ async def start_resending_encrypted_message(
     )
 
 
-async def write_stream(self, write_cap, start_index, payload, window=0):
+async def write_stream(self, write_cap, payload, window=0):
     """
     Writes a whole payload, of any size, to a channel using the daemon's
     windowed selective-ack (SACK) ARQ. The daemon splits the payload into as
@@ -414,23 +409,23 @@ async def write_stream(self, write_cap, start_index, payload, window=0):
     ``window`` of zero asks the daemon to choose a default.
 
     The daemon does all chunking and encryption; the caller supplies only the
-    cleartext payload, the write capability, and the start index.
+    cleartext payload and the write capability, which carries the start
+    position.
 
     Args:
-        write_cap: Write capability for the destination channel.
-        start_index: Message box index of the first box written.
+        write_cap: Write capability for the destination channel, carrying the
+            position of the first box written.
         payload: Cleartext payload to write.
         window: Maximum boxes in flight at once (0 = daemon default).
 
     Returns:
-        The message box index immediately after the last box written.
+        The write capability advanced past the last box written.
     """
     query_id = self.new_query_id()
     request = {
         "write_stream": {
             "query_id": query_id,
             "write_cap": write_cap,
-            "start_index": start_index,
             "payload": payload,
             "window": window,
         }
@@ -442,10 +437,10 @@ async def write_stream(self, write_cap, start_index, payload, window=0):
         if exc:
             raise exc
         raise Exception(f"write_stream failed: {thin_client_error_to_string(error_code)}")
-    return reply.get("next_message_box_index")
+    return reply.get("write_cap")
 
 
-async def read_stream(self, read_cap, start_index, box_count, window=0):
+async def read_stream(self, read_cap, box_count, window=0):
     """
     Reads ``box_count`` sequential boxes from a channel using the daemon's
     windowed selective-ack (SACK) ARQ, the read counterpart of
@@ -454,21 +449,20 @@ async def read_stream(self, read_cap, start_index, box_count, window=0):
     daemon to choose a default.
 
     Args:
-        read_cap: Read capability for the source channel.
-        start_index: Message box index of the first box read.
+        read_cap: Read capability for the source channel, carrying the
+            position of the first box read.
         box_count: Number of sequential boxes to read.
         window: Maximum boxes in flight at once (0 = daemon default).
 
     Returns:
-        A tuple ``(payload, next_message_box_index)``: the concatenation of the
-        decrypted boxes in order, and the index immediately after the last box.
+        A tuple ``(payload, read_cap)``: the concatenation of the decrypted
+        boxes in order, and the read capability advanced past the last box.
     """
     query_id = self.new_query_id()
     request = {
         "read_stream": {
             "query_id": query_id,
             "read_cap": read_cap,
-            "start_index": start_index,
             "box_count": box_count,
             "window": window,
         }
@@ -480,14 +474,13 @@ async def read_stream(self, read_cap, start_index, box_count, window=0):
         if exc:
             raise exc
         raise Exception(f"read_stream failed: {thin_client_error_to_string(error_code)}")
-    return reply.get("payload", b""), reply.get("next_message_box_index")
+    return reply.get("payload", b""), reply.get("read_cap")
 
 
 async def start_resending_encrypted_message_return_box_exists(
     self,
     read_cap: "bytes|None",
     write_cap: "bytes|None",
-    message_box_index: "bytes|None",
     reply_index: "int|None",
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
@@ -515,7 +508,6 @@ async def start_resending_encrypted_message_return_box_exists(
     Args:
         read_cap: Read capability (can be None for write operations, required for reads).
         write_cap: Write capability (can be None for read operations, required for writes).
-        message_box_index: Current message box index being operated on (required for reads).
         reply_index: Index of the reply to use (typically 0 or 1).
         envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
         message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
@@ -531,14 +523,13 @@ async def start_resending_encrypted_message_return_box_exists(
     Example:
         >>> try:
         ...     await client.start_resending_encrypted_message_return_box_exists(
-        ...         None, write_cap, None, None, env_desc, ciphertext, env_hash)
+        ...         None, write_cap, None, env_desc, ciphertext, env_hash)
         ... except BoxAlreadyExistsError:
         ...     print("Box already has data; write was idempotent")
     """
     return await self.start_resending_encrypted_message(
         read_cap=read_cap,
         write_cap=write_cap,
-        message_box_index=message_box_index,
         reply_index=reply_index,
         envelope_descriptor=envelope_descriptor,
         message_ciphertext=message_ciphertext,
@@ -551,7 +542,6 @@ async def start_resending_encrypted_message_no_retry(
     self,
     read_cap: "bytes|None",
     write_cap: "bytes|None",
-    message_box_index: "bytes|None",
     reply_index: "int|None",
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
@@ -575,7 +565,6 @@ async def start_resending_encrypted_message_no_retry(
     Args:
         read_cap: Read capability (can be None for write operations, required for reads).
         write_cap: Write capability (can be None for read operations, required for writes).
-        message_box_index: Current message box index being operated on (required for reads).
         reply_index: Index of the reply to use (typically 0 or 1).
         envelope_descriptor: Serialized envelope descriptor for MKEM decryption.
         message_ciphertext: MKEM-encrypted message to send (from encrypt_read or encrypt_write).
@@ -591,14 +580,13 @@ async def start_resending_encrypted_message_no_retry(
     Example:
         >>> try:
         ...     result = await client.start_resending_encrypted_message_no_retry(
-        ...         read_cap, None, message_box_index, reply_idx, env_desc, ciphertext, env_hash)
+        ...         read_cap, None, reply_idx, env_desc, ciphertext, env_hash)
         ... except BoxIDNotFoundError:
         ...     print("Box not found; message not yet written")
     """
     return await self.start_resending_encrypted_message(
         read_cap=read_cap,
         write_cap=write_cap,
-        message_box_index=message_box_index,
         reply_index=reply_index,
         envelope_descriptor=envelope_descriptor,
         message_ciphertext=message_ciphertext,
@@ -870,7 +858,6 @@ async def create_courier_envelopes_from_payload(
     self,
     payload: bytes,
     dest_write_cap: bytes,
-    dest_start_index: bytes,
     is_start: bool,
     is_last: bool
 ) -> "CreateEnvelopesResult":
@@ -893,17 +880,18 @@ async def create_courier_envelopes_from_payload(
     destination box.
 
     Multiple calls can target the same destination stream by passing
-    ``next_dest_index`` from the previous result as ``dest_start_index``.
+    ``dest_write_cap`` from the previous result as ``dest_write_cap``.
 
     Args:
         payload: The data to be encoded into courier envelopes (max 10MB).
-        dest_write_cap: Write capability for the destination channel.
-        dest_start_index: Starting index in the destination channel.
+        dest_write_cap: Write capability for the destination channel, carrying
+            the starting position.
         is_start: Whether this is the first call (sets IsStart flag on first element).
         is_last: Whether this is the last call (sets IsFinal flag on last element).
 
     Returns:
-        CreateEnvelopesResult: Contains envelopes and next_dest_index.
+        CreateEnvelopesResult: Contains envelopes and dest_write_cap (advanced
+            past the boxes consumed by this call).
 
     Raises:
         Exception: If the envelope creation fails.
@@ -915,7 +903,6 @@ async def create_courier_envelopes_from_payload(
             "query_id": query_id,
             "payload": payload,
             "dest_write_cap": dest_write_cap,
-            "dest_start_index": dest_start_index,
             "is_start": is_start,
             "is_last": is_last
         }
@@ -933,7 +920,7 @@ async def create_courier_envelopes_from_payload(
 
     return CreateEnvelopesResult(
         envelopes=reply.get("envelopes", []),
-        next_dest_index=reply.get("next_dest_index", None)
+        dest_write_cap=reply.get("dest_write_cap", None)
     )
 
 
@@ -960,8 +947,8 @@ async def create_courier_envelopes_from_multi_payload(
     Args:
         destinations: List of destination payloads, each a dict with:
                      - "payload": bytes - The data to be written
-                     - "write_cap": bytes - Write capability for destination
-                     - "start_index": bytes - Starting index in destination
+                     - "write_cap": bytes - Write capability for destination,
+                       carrying the starting position
         is_start: Whether this is the first call in the sequence.
                  When True, the first CopyStreamElement will have IsStart=true.
         is_last: Whether this is the last set of payloads in the sequence.
@@ -976,8 +963,8 @@ async def create_courier_envelopes_from_multi_payload(
 
     Example:
         >>> destinations = [
-        ...     {"payload": data1, "write_cap": cap1, "start_index": idx1},
-        ...     {"payload": data2, "write_cap": cap2, "start_index": idx2},
+        ...     {"payload": data1, "write_cap": cap1},
+        ...     {"payload": data2, "write_cap": cap2},
         ... ]
         >>> result = await client.create_courier_envelopes_from_multi_payload(
         ...     destinations, is_start=True, is_last=False)
@@ -1013,7 +1000,7 @@ async def create_courier_envelopes_from_multi_payload(
     return CreateEnvelopesResult(
         envelopes=reply.get("envelopes", []),
         buffer=reply.get("buffer", b""),
-        next_dest_indices=reply.get("next_dest_indices", None)
+        dest_write_caps=reply.get("dest_write_caps", None)
     )
 
 
@@ -1025,11 +1012,11 @@ class CreateEnvelopesResult:
     buffer: bytes = b""
     """The buffered data that hasn't been output yet. Persist this for crash recovery.
     Only populated by create_courier_envelopes_from_multi_payload."""
-    next_dest_index: "Optional[bytes]" = None
-    """The next destination message box index after all boxes consumed by this call.
+    dest_write_cap: "Optional[bytes]" = None
+    """The destination write cap advanced past all boxes consumed by this call.
     Only populated by create_courier_envelopes_from_payload."""
-    next_dest_indices: "Optional[List[bytes]]" = None
-    """The next destination indices for each destination, in request order.
+    dest_write_caps: "Optional[List[bytes]]" = None
+    """The advanced destination write caps for each destination, in request order.
     Only populated by create_courier_envelopes_from_multi_payload."""
 
 
@@ -1084,7 +1071,7 @@ async def tombstone_range(
         >>> result = await client.tombstone_range(write_cap, start_index, 10)
         >>> for envelope in result.envelopes:
         ...     await client.start_resending_encrypted_message(
-        ...         None, write_cap, None, None,
+        ...         None, write_cap, None,
         ...         envelope.envelope_descriptor,
         ...         envelope.message_ciphertext,
         ...         envelope.envelope_hash)
@@ -1100,14 +1087,14 @@ async def tombstone_range(
     envelopes = []
 
     while len(envelopes) < max_count:
-        result = await self.encrypt_write(b'', write_cap, cur)
+        result = await self.encrypt_write(b'', cur)
         envelopes.append(TombstoneEnvelope(
             message_ciphertext=result.message_ciphertext,
             envelope_descriptor=result.envelope_descriptor,
             envelope_hash=result.envelope_hash,
             box_index=cur,
         ))
-        cur = result.next_message_box_index
+        cur = result.write_cap
 
     return TombstoneRangeResult(envelopes=envelopes, next=cur)
 
@@ -1115,7 +1102,6 @@ async def tombstone_range(
 async def create_courier_envelopes_from_tombstone_range(
     self,
     dest_write_cap: bytes,
-    dest_start_index: bytes,
     max_count: int,
     is_start: bool,
     is_last: bool,
@@ -1136,22 +1122,22 @@ async def create_courier_envelopes_from_tombstone_range(
     the encoder flushes its tail.
 
     Args:
-        dest_write_cap: Write capability for the destination channel.
-        dest_start_index: Starting index in the destination channel.
+        dest_write_cap: Write capability for the destination channel, carrying
+            the starting position.
         max_count: Number of tombstones to create.
         is_start: Whether this is the first call in the sequence.
         is_last: Whether this is the last call in the sequence.
         buffer: Residual encoder buffer from a previous call, or None.
 
     Returns:
-        CreateEnvelopesResult: Contains envelopes, buffer, and next_dest_index.
+        CreateEnvelopesResult: Contains envelopes, buffer, and dest_write_cap.
 
     Raises:
         Exception: If the operation fails.
 
     Example:
         >>> result = await client.create_courier_envelopes_from_tombstone_range(
-        ...     write_cap, start_index, 10, is_start=True, is_last=True)
+        ...     write_cap, 10, is_start=True, is_last=True)
         >>> for envelope in result.envelopes:
         ...     # write envelope to temp copy stream channel
         ...     pass
@@ -1161,7 +1147,6 @@ async def create_courier_envelopes_from_tombstone_range(
     req_inner = {
         "query_id": query_id,
         "dest_write_cap": dest_write_cap,
-        "dest_start_index": dest_start_index,
         "max_count": max_count,
         "is_start": is_start,
         "is_last": is_last,
@@ -1186,7 +1171,7 @@ async def create_courier_envelopes_from_tombstone_range(
     return CreateEnvelopesResult(
         envelopes=reply.get("envelopes", []),
         buffer=reply.get("buffer", b""),
-        next_dest_index=reply.get("next_dest_index", None)
+        dest_write_cap=reply.get("dest_write_cap", None)
     )
 
 
