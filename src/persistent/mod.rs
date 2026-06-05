@@ -40,12 +40,12 @@
 //!
 //! // Sender loads a write channel
 //! let mut writer = pigeonhole
-//!     .load_write_channel("alice-to-bob", &kp.write_cap, &kp.first_message_index)?;
+//!     .load_write_channel("alice-to-bob", &kp.write_cap, &kp.write_cap)?;
 //! writer.send(b"Hello, world!").await?;
 //!
 //! // Receiver (possibly on another machine, with their own PigeonholeClient)
 //! let mut reader = pigeonhole
-//!     .load_read_channel("from-alice", &kp.read_cap, &kp.first_message_index)?;
+//!     .load_read_channel("from-alice", &kp.read_cap, &kp.read_cap)?;
 //! let message = reader.receive().await?;
 //! ```
 //!
@@ -74,4 +74,3 @@ pub use models::{
     PendingMessage, ReadChannel as ReadChannelModel, ReceivedMessage,
     WriteChannel as WriteChannelModel,
 };
-

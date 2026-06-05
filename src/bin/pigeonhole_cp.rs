@@ -177,12 +177,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Genkey { config } => run_genkey(config).await,
-        Commands::Send { config, write_cap, index, file, no_copy, sack } => {
-            run_send(config, write_cap, index, file, no_copy, sack).await
-        }
-        Commands::Receive { config, read_cap, index, dest_dir, sack } => {
-            run_receive(config, read_cap, index, dest_dir, sack).await
-        }
+        Commands::Send {
+            config,
+            write_cap,
+            index,
+            file,
+            no_copy,
+            sack,
+        } => run_send(config, write_cap, index, file, no_copy, sack).await,
+        Commands::Receive {
+            config,
+            read_cap,
+            index,
+            dest_dir,
+            sack,
+        } => run_receive(config, read_cap, index, dest_dir, sack).await,
     }
 }
 
@@ -253,10 +262,7 @@ async fn run_genkey(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}\n", BASE64.encode(&kp.read_cap));
 
     println!("Write Capability (keep secret):");
-    println!("{}\n", BASE64.encode(&kp.write_cap));
-
-    println!("First Index:");
-    println!("{}", BASE64.encode(&kp.first_message_index));
+    println!("{}", BASE64.encode(&kp.write_cap));
 
     Ok(())
 }
@@ -291,7 +297,10 @@ async fn run_send(
     }
     let total_len = meta.len();
     let file_name = strip_for_send(&input_file)?;
-    let header = serde_cbor::to_vec(&FileMetaData { name: file_name, size: total_len })?;
+    let header = serde_cbor::to_vec(&FileMetaData {
+        name: file_name,
+        size: total_len,
+    })?;
 
     let client = init_client(config).await?;
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
@@ -299,10 +308,24 @@ async fn run_send(
     // --no-copy chooses direct-vs-copy; --sack chooses the windowed ARQ over
     // per-box stop-and-wait. The four combinations are all valid.
     match (no_copy, sack) {
-        (true, true) => send_sack(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
-        (true, false) => send_direct(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
-        (false, true) => send_sack_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
-        (false, false) => send_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
+        (true, true) => send_sack(&pigeonhole, &next_index, &input_file, total_len, &header).await,
+        (true, false) => {
+            send_direct(
+                &pigeonhole,
+                &write_cap,
+                &next_index,
+                &input_file,
+                total_len,
+                &header,
+            )
+            .await
+        }
+        (false, true) => {
+            send_sack_copy(&pigeonhole, &next_index, &input_file, total_len, &header).await
+        }
+        (false, false) => {
+            send_copy(&pigeonhole, &next_index, &input_file, total_len, &header).await
+        }
     }
 }
 
@@ -313,8 +336,7 @@ async fn run_send(
 /// the same stream the per-box `send_copy` builds, only windowed.
 async fn send_sack_copy(
     pigeonhole: &PigeonholeClient,
-    dest_write_cap: &[u8],
-    dest_index: &[u8],
+    dest_cap: &[u8],
     input_file: &Path,
     total_len: u64,
     header: &[u8],
@@ -332,9 +354,10 @@ async fn send_sack_copy(
 
     // Encode the payload into copy-stream elements addressed at the
     // destination, then concatenate them into the byte stream the temp
-    // channel must carry.
+    // channel must carry. `dest_cap` is the destination write cap
+    // positioned at the box to write; it carries its own box position.
     let result = client
-        .create_courier_envelopes_from_payload(&payload, dest_write_cap, dest_index, true, true)
+        .create_courier_envelopes_from_payload(&payload, dest_cap, true, true)
         .await?;
     let element_count = result.envelopes.len();
     let mut stream = Vec::new();
@@ -346,14 +369,15 @@ async fn send_sack_copy(
     let boxes = stream.len().div_ceil(box_payload_size - 4);
 
     let start = std::time::Instant::now();
-    client
-        .write_stream(&kp.write_cap, &kp.first_message_index, &stream, 0)
-        .await?;
+    client.write_stream(&kp.write_cap, &stream, 0).await?;
     client
         .start_resending_copy_command(&kp.write_cap, None, None)
         .await?;
     print_throughput("sack-copy", total_len, boxes, start.elapsed());
-    println!("(staged {} copy-stream elements via temp channel, then COPY)", element_count);
+    println!(
+        "(staged {} copy-stream elements via temp channel, then COPY)",
+        element_count
+    );
     Ok(())
 }
 
@@ -364,7 +388,6 @@ async fn send_sack_copy(
 async fn send_sack(
     pigeonhole: &PigeonholeClient,
     write_cap: &[u8],
-    next_index: &[u8],
     input_file: &Path,
     total_len: u64,
     header: &[u8],
@@ -383,7 +406,7 @@ async fn send_sack(
     let start = std::time::Instant::now();
     pigeonhole
         .thin_client()
-        .write_stream(write_cap, next_index, &payload, 0)
+        .write_stream(write_cap, &payload, 0)
         .await?;
     print_throughput("sack", total_len, boxes, start.elapsed());
     Ok(())
@@ -453,7 +476,6 @@ async fn send_direct(
 /// for chunking onto a temp channel, then dispatch via the courier.
 async fn send_copy(
     pigeonhole: &PigeonholeClient,
-    write_cap: &[u8],
     next_index: &[u8],
     input_file: &Path,
     total_len: u64,
@@ -477,7 +499,7 @@ async fn send_copy(
 
     let start = std::time::Instant::now();
     let mut builder = pigeonhole.copy_stream_builder().await?;
-    builder.add_payload(&payload, write_cap, next_index, true).await?;
+    builder.add_payload(&payload, next_index, true).await?;
     let boxes = builder.finish().await?;
 
     print_throughput("copy", total_len, boxes as usize, start.elapsed());
@@ -490,7 +512,11 @@ async fn send_copy(
 fn print_throughput(mode: &str, bytes: u64, boxes: usize, elapsed: std::time::Duration) {
     let secs = elapsed.as_secs_f64();
     let boxes_per_sec = if secs > 0.0 { boxes as f64 / secs } else { 0.0 };
-    let kib_per_sec = if secs > 0.0 { (bytes as f64 / secs) / 1024.0 } else { 0.0 };
+    let kib_per_sec = if secs > 0.0 {
+        (bytes as f64 / secs) / 1024.0
+    } else {
+        0.0
+    };
     println!(
         "sent {} bytes in {} box(es) ({}) in {:.3}s: {:.2} boxes/s, {:.1} KiB/s",
         bytes, boxes, mode, secs, boxes_per_sec, kib_per_sec
@@ -534,12 +560,11 @@ async fn run_receive(
     let client = init_client(config).await?;
 
     if sack {
-        return run_receive_sack(client, &read_cap, &next_index, dest_dir).await;
+        return run_receive_sack(client, &next_index, dest_dir).await;
     }
 
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
-    let mut reader =
-        pigeonhole.load_read_channel("pigeonhole-cp", &read_cap, &next_index)?;
+    let mut reader = pigeonhole.load_read_channel("pigeonhole-cp", &read_cap, &next_index)?;
 
     // First box: decode the CBOR header, then treat the rest of the same
     // plaintext as the start of the file payload. `from_reader`/`from_slice`
@@ -592,13 +617,12 @@ async fn run_receive(
 /// The daemon computes the window itself from the PKI document.
 async fn run_receive_sack(
     client: Arc<ThinClient>,
-    read_cap: &[u8],
     start_index: &[u8],
     dest_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
 
-    let (first, second_index) = client.read_stream(read_cap, start_index, 1, 0).await?;
+    let (first, second_index) = client.read_stream(start_index, 1, 0).await?;
     let mut deserializer = serde_cbor::Deserializer::from_slice(&first);
     let metadata = FileMetaData::deserialize(&mut deserializer)?;
     let header_end = deserializer.byte_offset();
@@ -611,7 +635,7 @@ async fn run_receive_sack(
     file_bytes.extend_from_slice(&first[header_end..]);
     if total_boxes > 1 {
         let (rest, _next) = client
-            .read_stream(read_cap, &second_index, (total_boxes - 1) as u32, 0)
+            .read_stream(&second_index, (total_boxes - 1) as u32, 0)
             .await?;
         file_bytes.extend_from_slice(&rest);
     }

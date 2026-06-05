@@ -12,13 +12,13 @@ use std::sync::Arc;
 
 use rand::RngCore;
 
-use crate::core::ThinClient;
-use crate::pigeonhole::{KeypairResult, TombstoneRangeResult};
 use super::db::Database;
 use super::error::{PigeonholeDbError, Result};
 use super::models::{
     ReadChannel as ReadChannelModel, ReceivedMessage, WriteChannel as WriteChannelModel,
 };
+use crate::core::ThinClient;
+use crate::pigeonhole::{KeypairResult, TombstoneRangeResult};
 
 /// High-level pigeonhole client with database persistence.
 pub struct PigeonholeClient {
@@ -50,9 +50,10 @@ impl PigeonholeClient {
 
     /// Load an owned write channel from previously-issued capability material.
     ///
-    /// `next_index` is the message box index to use for the next write —
-    /// either `first_message_index` from `new_keypair` for a fresh channel,
-    /// or a saved cursor from a prior session for resume.
+    /// `next_index` is the write cap positioned at the next box to write —
+    /// either `write_cap` from `new_keypair` for a fresh channel (the cap
+    /// embeds its first box position), or a saved advanced cap from a prior
+    /// session for resume.
     pub fn load_write_channel(
         &self,
         name: &str,
@@ -60,13 +61,21 @@ impl PigeonholeClient {
         next_index: &[u8],
     ) -> Result<WriteChannel> {
         let model = self.db.create_write_channel(name, write_cap, next_index)?;
-        Ok(WriteChannel { model, client: self.client.clone(), db: self.db.clone() })
+        Ok(WriteChannel {
+            model,
+            client: self.client.clone(),
+            db: self.db.clone(),
+        })
     }
 
     /// Get an existing write channel by name.
     pub fn get_write_channel(&self, name: &str) -> Result<WriteChannel> {
         let model = self.db.get_write_channel(name)?;
-        Ok(WriteChannel { model, client: self.client.clone(), db: self.db.clone() })
+        Ok(WriteChannel {
+            model,
+            client: self.client.clone(),
+            db: self.db.clone(),
+        })
     }
 
     /// List all stored write channels.
@@ -85,9 +94,10 @@ impl PigeonholeClient {
 
     /// Load a read channel from previously-issued capability material.
     ///
-    /// `next_index` is the message box index to use for the next read —
-    /// either `first_message_index` from `new_keypair` for a fresh channel,
-    /// or a saved cursor from a prior session for resume.
+    /// `next_index` is the read cap positioned at the next box to read —
+    /// either `read_cap` from `new_keypair` for a fresh channel (the cap
+    /// embeds its first box position), or a saved advanced cap from a prior
+    /// session for resume.
     pub fn load_read_channel(
         &self,
         name: &str,
@@ -95,13 +105,21 @@ impl PigeonholeClient {
         next_index: &[u8],
     ) -> Result<ReadChannel> {
         let model = self.db.create_read_channel(name, read_cap, next_index)?;
-        Ok(ReadChannel { model, client: self.client.clone(), db: self.db.clone() })
+        Ok(ReadChannel {
+            model,
+            client: self.client.clone(),
+            db: self.db.clone(),
+        })
     }
 
     /// Get an existing read channel by name.
     pub fn get_read_channel(&self, name: &str) -> Result<ReadChannel> {
         let model = self.db.get_read_channel(name)?;
-        Ok(ReadChannel { model, client: self.client.clone(), db: self.db.clone() })
+        Ok(ReadChannel {
+            model,
+            client: self.client.clone(),
+            db: self.db.clone(),
+        })
     }
 
     /// List all stored read channels.
@@ -158,18 +176,15 @@ impl WriteChannel {
     // Low-Level Box Operations (caller-supplied index, no state advancement)
     // ------------------------------------------------------------------------
 
-    /// Write a single box at a specific index. Does NOT advance `next_index`.
-    pub async fn write_box(&self, plaintext: &[u8], box_index: &[u8]) -> Result<Vec<u8>> {
-        let result = self
-            .client
-            .encrypt_write(plaintext, &self.model.write_cap, box_index)
-            .await?;
+    /// Write a single box at the position carried by `box_cap`. Does NOT advance
+    /// the channel's `next_index`. Returns the cap advanced one box.
+    pub async fn write_box(&self, plaintext: &[u8], box_cap: &[u8]) -> Result<Vec<u8>> {
+        let result = self.client.encrypt_write(plaintext, box_cap).await?;
 
         self.client
             .start_resending_encrypted_message(
                 None,
-                Some(&self.model.write_cap),
-                None,
+                Some(box_cap),
                 Some(0),
                 &result.envelope_descriptor,
                 &result.message_ciphertext,
@@ -177,7 +192,7 @@ impl WriteChannel {
             )
             .await?;
 
-        Ok(result.next_message_box_index)
+        Ok(result.write_cap)
     }
 
     /// Write a single box, returning `BoxAlreadyExists` rather than treating
@@ -185,18 +200,14 @@ impl WriteChannel {
     pub async fn write_box_return_box_exists(
         &self,
         plaintext: &[u8],
-        box_index: &[u8],
+        box_cap: &[u8],
     ) -> Result<Vec<u8>> {
-        let result = self
-            .client
-            .encrypt_write(plaintext, &self.model.write_cap, box_index)
-            .await?;
+        let result = self.client.encrypt_write(plaintext, box_cap).await?;
 
         self.client
             .start_resending_encrypted_message_return_box_exists(
                 None,
-                Some(&self.model.write_cap),
-                None,
+                Some(box_cap),
                 Some(0),
                 &result.envelope_descriptor,
                 &result.message_ciphertext,
@@ -204,7 +215,7 @@ impl WriteChannel {
             )
             .await?;
 
-        Ok(result.next_message_box_index)
+        Ok(result.write_cap)
     }
 
     // ------------------------------------------------------------------------
@@ -215,7 +226,7 @@ impl WriteChannel {
     pub async fn send(&mut self, plaintext: &[u8]) -> Result<()> {
         let encrypt_result = self
             .client
-            .encrypt_write(plaintext, &self.model.write_cap, &self.model.next_index)
+            .encrypt_write(plaintext, &self.model.next_index)
             .await?;
 
         let pending = self.db.create_pending_message(
@@ -227,14 +238,14 @@ impl WriteChannel {
             &self.model.next_index,
         )?;
 
-        self.db.update_pending_message_status(pending.id, "sending")?;
+        self.db
+            .update_pending_message_status(pending.id, "sending")?;
 
         let result = self
             .client
             .start_resending_encrypted_message(
                 None,
-                Some(&self.model.write_cap),
-                None,
+                Some(&self.model.next_index),
                 Some(0),
                 &encrypt_result.envelope_descriptor,
                 &encrypt_result.message_ciphertext,
@@ -244,14 +255,15 @@ impl WriteChannel {
 
         match result {
             Ok(_) => {
-                let next = encrypt_result.next_message_box_index;
+                let next = encrypt_result.write_cap;
                 self.db.update_write_next_index(self.model.id, &next)?;
                 self.db.delete_pending_message(pending.id)?;
                 self.model.next_index = next;
                 Ok(())
             }
             Err(e) => {
-                self.db.update_pending_message_status(pending.id, "failed")?;
+                self.db
+                    .update_pending_message_status(pending.id, "failed")?;
                 Err(e.into())
             }
         }
@@ -262,7 +274,7 @@ impl WriteChannel {
     pub async fn send_return_box_exists(&mut self, plaintext: &[u8]) -> Result<()> {
         let encrypt_result = self
             .client
-            .encrypt_write(plaintext, &self.model.write_cap, &self.model.next_index)
+            .encrypt_write(plaintext, &self.model.next_index)
             .await?;
 
         let pending = self.db.create_pending_message(
@@ -274,14 +286,14 @@ impl WriteChannel {
             &self.model.next_index,
         )?;
 
-        self.db.update_pending_message_status(pending.id, "sending")?;
+        self.db
+            .update_pending_message_status(pending.id, "sending")?;
 
         let result = self
             .client
             .start_resending_encrypted_message_return_box_exists(
                 None,
-                Some(&self.model.write_cap),
-                None,
+                Some(&self.model.next_index),
                 Some(0),
                 &encrypt_result.envelope_descriptor,
                 &encrypt_result.message_ciphertext,
@@ -291,14 +303,15 @@ impl WriteChannel {
 
         match result {
             Ok(_) => {
-                let next = encrypt_result.next_message_box_index;
+                let next = encrypt_result.write_cap;
                 self.db.update_write_next_index(self.model.id, &next)?;
                 self.db.delete_pending_message(pending.id)?;
                 self.model.next_index = next;
                 Ok(())
             }
             Err(e) => {
-                self.db.update_pending_message_status(pending.id, "failed")?;
+                self.db
+                    .update_pending_message_status(pending.id, "failed")?;
                 Err(e.into())
             }
         }
@@ -312,14 +325,13 @@ impl WriteChannel {
     pub async fn tombstone_current(&mut self) -> Result<()> {
         let encrypt_result = self
             .client
-            .encrypt_write(&[], &self.model.write_cap, &self.model.next_index)
+            .encrypt_write(&[], &self.model.next_index)
             .await?;
 
         self.client
             .start_resending_encrypted_message(
                 None,
-                Some(&self.model.write_cap),
-                None,
+                Some(&self.model.next_index),
                 None,
                 &encrypt_result.envelope_descriptor,
                 &encrypt_result.message_ciphertext,
@@ -327,7 +339,7 @@ impl WriteChannel {
             )
             .await?;
 
-        let next = encrypt_result.next_message_box_index;
+        let next = encrypt_result.write_cap;
         self.db.update_write_next_index(self.model.id, &next)?;
         self.model.next_index = next;
         Ok(())
@@ -338,7 +350,7 @@ impl WriteChannel {
     pub async fn tombstone_range(&mut self, count: u32) -> Result<u32> {
         let result: TombstoneRangeResult = self
             .client
-            .tombstone_range(&self.model.write_cap, &self.model.next_index, count)
+            .tombstone_range(&self.model.next_index, count)
             .await;
 
         let mut sent = 0u32;
@@ -350,8 +362,7 @@ impl WriteChannel {
                 .client
                 .start_resending_encrypted_message(
                     None,
-                    Some(&self.model.write_cap),
-                    None,
+                    Some(&envelope.box_cap),
                     None,
                     &envelope.envelope_descriptor,
                     &envelope.message_ciphertext,
@@ -363,8 +374,8 @@ impl WriteChannel {
                 Err(e) => {
                     if sent > 0 {
                         self.db
-                            .update_write_next_index(self.model.id, &envelope.box_index)?;
-                        self.model.next_index = envelope.box_index.clone();
+                            .update_write_next_index(self.model.id, &envelope.box_cap)?;
+                        self.model.next_index = envelope.box_cap.clone();
                     }
                     return Err(e.into());
                 }
@@ -372,24 +383,22 @@ impl WriteChannel {
         }
 
         if sent > 0 {
-            self.db.update_write_next_index(self.model.id, &result.next)?;
-            self.model.next_index = result.next;
+            self.db
+                .update_write_next_index(self.model.id, &result.next_cap)?;
+            self.model.next_index = result.next_cap;
         }
         Ok(sent)
     }
 
-    /// Tombstone a specific box without affecting the channel's `next_index`.
-    pub async fn tombstone_at(&self, box_index: &[u8]) -> Result<()> {
-        let encrypt_result = self
-            .client
-            .encrypt_write(&[], &self.model.write_cap, box_index)
-            .await?;
+    /// Tombstone the box carried by `box_cap` without affecting the channel's
+    /// `next_index`.
+    pub async fn tombstone_at(&self, box_cap: &[u8]) -> Result<()> {
+        let encrypt_result = self.client.encrypt_write(&[], box_cap).await?;
 
         self.client
             .start_resending_encrypted_message(
                 None,
-                Some(&self.model.write_cap),
-                None,
+                Some(box_cap),
                 None,
                 &encrypt_result.envelope_descriptor,
                 &encrypt_result.message_ciphertext,
@@ -400,13 +409,10 @@ impl WriteChannel {
         Ok(())
     }
 
-    /// Tombstone up to `count` boxes from `start_index` without affecting
+    /// Tombstone up to `count` boxes from `start_cap` without affecting
     /// the channel's `next_index`.
-    pub async fn tombstone_from(&self, start_index: &[u8], count: u32) -> Result<u32> {
-        let result: TombstoneRangeResult = self
-            .client
-            .tombstone_range(&self.model.write_cap, start_index, count)
-            .await;
+    pub async fn tombstone_from(&self, start_cap: &[u8], count: u32) -> Result<u32> {
+        let result: TombstoneRangeResult = self.client.tombstone_range(start_cap, count).await;
 
         let mut sent = 0u32;
         for envelope in &result.envelopes {
@@ -417,8 +423,7 @@ impl WriteChannel {
                 .client
                 .start_resending_encrypted_message(
                     None,
-                    Some(&self.model.write_cap),
-                    None,
+                    Some(&envelope.box_cap),
                     None,
                     &envelope.envelope_descriptor,
                     &envelope.message_ciphertext,
@@ -449,14 +454,20 @@ impl WriteChannel {
         courier_queue_id: Option<&[u8]>,
     ) -> Result<()> {
         self.client
-            .start_resending_copy_command(&self.model.write_cap, courier_identity_hash, courier_queue_id)
+            .start_resending_copy_command(
+                &self.model.write_cap,
+                courier_identity_hash,
+                courier_queue_id,
+            )
             .await?;
         Ok(())
     }
 
     /// Cancel a Copy command in progress by write-cap hash.
     pub async fn cancel_copy(&self, write_cap_hash: &[u8; 32]) -> Result<()> {
-        self.client.cancel_resending_copy_command(write_cap_hash).await?;
+        self.client
+            .cancel_resending_copy_command(write_cap_hash)
+            .await?;
         Ok(())
     }
 }
@@ -496,19 +507,16 @@ impl ReadChannel {
     // Low-Level Box Operations (caller-supplied index, no state advancement)
     // ------------------------------------------------------------------------
 
-    /// Read a single box at a specific index. Does NOT advance `next_index`.
-    pub async fn read_box(&self, box_index: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        let encrypt_result = self
-            .client
-            .encrypt_read(&self.model.read_cap, box_index)
-            .await?;
+    /// Read a single box at the position carried by `box_cap`. Does NOT advance
+    /// the channel's `next_index`. Returns the plaintext and the cap advanced one box.
+    pub async fn read_box(&self, box_cap: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        let encrypt_result = self.client.encrypt_read(box_cap).await?;
 
         let result = self
             .client
             .start_resending_encrypted_message(
-                Some(&self.model.read_cap),
+                Some(box_cap),
                 None,
-                Some(box_index),
                 Some(0),
                 &encrypt_result.envelope_descriptor,
                 &encrypt_result.message_ciphertext,
@@ -516,23 +524,19 @@ impl ReadChannel {
             )
             .await?;
 
-        Ok((result.plaintext, encrypt_result.next_message_box_index))
+        Ok((result.plaintext, encrypt_result.read_cap))
     }
 
     /// Like `read_box`, but returns `BoxIDNotFound` immediately rather than
     /// retrying through replication lag.
-    pub async fn read_box_no_retry(&self, box_index: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        let encrypt_result = self
-            .client
-            .encrypt_read(&self.model.read_cap, box_index)
-            .await?;
+    pub async fn read_box_no_retry(&self, box_cap: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        let encrypt_result = self.client.encrypt_read(box_cap).await?;
 
         let result = self
             .client
             .start_resending_encrypted_message_no_retry(
-                Some(&self.model.read_cap),
+                Some(box_cap),
                 None,
-                Some(box_index),
                 Some(0),
                 &encrypt_result.envelope_descriptor,
                 &encrypt_result.message_ciphertext,
@@ -540,7 +544,7 @@ impl ReadChannel {
             )
             .await?;
 
-        Ok((result.plaintext, encrypt_result.next_message_box_index))
+        Ok((result.plaintext, encrypt_result.read_cap))
     }
 
     // ------------------------------------------------------------------------
@@ -549,18 +553,14 @@ impl ReadChannel {
 
     /// Receive the next message from the channel's `next_index`, advancing state on success.
     pub async fn receive(&mut self) -> Result<Vec<u8>> {
-        let encrypt_result = self
-            .client
-            .encrypt_read(&self.model.read_cap, &self.model.next_index)
-            .await?;
+        let current_cap = self.model.next_index.clone();
+        let encrypt_result = self.client.encrypt_read(&current_cap).await?;
 
-        let current_index = self.model.next_index.clone();
         let result = self
             .client
             .start_resending_encrypted_message(
-                Some(&self.model.read_cap),
+                Some(&current_cap),
                 None,
-                Some(&current_index),
                 Some(0),
                 &encrypt_result.envelope_descriptor,
                 &encrypt_result.message_ciphertext,
@@ -569,9 +569,9 @@ impl ReadChannel {
             .await?;
 
         self.db
-            .create_received_message(self.model.id, &result.plaintext, &current_index)?;
+            .create_received_message(self.model.id, &result.plaintext, &current_cap)?;
 
-        let next = encrypt_result.next_message_box_index;
+        let next = encrypt_result.read_cap;
         self.db.update_read_next_index(self.model.id, &next)?;
         self.model.next_index = next;
 
@@ -581,18 +581,14 @@ impl ReadChannel {
     /// Like `receive`, but returns `BoxIDNotFound` immediately rather than
     /// retrying through replication lag.
     pub async fn receive_no_retry(&mut self) -> Result<Vec<u8>> {
-        let encrypt_result = self
-            .client
-            .encrypt_read(&self.model.read_cap, &self.model.next_index)
-            .await?;
+        let current_cap = self.model.next_index.clone();
+        let encrypt_result = self.client.encrypt_read(&current_cap).await?;
 
-        let current_index = self.model.next_index.clone();
         let result = self
             .client
             .start_resending_encrypted_message_no_retry(
-                Some(&self.model.read_cap),
+                Some(&current_cap),
                 None,
-                Some(&current_index),
                 Some(0),
                 &encrypt_result.envelope_descriptor,
                 &encrypt_result.message_ciphertext,
@@ -601,9 +597,9 @@ impl ReadChannel {
             .await?;
 
         self.db
-            .create_received_message(self.model.id, &result.plaintext, &current_index)?;
+            .create_received_message(self.model.id, &result.plaintext, &current_cap)?;
 
-        let next = encrypt_result.next_message_box_index;
+        let next = encrypt_result.read_cap;
         self.db.update_read_next_index(self.model.id, &next)?;
         self.model.next_index = next;
 
@@ -642,13 +638,18 @@ impl CopyStreamBuilder {
     async fn new(client: Arc<ThinClient>) -> Result<Self> {
         let mut seed = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut seed);
-        let KeypairResult { write_cap: temp_write_cap, read_cap: _, first_message_index: temp_first_index } =
-            client.new_keypair(&seed).await?;
+        let KeypairResult {
+            write_cap: temp_write_cap,
+            read_cap: _,
+        } = client.new_keypair(&seed).await?;
 
         Ok(Self {
             client,
+            // The temp stream's evolving cap starts at the root cap (box 0), which
+            // also carries the first index. temp_write_cap stays the root so the
+            // Copy command reads the temp stream from its start.
+            temp_index: temp_write_cap.clone(),
             temp_write_cap,
-            temp_index: temp_first_index,
             total_boxes: 0,
             buffer: Vec::new(),
         })
@@ -658,28 +659,23 @@ impl CopyStreamBuilder {
         &mut self,
         payload: &[u8],
         dest_write_cap: &[u8],
-        dest_start_index: &[u8],
         is_last: bool,
     ) -> Result<usize> {
         let is_start = self.total_boxes == 0;
         let result = self
             .client
-            .create_courier_envelopes_from_payload(payload, dest_write_cap, dest_start_index, is_start, is_last)
+            .create_courier_envelopes_from_payload(payload, dest_write_cap, is_start, is_last)
             .await?;
 
         let chunk_count = result.envelopes.len();
 
         for chunk in result.envelopes {
-            let encrypt_result = self
-                .client
-                .encrypt_write(&chunk, &self.temp_write_cap, &self.temp_index)
-                .await?;
+            let encrypt_result = self.client.encrypt_write(&chunk, &self.temp_index).await?;
 
             self.client
                 .start_resending_encrypted_message(
                     None,
-                    Some(&self.temp_write_cap),
-                    None,
+                    Some(&self.temp_index),
                     Some(0),
                     &encrypt_result.envelope_descriptor,
                     &encrypt_result.message_ciphertext,
@@ -687,7 +683,7 @@ impl CopyStreamBuilder {
                 )
                 .await?;
 
-            self.temp_index = encrypt_result.next_message_box_index;
+            self.temp_index = encrypt_result.write_cap;
         }
 
         self.total_boxes += chunk_count;
@@ -696,7 +692,7 @@ impl CopyStreamBuilder {
 
     pub async fn add_multi_payload(
         &mut self,
-        destinations: Vec<(&[u8], &[u8], &[u8])>,
+        destinations: Vec<(&[u8], &[u8])>,
         is_last: bool,
     ) -> Result<usize> {
         if destinations.is_empty() {
@@ -704,7 +700,11 @@ impl CopyStreamBuilder {
         }
 
         let is_start = self.total_boxes == 0;
-        let buf = if self.buffer.is_empty() { None } else { Some(self.buffer.clone()) };
+        let buf = if self.buffer.is_empty() {
+            None
+        } else {
+            Some(self.buffer.clone())
+        };
         let result = self
             .client
             .create_courier_envelopes_from_multi_payload(destinations, is_start, is_last, buf)
@@ -714,16 +714,12 @@ impl CopyStreamBuilder {
         self.buffer = result.buffer;
 
         for chunk in result.envelopes {
-            let encrypt_result = self
-                .client
-                .encrypt_write(&chunk, &self.temp_write_cap, &self.temp_index)
-                .await?;
+            let encrypt_result = self.client.encrypt_write(&chunk, &self.temp_index).await?;
 
             self.client
                 .start_resending_encrypted_message(
                     None,
-                    Some(&self.temp_write_cap),
-                    None,
+                    Some(&self.temp_index),
                     Some(0),
                     &encrypt_result.envelope_descriptor,
                     &encrypt_result.message_ciphertext,
@@ -731,7 +727,7 @@ impl CopyStreamBuilder {
                 )
                 .await?;
 
-            self.temp_index = encrypt_result.next_message_box_index;
+            self.temp_index = encrypt_result.write_cap;
         }
 
         self.total_boxes += chunk_count;

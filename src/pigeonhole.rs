@@ -7,13 +7,13 @@
 //! including key generation, encryption, and ARQ (Automatic Repeat Request)
 //! for reliable message delivery to the courier.
 
-use std::collections::BTreeMap;
-use serde_cbor::Value;
-use log::debug;
 use blake2::{Blake2b, Digest, digest::consts::U32};
+use log::debug;
+use serde_cbor::Value;
+use std::collections::BTreeMap;
 
-use crate::error::{ThinClientError, error_code_to_error};
 use crate::core::ThinClient;
+use crate::error::{ThinClientError, error_code_to_error};
 
 // ========================================================================
 // Helper module for serializing Option<Vec<u8>> as CBOR byte strings
@@ -63,21 +63,17 @@ struct NewKeypairReply {
     write_cap: Option<Vec<u8>>,
     #[serde(default, with = "optional_bytes")]
     read_cap: Option<Vec<u8>>,
-    #[serde(default, with = "optional_bytes")]
-    first_message_index: Option<Vec<u8>>,
     #[serde(default)]
     error_code: u8,
 }
 
-/// Request to encrypt a read operation.
+/// Request to encrypt a read operation. The read cap carries the box position.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EncryptReadRequest {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
     #[serde(with = "serde_bytes")]
     read_cap: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    message_box_index: Vec<u8>,
 }
 
 /// Reply containing the encrypted read operation.
@@ -92,12 +88,12 @@ struct EncryptReadReply {
     #[serde(default, with = "optional_bytes")]
     envelope_hash: Option<Vec<u8>>,
     #[serde(default, with = "optional_bytes")]
-    next_message_box_index: Option<Vec<u8>>,
+    read_cap: Option<Vec<u8>>,
     #[serde(default)]
     error_code: u8,
 }
 
-/// Request to encrypt a write operation.
+/// Request to encrypt a write operation. The write cap carries the box position.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EncryptWriteRequest {
     #[serde(with = "serde_bytes")]
@@ -106,8 +102,6 @@ struct EncryptWriteRequest {
     plaintext: Vec<u8>,
     #[serde(with = "serde_bytes")]
     write_cap: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    message_box_index: Vec<u8>,
 }
 
 /// Reply containing the encrypted write operation.
@@ -122,12 +116,13 @@ struct EncryptWriteReply {
     #[serde(default, with = "optional_bytes")]
     envelope_hash: Option<Vec<u8>>,
     #[serde(default, with = "optional_bytes")]
-    next_message_box_index: Option<Vec<u8>>,
+    write_cap: Option<Vec<u8>>,
     #[serde(default)]
     error_code: u8,
 }
 
-/// Request to start resending an encrypted message via ARQ.
+/// Request to start resending an encrypted message via ARQ. The cap (read or
+/// write) carries the box position; no separate index is sent.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StartResendingEncryptedMessageRequest {
     #[serde(with = "serde_bytes")]
@@ -136,8 +131,6 @@ struct StartResendingEncryptedMessageRequest {
     read_cap: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none", with = "optional_bytes")]
     write_cap: Option<Vec<u8>>,
-    #[serde(skip_serializing_if = "Option::is_none", with = "optional_bytes")]
-    message_box_index: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reply_index: Option<u8>,
     #[serde(with = "serde_bytes")]
@@ -188,8 +181,6 @@ struct WriteStreamRequest {
     #[serde(with = "serde_bytes")]
     write_cap: Vec<u8>,
     #[serde(with = "serde_bytes")]
-    start_index: Vec<u8>,
-    #[serde(with = "serde_bytes")]
     payload: Vec<u8>,
     window: i64,
 }
@@ -198,7 +189,7 @@ struct WriteStreamRequest {
 #[derive(Debug, Clone, serde::Deserialize)]
 struct WriteStreamReply {
     #[serde(default, with = "optional_bytes")]
-    next_message_box_index: Option<Vec<u8>>,
+    write_cap: Option<Vec<u8>>,
     #[serde(default)]
     error_code: u8,
     #[serde(default)]
@@ -212,8 +203,6 @@ struct ReadStreamRequest {
     query_id: Vec<u8>,
     #[serde(with = "serde_bytes")]
     read_cap: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    start_index: Vec<u8>,
     box_count: u32,
     window: i64,
 }
@@ -224,7 +213,7 @@ struct ReadStreamReply {
     #[serde(default, with = "optional_bytes")]
     payload: Option<Vec<u8>>,
     #[serde(default, with = "optional_bytes")]
-    next_message_box_index: Option<Vec<u8>>,
+    read_cap: Option<Vec<u8>>,
     #[serde(default)]
     error_code: u8,
     #[serde(default)]
@@ -295,9 +284,17 @@ struct StartResendingCopyCommandRequest {
     query_id: Vec<u8>,
     #[serde(with = "serde_bytes")]
     write_cap: Vec<u8>,
-    #[serde(skip_serializing_if = "Option::is_none", default, with = "optional_bytes")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "optional_bytes"
+    )]
     courier_identity_hash: Option<Vec<u8>>,
-    #[serde(skip_serializing_if = "Option::is_none", default, with = "optional_bytes")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "optional_bytes"
+    )]
     courier_queue_id: Option<Vec<u8>>,
 }
 
@@ -364,35 +361,31 @@ struct CreateCourierEnvelopesFromPayloadRequest {
     payload: Vec<u8>,
     #[serde(with = "serde_bytes")]
     dest_write_cap: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    dest_start_index: Vec<u8>,
     is_start: bool,
     is_last: bool,
 }
 
-/// Reply containing the created courier envelopes and next destination index.
+/// Reply containing the created courier envelopes and advanced destination cap.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CreateCourierEnvelopesFromPayloadReply {
     #[serde(with = "serde_bytes")]
     query_id: Vec<u8>,
     /// Envelopes is None when the daemon returns an error.
     envelopes: Option<Vec<serde_bytes::ByteBuf>>,
-    /// Next destination message box index after all boxes consumed by this call.
+    /// Destination write cap advanced past all boxes consumed by this call.
     #[serde(default, with = "optional_bytes")]
-    next_dest_index: Option<Vec<u8>>,
+    dest_write_cap: Option<Vec<u8>>,
     #[serde(default)]
     error_code: u8,
 }
 
-/// A destination for creating courier envelopes.
+/// A destination for creating courier envelopes. The write cap carries the position.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EnvelopeDestination {
     #[serde(with = "serde_bytes")]
     payload: Vec<u8>,
     #[serde(with = "serde_bytes")]
     write_cap: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    start_index: Vec<u8>,
 }
 
 /// Request to create courier envelopes from multiple payloads.
@@ -418,9 +411,9 @@ struct CreateCourierEnvelopesFromPayloadsReply {
     /// None when the daemon returns an error.
     #[serde(default, with = "optional_bytes")]
     buffer: Option<Vec<u8>>,
-    /// Next destination indices for each destination, in request order.
+    /// Destination write caps advanced for each destination, in request order.
     #[serde(default)]
-    next_dest_indices: Option<Vec<serde_bytes::ByteBuf>>,
+    dest_write_caps: Option<Vec<serde_bytes::ByteBuf>>,
     #[serde(default)]
     error_code: u8,
 }
@@ -432,8 +425,6 @@ struct CreateCourierEnvelopesFromTombstoneRangeRequest {
     query_id: Vec<u8>,
     #[serde(with = "serde_bytes")]
     dest_write_cap: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    dest_start_index: Vec<u8>,
     max_count: u32,
     is_start: bool,
     is_last: bool,
@@ -451,9 +442,9 @@ struct CreateCourierEnvelopesFromTombstoneRangeReply {
     /// Buffer contains any residual data for the next call.
     #[serde(default, with = "optional_bytes")]
     buffer: Option<Vec<u8>>,
-    /// Next destination index after all tombstones created.
+    /// Destination write cap advanced past all tombstones created.
     #[serde(default, with = "optional_bytes")]
-    next_dest_index: Option<Vec<u8>>,
+    dest_write_cap: Option<Vec<u8>>,
     #[serde(default)]
     error_code: u8,
 }
@@ -582,25 +573,24 @@ struct VoucherDeriveStreamReply {
 pub struct KeypairResult {
     pub write_cap: Vec<u8>,
     pub read_cap: Vec<u8>,
-    pub first_message_index: Vec<u8>,
 }
 
-/// Result from encrypt_read containing the encrypted read request.
+/// Result from encrypt_read. `read_cap` is the read cap advanced one box.
 #[derive(Debug, Clone)]
 pub struct EncryptReadResult {
     pub message_ciphertext: Vec<u8>,
     pub envelope_descriptor: Vec<u8>,
     pub envelope_hash: [u8; 32],
-    pub next_message_box_index: Vec<u8>,
+    pub read_cap: Vec<u8>,
 }
 
-/// Result from encrypt_write containing the encrypted write request.
+/// Result from encrypt_write. `write_cap` is the write cap advanced one box.
 #[derive(Debug, Clone)]
 pub struct EncryptWriteResult {
     pub message_ciphertext: Vec<u8>,
     pub envelope_descriptor: Vec<u8>,
     pub envelope_hash: [u8; 32],
-    pub next_message_box_index: Vec<u8>,
+    pub write_cap: Vec<u8>,
 }
 
 /// Result of creating courier envelopes.
@@ -611,12 +601,12 @@ pub struct CreateEnvelopesResult {
     /// The buffered data that hasn't been output yet. Persist this for crash recovery.
     /// Only populated by create_courier_envelopes_from_multi_payload.
     pub buffer: Vec<u8>,
-    /// The next destination message box index after all boxes consumed by this call.
-    /// Only populated by create_courier_envelopes_from_payload.
-    pub next_dest_index: Option<Vec<u8>>,
-    /// The next destination indices for each destination, in request order.
+    /// The destination write cap advanced past all boxes consumed by this call.
+    /// Only populated by create_courier_envelopes_from_payload and from_tombstone_range.
+    pub dest_write_cap: Option<Vec<u8>>,
+    /// The destination write caps advanced for each destination, in request order.
     /// Only populated by create_courier_envelopes_from_multi_payload.
-    pub next_dest_indices: Option<Vec<Vec<u8>>>,
+    pub dest_write_caps: Option<Vec<Vec<u8>>>,
 }
 
 /// Result from voucher_mint. Persist `voucher_secret_key` to open the
@@ -700,14 +690,23 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("new_keypair failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!(
+                "new_keypair failed with error code: {}",
+                reply.error_code
+            )));
         }
 
-        let write_cap = reply.write_cap.ok_or_else(|| ThinClientError::Other("new_keypair: write_cap is None".to_string()))?;
-        let read_cap = reply.read_cap.ok_or_else(|| ThinClientError::Other("new_keypair: read_cap is None".to_string()))?;
-        let first_message_index = reply.first_message_index.ok_or_else(|| ThinClientError::Other("new_keypair: first_message_index is None".to_string()))?;
+        let write_cap = reply
+            .write_cap
+            .ok_or_else(|| ThinClientError::Other("new_keypair: write_cap is None".to_string()))?;
+        let read_cap = reply
+            .read_cap
+            .ok_or_else(|| ThinClientError::Other("new_keypair: read_cap is None".to_string()))?;
 
-        Ok(KeypairResult { write_cap, read_cap, first_message_index })
+        Ok(KeypairResult {
+            write_cap,
+            read_cap,
+        })
     }
 
     /// Encrypts a read operation for a given read capability.
@@ -716,23 +715,21 @@ impl ThinClient {
     /// courier service to retrieve a message from a pigeonhole box.
     ///
     /// # Arguments
-    /// * `read_cap` - Read capability that grants access to the channel
-    /// * `message_box_index` - Starting read position for the channel
+    /// * `read_cap` - Read capability that grants access to the channel, at the
+    ///   position to read. The cap carries its own box position.
     ///
     /// # Returns
-    /// * `Ok(EncryptReadResult)` on success
+    /// * `Ok(EncryptReadResult)` on success; `read_cap` is the cap advanced one box
     /// * `Err(ThinClientError)` on failure
     pub async fn encrypt_read(
         &self,
         read_cap: &[u8],
-        message_box_index: &[u8]
     ) -> Result<EncryptReadResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = EncryptReadRequest {
             query_id: query_id.clone(),
             read_cap: read_cap.to_vec(),
-            message_box_index: message_box_index.to_vec(),
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
@@ -747,13 +744,24 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("encrypt_read failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!(
+                "encrypt_read failed with error code: {}",
+                reply.error_code
+            )));
         }
 
-        let message_ciphertext = reply.message_ciphertext.ok_or_else(|| ThinClientError::Other("encrypt_read: message_ciphertext is None".to_string()))?;
-        let envelope_descriptor = reply.envelope_descriptor.ok_or_else(|| ThinClientError::Other("encrypt_read: envelope_descriptor is None".to_string()))?;
-        let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_read: envelope_hash is None".to_string()))?;
-        let next_message_box_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("encrypt_read: next_message_box_index is None".to_string()))?;
+        let message_ciphertext = reply.message_ciphertext.ok_or_else(|| {
+            ThinClientError::Other("encrypt_read: message_ciphertext is None".to_string())
+        })?;
+        let envelope_descriptor = reply.envelope_descriptor.ok_or_else(|| {
+            ThinClientError::Other("encrypt_read: envelope_descriptor is None".to_string())
+        })?;
+        let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| {
+            ThinClientError::Other("encrypt_read: envelope_hash is None".to_string())
+        })?;
+        let read_cap = reply
+            .read_cap
+            .ok_or_else(|| ThinClientError::Other("encrypt_read: read_cap is None".to_string()))?;
 
         let mut envelope_hash = [0u8; 32];
         envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
@@ -762,7 +770,7 @@ impl ThinClient {
             message_ciphertext,
             envelope_descriptor,
             envelope_hash,
-            next_message_box_index,
+            read_cap,
         })
     }
 
@@ -783,17 +791,16 @@ impl ThinClient {
     /// # Arguments
     /// * `plaintext` - The plaintext message to encrypt. Must be at most
     ///   `PigeonholeGeometry.max_plaintext_payload_length` bytes.
-    /// * `write_cap` - Write capability that grants access to the channel.
-    /// * `message_box_index` - The message box index for this write operation.
+    /// * `write_cap` - Write capability that grants access to the channel, at the
+    ///   position to write. The cap carries its own box position.
     ///
     /// # Returns
-    /// * `Ok((message_ciphertext, envelope_descriptor, envelope_hash))` on success
+    /// * `Ok(EncryptWriteResult)` on success; `write_cap` is the cap advanced one box
     /// * `Err(ThinClientError)` on failure (including if plaintext is too large)
     pub async fn encrypt_write(
         &self,
         plaintext: &[u8],
         write_cap: &[u8],
-        message_box_index: &[u8]
     ) -> Result<EncryptWriteResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
@@ -801,7 +808,6 @@ impl ThinClient {
             query_id: query_id.clone(),
             plaintext: plaintext.to_vec(),
             write_cap: write_cap.to_vec(),
-            message_box_index: message_box_index.to_vec(),
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
@@ -816,13 +822,24 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("encrypt_write failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!(
+                "encrypt_write failed with error code: {}",
+                reply.error_code
+            )));
         }
 
-        let message_ciphertext = reply.message_ciphertext.ok_or_else(|| ThinClientError::Other("encrypt_write: message_ciphertext is None".to_string()))?;
-        let envelope_descriptor = reply.envelope_descriptor.ok_or_else(|| ThinClientError::Other("encrypt_write: envelope_descriptor is None".to_string()))?;
-        let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_write: envelope_hash is None".to_string()))?;
-        let next_message_box_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("encrypt_write: next_message_box_index is None".to_string()))?;
+        let message_ciphertext = reply.message_ciphertext.ok_or_else(|| {
+            ThinClientError::Other("encrypt_write: message_ciphertext is None".to_string())
+        })?;
+        let envelope_descriptor = reply.envelope_descriptor.ok_or_else(|| {
+            ThinClientError::Other("encrypt_write: envelope_descriptor is None".to_string())
+        })?;
+        let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| {
+            ThinClientError::Other("encrypt_write: envelope_hash is None".to_string())
+        })?;
+        let write_cap = reply.write_cap.ok_or_else(|| {
+            ThinClientError::Other("encrypt_write: write_cap is None".to_string())
+        })?;
 
         let mut envelope_hash = [0u8; 32];
         envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
@@ -831,7 +848,7 @@ impl ThinClient {
             message_ciphertext,
             envelope_descriptor,
             envelope_hash,
-            next_message_box_index,
+            write_cap,
         })
     }
 
@@ -856,7 +873,6 @@ impl ThinClient {
     /// # Arguments
     /// * `read_cap` - Optional read capability (for read operations)
     /// * `write_cap` - Optional write capability (for write operations)
-    /// * `message_box_index` - Current message box index being operated on (for read operations)
     /// * `reply_index` - Reply index for the operation (None for tombstone writes)
     /// * `envelope_descriptor` - Envelope descriptor from encrypt_read/encrypt_write
     /// * `message_ciphertext` - Encrypted message from encrypt_read/encrypt_write
@@ -871,23 +887,22 @@ impl ThinClient {
         &self,
         read_cap: Option<&[u8]>,
         write_cap: Option<&[u8]>,
-        message_box_index: Option<&[u8]>,
         reply_index: Option<u8>,
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
-        envelope_hash: &[u8; 32]
+        envelope_hash: &[u8; 32],
     ) -> Result<StartResendingResult, ThinClientError> {
         self.start_resending_encrypted_message_with_options(
             read_cap,
             write_cap,
-            message_box_index,
             reply_index,
             envelope_descriptor,
             message_ciphertext,
             envelope_hash,
             false,
             false,
-        ).await
+        )
+        .await
     }
 
     /// Behaves exactly like `start_resending_encrypted_message` save that
@@ -919,23 +934,22 @@ impl ThinClient {
         &self,
         read_cap: Option<&[u8]>,
         write_cap: Option<&[u8]>,
-        message_box_index: Option<&[u8]>,
         reply_index: Option<u8>,
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
-        envelope_hash: &[u8; 32]
+        envelope_hash: &[u8; 32],
     ) -> Result<StartResendingResult, ThinClientError> {
         self.start_resending_encrypted_message_with_options(
             read_cap,
             write_cap,
-            message_box_index,
             reply_index,
             envelope_descriptor,
             message_ciphertext,
             envelope_hash,
             false,
-            true,  // no_idempotent_box_already_exists
-        ).await
+            true, // no_idempotent_box_already_exists
+        )
+        .await
     }
 
     /// Behaves exactly like `start_resending_encrypted_message` save that
@@ -963,23 +977,22 @@ impl ThinClient {
         &self,
         read_cap: Option<&[u8]>,
         write_cap: Option<&[u8]>,
-        message_box_index: Option<&[u8]>,
         reply_index: Option<u8>,
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
-        envelope_hash: &[u8; 32]
+        envelope_hash: &[u8; 32],
     ) -> Result<StartResendingResult, ThinClientError> {
         self.start_resending_encrypted_message_with_options(
             read_cap,
             write_cap,
-            message_box_index,
             reply_index,
             envelope_descriptor,
             message_ciphertext,
             envelope_hash,
-            true,  // no_retry_on_box_id_not_found
+            true, // no_retry_on_box_id_not_found
             false,
-        ).await
+        )
+        .await
     }
 
     /// Internal method with all options for start_resending_encrypted_message.
@@ -987,7 +1000,6 @@ impl ThinClient {
         &self,
         read_cap: Option<&[u8]>,
         write_cap: Option<&[u8]>,
-        message_box_index: Option<&[u8]>,
         reply_index: Option<u8>,
         envelope_descriptor: &[u8],
         message_ciphertext: &[u8],
@@ -1001,7 +1013,6 @@ impl ThinClient {
             query_id: query_id.clone(),
             read_cap: read_cap.map(|rc| rc.to_vec()),
             write_cap: write_cap.map(|wc| wc.to_vec()),
-            message_box_index: message_box_index.map(|mbi| mbi.to_vec()),
             reply_index,
             envelope_descriptor: envelope_descriptor.to_vec(),
             message_ciphertext: message_ciphertext.to_vec(),
@@ -1014,11 +1025,17 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("start_resending_encrypted_message".to_string()), request_value);
+        request.insert(
+            Value::Text("start_resending_encrypted_message".to_string()),
+            request_value,
+        );
 
         // Track in-flight request for replay on reconnect to new daemon instance
         let tracking_key = envelope_hash.to_vec();
-        self.in_flight_resends.lock().await.insert(tracking_key.clone(), request.clone());
+        self.in_flight_resends
+            .lock()
+            .await
+            .insert(tracking_key.clone(), request.clone());
 
         // Use direct response routing (like Python's _send_and_wait)
         // This blocks until the daemon sends a reply with matching query_id
@@ -1034,11 +1051,15 @@ impl ThinClient {
         };
 
         // Parse the reply
-        let reply: StartResendingEncryptedMessageReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+        let reply: StartResendingEncryptedMessageReply =
+            serde_cbor::value::from_value(Value::Map(reply_map))
+                .map_err(|e| ThinClientError::CborError(e))?;
 
-        debug!("start_resending_encrypted_message: received reply, error_code={}, plaintext_len={}",
-               reply.error_code, reply.plaintext.as_ref().map(|p| p.len()).unwrap_or(0));
+        debug!(
+            "start_resending_encrypted_message: received reply, error_code={}, plaintext_len={}",
+            reply.error_code,
+            reply.plaintext.as_ref().map(|p| p.len()).unwrap_or(0)
+        );
 
         if reply.error_code != 0 {
             return Err(error_code_to_error(reply.error_code));
@@ -1059,12 +1080,11 @@ impl ThinClient {
     /// box. A `window` of zero asks the daemon to choose a default.
     ///
     /// The daemon does all chunking and encryption; the caller supplies only
-    /// the cleartext payload, the write capability, and the start index.
-    /// Returns the message box index immediately after the last box written.
+    /// the cleartext payload and the write capability (which carries the start
+    /// position). Returns the write cap advanced past the last box written.
     pub async fn write_stream(
         &self,
         write_cap: &[u8],
-        start_index: &[u8],
         payload: &[u8],
         window: i64,
     ) -> Result<Vec<u8>, ThinClientError> {
@@ -1072,12 +1092,11 @@ impl ThinClient {
         let request_inner = WriteStreamRequest {
             query_id: query_id.clone(),
             write_cap: write_cap.to_vec(),
-            start_index: start_index.to_vec(),
             payload: payload.to_vec(),
             window,
         };
-        let request_value =
-            serde_cbor::value::to_value(&request_inner).map_err(|e| ThinClientError::CborError(e))?;
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(|e| ThinClientError::CborError(e))?;
         let mut request = BTreeMap::new();
         request.insert(Value::Text("write_stream".to_string()), request_value);
 
@@ -1085,11 +1104,14 @@ impl ThinClient {
         let reply: WriteStreamReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
 
-        debug!("write_stream: received reply, error_code={}, boxes={}", reply.error_code, reply.box_count);
+        debug!(
+            "write_stream: received reply, error_code={}, boxes={}",
+            reply.error_code, reply.box_count
+        );
         if reply.error_code != 0 {
             return Err(error_code_to_error(reply.error_code));
         }
-        Ok(reply.next_message_box_index.unwrap_or_default())
+        Ok(reply.write_cap.unwrap_or_default())
     }
 
     /// Reads `box_count` sequential boxes from a channel using the daemon's
@@ -1097,11 +1119,11 @@ impl ThinClient {
     /// `write_stream`. The daemon keeps up to `window` boxes in flight,
     /// decrypts each, and reassembles them in order. A `window` of zero asks
     /// the daemon to choose a default. Returns the concatenated payload and the
-    /// message box index immediately after the last box read.
+    /// read cap advanced past the last box read (the read position is taken from
+    /// the cap's own message box index).
     pub async fn read_stream(
         &self,
         read_cap: &[u8],
-        start_index: &[u8],
         box_count: u32,
         window: i64,
     ) -> Result<(Vec<u8>, Vec<u8>), ThinClientError> {
@@ -1109,12 +1131,11 @@ impl ThinClient {
         let request_inner = ReadStreamRequest {
             query_id: query_id.clone(),
             read_cap: read_cap.to_vec(),
-            start_index: start_index.to_vec(),
             box_count,
             window,
         };
-        let request_value =
-            serde_cbor::value::to_value(&request_inner).map_err(|e| ThinClientError::CborError(e))?;
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(|e| ThinClientError::CborError(e))?;
         let mut request = BTreeMap::new();
         request.insert(Value::Text("read_stream".to_string()), request_value);
 
@@ -1122,13 +1143,16 @@ impl ThinClient {
         let reply: ReadStreamReply = serde_cbor::value::from_value(Value::Map(reply_map))
             .map_err(|e| ThinClientError::CborError(e))?;
 
-        debug!("read_stream: received reply, error_code={}, boxes={}", reply.error_code, reply.box_count);
+        debug!(
+            "read_stream: received reply, error_code={}, boxes={}",
+            reply.error_code, reply.box_count
+        );
         if reply.error_code != 0 {
             return Err(error_code_to_error(reply.error_code));
         }
         Ok((
             reply.payload.unwrap_or_default(),
-            reply.next_message_box_index.unwrap_or_default(),
+            reply.read_cap.unwrap_or_default(),
         ))
     }
 
@@ -1143,9 +1167,15 @@ impl ThinClient {
     /// # Returns
     /// * `Ok(())` on success
     /// * `Err(ThinClientError)` on failure
-    pub async fn cancel_resending_encrypted_message(&self, envelope_hash: &[u8; 32]) -> Result<(), ThinClientError> {
+    pub async fn cancel_resending_encrypted_message(
+        &self,
+        envelope_hash: &[u8; 32],
+    ) -> Result<(), ThinClientError> {
         // Remove from in-flight tracking so it won't be replayed on reconnect
-        self.in_flight_resends.lock().await.remove(&envelope_hash.to_vec());
+        self.in_flight_resends
+            .lock()
+            .await
+            .remove(&envelope_hash.to_vec());
 
         // If disconnected, just remove from tracking — daemon has no state to cancel
         if !self.is_connected() {
@@ -1163,15 +1193,22 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("cancel_resending_encrypted_message".to_string()), request_value);
+        request.insert(
+            Value::Text("cancel_resending_encrypted_message".to_string()),
+            request_value,
+        );
 
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
-        let reply: CancelResendingEncryptedMessageReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+        let reply: CancelResendingEncryptedMessageReply =
+            serde_cbor::value::from_value(Value::Map(reply_map))
+                .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("cancel_resending_encrypted_message failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!(
+                "cancel_resending_encrypted_message failed with error code: {}",
+                reply.error_code
+            )));
         }
 
         Ok(())
@@ -1191,7 +1228,10 @@ impl ThinClient {
     /// # Returns
     /// * `Ok(next_message_box_index)` - The incremented message box index
     /// * `Err(ThinClientError)` on failure
-    pub async fn next_message_box_index(&self, message_box_index: &[u8]) -> Result<Vec<u8>, ThinClientError> {
+    pub async fn next_message_box_index(
+        &self,
+        message_box_index: &[u8],
+    ) -> Result<Vec<u8>, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = NextMessageBoxIndexRequest {
@@ -1203,7 +1243,10 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("next_message_box_index".to_string()), request_value);
+        request.insert(
+            Value::Text("next_message_box_index".to_string()),
+            request_value,
+        );
 
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
@@ -1211,10 +1254,17 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("next_message_box_index failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!(
+                "next_message_box_index failed with error code: {}",
+                reply.error_code
+            )));
         }
 
-        let next_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("next_message_box_index: next_message_box_index is None".to_string()))?;
+        let next_index = reply.next_message_box_index.ok_or_else(|| {
+            ThinClientError::Other(
+                "next_message_box_index: next_message_box_index is None".to_string(),
+            )
+        })?;
         Ok(next_index)
     }
 
@@ -1233,7 +1283,10 @@ impl ThinClient {
     /// # Returns
     /// * `Ok(counter)` - The BACAP `Idx64` value.
     /// * `Err(ThinClientError)` on failure.
-    pub async fn get_message_box_index_counter(&self, message_box_index: &[u8]) -> Result<u64, ThinClientError> {
+    pub async fn get_message_box_index_counter(
+        &self,
+        message_box_index: &[u8],
+    ) -> Result<u64, ThinClientError> {
         let query_id = Self::new_query_id();
 
         let request_inner = GetMessageBoxIndexCounterRequest {
@@ -1245,15 +1298,22 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("get_message_box_index_counter".to_string()), request_value);
+        request.insert(
+            Value::Text("get_message_box_index_counter".to_string()),
+            request_value,
+        );
 
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
-        let reply: GetMessageBoxIndexCounterReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+        let reply: GetMessageBoxIndexCounterReply =
+            serde_cbor::value::from_value(Value::Map(reply_map))
+                .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("get_message_box_index_counter failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!(
+                "get_message_box_index_counter failed with error code: {}",
+                reply.error_code
+            )));
         }
 
         Ok(reply.counter)
@@ -1281,7 +1341,7 @@ impl ThinClient {
         &self,
         write_cap: &[u8],
         courier_identity_hash: Option<&[u8]>,
-        courier_queue_id: Option<&[u8]>
+        courier_queue_id: Option<&[u8]>,
     ) -> Result<(), ThinClientError> {
         // Compute write cap hash for in-flight tracking (matches daemon-side hash)
         let tracking_key = Blake2b::<U32>::digest(write_cap).to_vec();
@@ -1299,10 +1359,16 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("start_resending_copy_command".to_string()), request_value);
+        request.insert(
+            Value::Text("start_resending_copy_command".to_string()),
+            request_value,
+        );
 
         // Track in-flight request for replay on reconnect to new daemon instance
-        self.in_flight_resends.lock().await.insert(tracking_key.clone(), request.clone());
+        self.in_flight_resends
+            .lock()
+            .await
+            .insert(tracking_key.clone(), request.clone());
 
         let reply_map = match self.send_and_wait_direct(query_id, request).await {
             Ok(reply) => {
@@ -1315,8 +1381,9 @@ impl ThinClient {
             }
         };
 
-        let reply: StartResendingCopyCommandReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+        let reply: StartResendingCopyCommandReply =
+            serde_cbor::value::from_value(Value::Map(reply_map))
+                .map_err(|e| ThinClientError::CborError(e))?;
 
         if let Some(err) = copy_reply_to_error(&reply) {
             return Err(err);
@@ -1336,9 +1403,15 @@ impl ThinClient {
     /// # Returns
     /// * `Ok(())` on success
     /// * `Err(ThinClientError)` on failure
-    pub async fn cancel_resending_copy_command(&self, write_cap_hash: &[u8; 32]) -> Result<(), ThinClientError> {
+    pub async fn cancel_resending_copy_command(
+        &self,
+        write_cap_hash: &[u8; 32],
+    ) -> Result<(), ThinClientError> {
         // Remove from in-flight tracking so it won't be replayed on reconnect
-        self.in_flight_resends.lock().await.remove(&write_cap_hash.to_vec());
+        self.in_flight_resends
+            .lock()
+            .await
+            .remove(&write_cap_hash.to_vec());
 
         // If disconnected, just remove from tracking — daemon has no state to cancel
         if !self.is_connected() {
@@ -1356,15 +1429,22 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("cancel_resending_copy_command".to_string()), request_value);
+        request.insert(
+            Value::Text("cancel_resending_copy_command".to_string()),
+            request_value,
+        );
 
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
-        let reply: CancelResendingCopyCommandReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+        let reply: CancelResendingCopyCommandReply =
+            serde_cbor::value::from_value(Value::Map(reply_map))
+                .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("cancel_resending_copy_command failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!(
+                "cancel_resending_copy_command failed with error code: {}",
+                reply.error_code
+            )));
         }
 
         Ok(())
@@ -1388,25 +1468,24 @@ impl ThinClient {
     /// destination box.
     ///
     /// Multiple calls can target the same destination stream by passing
-    /// `next_dest_index` from the previous result as `dest_start_index`.
+    /// `dest_write_cap` from the previous result as `dest_write_cap`.
     ///
     /// # Arguments
     /// * `payload` - The data to be encoded into courier envelopes
-    /// * `dest_write_cap` - Write capability for the destination channel
-    /// * `dest_start_index` - Starting index in the destination channel
+    /// * `dest_write_cap` - Write capability for the destination channel, at the
+    ///   position to write. The cap carries its own box position.
     /// * `is_start` - Whether this is the first call (sets IsStart on first element)
     /// * `is_last` - Whether this is the last payload in the sequence
     ///
     /// # Returns
-    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes and next_dest_index
+    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes and the advanced dest_write_cap
     /// * `Err(ThinClientError)` on failure
     pub async fn create_courier_envelopes_from_payload(
         &self,
         payload: &[u8],
         dest_write_cap: &[u8],
-        dest_start_index: &[u8],
         is_start: bool,
-        is_last: bool
+        is_last: bool,
     ) -> Result<CreateEnvelopesResult, ThinClientError> {
         let query_id = Self::new_query_id();
 
@@ -1414,7 +1493,6 @@ impl ThinClient {
             query_id: query_id.clone(),
             payload: payload.to_vec(),
             dest_write_cap: dest_write_cap.to_vec(),
-            dest_start_index: dest_start_index.to_vec(),
             is_start,
             is_last,
         };
@@ -1423,22 +1501,34 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("create_courier_envelopes_from_payload".to_string()), request_value);
+        request.insert(
+            Value::Text("create_courier_envelopes_from_payload".to_string()),
+            request_value,
+        );
 
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
-        let reply: CreateCourierEnvelopesFromPayloadReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+        let reply: CreateCourierEnvelopesFromPayloadReply =
+            serde_cbor::value::from_value(Value::Map(reply_map))
+                .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("create_courier_envelopes_from_payload failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!(
+                "create_courier_envelopes_from_payload failed with error code: {}",
+                reply.error_code
+            )));
         }
 
         Ok(CreateEnvelopesResult {
-            envelopes: reply.envelopes.unwrap_or_default().into_iter().map(|b| b.into_vec()).collect(),
+            envelopes: reply
+                .envelopes
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| b.into_vec())
+                .collect(),
             buffer: Vec::new(),
-            next_dest_index: reply.next_dest_index,
-            next_dest_indices: None,
+            dest_write_cap: reply.dest_write_cap,
+            dest_write_caps: None,
         })
     }
 
@@ -1455,17 +1545,18 @@ impl ThinClient {
     /// encoder flushes its tail.
     ///
     /// # Arguments
-    /// * `destinations` - List of (payload, write_cap, start_index) tuples
+    /// * `destinations` - List of (payload, write_cap) tuples; each write_cap
+    ///   carries its own destination position
     /// * `is_start` - Whether this is the first call in the sequence
     /// * `is_last` - Whether this is the last set of payloads in the sequence
     /// * `buffer` - Residual encoder buffer from a previous call, or None
     ///
     /// # Returns
-    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes and buffer for next call
+    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes, buffer, and dest_write_caps
     /// * `Err(ThinClientError)` on failure
     pub async fn create_courier_envelopes_from_multi_payload(
         &self,
-        destinations: Vec<(&[u8], &[u8], &[u8])>,
+        destinations: Vec<(&[u8], &[u8])>,
         is_start: bool,
         is_last: bool,
         buffer: Option<Vec<u8>>,
@@ -1474,10 +1565,9 @@ impl ThinClient {
 
         let destinations_inner: Vec<EnvelopeDestination> = destinations
             .into_iter()
-            .map(|(payload, write_cap, start_index)| EnvelopeDestination {
+            .map(|(payload, write_cap)| EnvelopeDestination {
                 payload: payload.to_vec(),
                 write_cap: write_cap.to_vec(),
-                start_index: start_index.to_vec(),
             })
             .collect();
 
@@ -1493,22 +1583,36 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("create_courier_envelopes_from_multi_payload".to_string()), request_value);
+        request.insert(
+            Value::Text("create_courier_envelopes_from_multi_payload".to_string()),
+            request_value,
+        );
 
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
-        let reply: CreateCourierEnvelopesFromPayloadsReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+        let reply: CreateCourierEnvelopesFromPayloadsReply =
+            serde_cbor::value::from_value(Value::Map(reply_map))
+                .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("create_courier_envelopes_from_multi_payload failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!(
+                "create_courier_envelopes_from_multi_payload failed with error code: {}",
+                reply.error_code
+            )));
         }
 
         Ok(CreateEnvelopesResult {
-            envelopes: reply.envelopes.unwrap_or_default().into_iter().map(|b| b.into_vec()).collect(),
+            envelopes: reply
+                .envelopes
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| b.into_vec())
+                .collect(),
             buffer: reply.buffer.unwrap_or_default(),
-            next_dest_index: None,
-            next_dest_indices: reply.next_dest_indices.map(|v| v.into_iter().map(|b| b.into_vec()).collect()),
+            dest_write_cap: None,
+            dest_write_caps: reply
+                .dest_write_caps
+                .map(|v| v.into_iter().map(|b| b.into_vec()).collect()),
         })
     }
 
@@ -1526,20 +1630,19 @@ impl ThinClient {
     /// final call so the encoder flushes its tail.
     ///
     /// # Arguments
-    /// * `dest_write_cap` - Write capability for the destination channel
-    /// * `dest_start_index` - Starting index in the destination channel
+    /// * `dest_write_cap` - Write capability for the destination channel, at the
+    ///   position to write. The cap carries its own box position.
     /// * `max_count` - Number of tombstones to create
     /// * `is_start` - Whether this is the first call in the sequence
     /// * `is_last` - Whether this is the last call in the sequence
     /// * `buffer` - Residual encoder buffer from a previous call, or None
     ///
     /// # Returns
-    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes, buffer, and next_dest_index
+    /// * `Ok(CreateEnvelopesResult)` - Contains envelopes, buffer, and the advanced dest_write_cap
     /// * `Err(ThinClientError)` on failure
     pub async fn create_courier_envelopes_from_tombstone_range(
         &self,
         dest_write_cap: &[u8],
-        dest_start_index: &[u8],
         max_count: u32,
         is_start: bool,
         is_last: bool,
@@ -1550,7 +1653,6 @@ impl ThinClient {
         let request_inner = CreateCourierEnvelopesFromTombstoneRangeRequest {
             query_id: query_id.clone(),
             dest_write_cap: dest_write_cap.to_vec(),
-            dest_start_index: dest_start_index.to_vec(),
             max_count,
             is_start,
             is_last,
@@ -1561,25 +1663,36 @@ impl ThinClient {
             .map_err(|e| ThinClientError::CborError(e))?;
 
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("create_courier_envelopes_from_tombstone_range".to_string()), request_value);
+        request.insert(
+            Value::Text("create_courier_envelopes_from_tombstone_range".to_string()),
+            request_value,
+        );
 
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
-        let reply: CreateCourierEnvelopesFromTombstoneRangeReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+        let reply: CreateCourierEnvelopesFromTombstoneRangeReply =
+            serde_cbor::value::from_value(Value::Map(reply_map))
+                .map_err(|e| ThinClientError::CborError(e))?;
 
         if reply.error_code != 0 {
-            return Err(ThinClientError::Other(format!("create_courier_envelopes_from_tombstone_range failed with error code: {}", reply.error_code)));
+            return Err(ThinClientError::Other(format!(
+                "create_courier_envelopes_from_tombstone_range failed with error code: {}",
+                reply.error_code
+            )));
         }
 
         Ok(CreateEnvelopesResult {
-            envelopes: reply.envelopes.unwrap_or_default().into_iter().map(|b| b.into_vec()).collect(),
+            envelopes: reply
+                .envelopes
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| b.into_vec())
+                .collect(),
             buffer: reply.buffer.unwrap_or_default(),
-            next_dest_index: reply.next_dest_index,
-            next_dest_indices: None,
+            dest_write_cap: reply.dest_write_cap,
+            dest_write_caps: None,
         })
     }
-
 }
 
 /// A single tombstone envelope ready to be sent.
@@ -1591,8 +1704,9 @@ pub struct TombstoneEnvelope {
     pub envelope_descriptor: Vec<u8>,
     /// The envelope hash for cancellation.
     pub envelope_hash: Vec<u8>,
-    /// The box index this envelope is for.
-    pub box_index: Vec<u8>,
+    /// The write cap positioned at this tombstone's box, ready to dispatch via
+    /// start_resending_encrypted_message.
+    pub box_cap: Vec<u8>,
 }
 
 /// Result of a tombstone_range operation.
@@ -1600,8 +1714,8 @@ pub struct TombstoneEnvelope {
 pub struct TombstoneRangeResult {
     /// List of tombstone envelopes ready to be sent.
     pub envelopes: Vec<TombstoneEnvelope>,
-    /// The next MessageBoxIndex after the last processed.
-    pub next: Vec<u8>,
+    /// The write cap advanced past the last tombstone.
+    pub next_cap: Vec<u8>,
     /// Error message if the operation failed partway through.
     pub error: Option<String>,
 }
@@ -1625,46 +1739,45 @@ impl ThinClient {
     /// surface the failure as appropriate.
     ///
     /// # Arguments
-    /// * `write_cap` - Write capability for the boxes
-    /// * `start` - Starting MessageBoxIndex
+    /// * `write_cap` - Write capability for the boxes, at the start position. The
+    ///   cap carries its own box position.
     /// * `max_count` - Maximum number of boxes to tombstone
     ///
     /// # Returns
-    /// * `TombstoneRangeResult` containing the envelopes and next index
-    pub async fn tombstone_range(
-        &self,
-        write_cap: &[u8],
-        start: &[u8],
-        max_count: u32
-    ) -> TombstoneRangeResult {
+    /// * `TombstoneRangeResult` containing the envelopes and the advanced cap
+    pub async fn tombstone_range(&self, write_cap: &[u8], max_count: u32) -> TombstoneRangeResult {
         if max_count == 0 {
             return TombstoneRangeResult {
                 envelopes: Vec::new(),
-                next: start.to_vec(),
+                next_cap: write_cap.to_vec(),
                 error: None,
             };
         }
 
-        let mut cur = start.to_vec();
+        let mut cur = write_cap.to_vec();
         let mut envelopes: Vec<TombstoneEnvelope> = Vec::with_capacity(max_count as usize);
 
         while (envelopes.len() as u32) < max_count {
-            match self.encrypt_write(&[], write_cap, &cur).await {
+            let box_cap = cur.clone();
+            match self.encrypt_write(&[], &cur).await {
                 Ok(result) => {
                     envelopes.push(TombstoneEnvelope {
                         message_ciphertext: result.message_ciphertext,
                         envelope_descriptor: result.envelope_descriptor,
                         envelope_hash: result.envelope_hash.to_vec(),
-                        box_index: cur.clone(),
+                        box_cap,
                     });
-                    cur = result.next_message_box_index;
+                    cur = result.write_cap;
                 }
                 Err(e) => {
                     let count = envelopes.len();
                     return TombstoneRangeResult {
                         envelopes,
-                        next: cur,
-                        error: Some(format!("Error creating tombstone at index {}: {:?}", count, e)),
+                        next_cap: box_cap,
+                        error: Some(format!(
+                            "Error creating tombstone at index {}: {:?}",
+                            count, e
+                        )),
                     };
                 }
             }
@@ -1672,7 +1785,7 @@ impl ThinClient {
 
         TombstoneRangeResult {
             envelopes,
-            next: cur,
+            next_cap: cur,
             error: None,
         }
     }
@@ -1700,8 +1813,8 @@ impl ThinClient {
             message_write_cap: message_write_cap.to_vec(),
             display_name: display_name.to_string(),
         };
-        let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(ThinClientError::CborError)?;
+        let request_value =
+            serde_cbor::value::to_value(&request_inner).map_err(ThinClientError::CborError)?;
         let mut request = BTreeMap::new();
         request.insert(Value::Text("voucher_mint".to_string()), request_value);
 
@@ -1712,12 +1825,24 @@ impl ThinClient {
             return Err(error_code_to_error(reply.error_code));
         }
         Ok(VoucherMintResult {
-            voucher: reply.voucher.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher is None".to_string()))?,
-            voucher_payload: reply.voucher_payload.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher_payload is None".to_string()))?,
-            voucher_write_cap: reply.voucher_write_cap.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher_write_cap is None".to_string()))?,
-            voucher_read_cap: reply.voucher_read_cap.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher_read_cap is None".to_string()))?,
-            voucher_secret_key: reply.voucher_secret_key.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher_secret_key is None".to_string()))?,
-            voucher_public_key: reply.voucher_public_key.ok_or_else(|| ThinClientError::Other("voucher_mint: voucher_public_key is None".to_string()))?,
+            voucher: reply.voucher.ok_or_else(|| {
+                ThinClientError::Other("voucher_mint: voucher is None".to_string())
+            })?,
+            voucher_payload: reply.voucher_payload.ok_or_else(|| {
+                ThinClientError::Other("voucher_mint: voucher_payload is None".to_string())
+            })?,
+            voucher_write_cap: reply.voucher_write_cap.ok_or_else(|| {
+                ThinClientError::Other("voucher_mint: voucher_write_cap is None".to_string())
+            })?,
+            voucher_read_cap: reply.voucher_read_cap.ok_or_else(|| {
+                ThinClientError::Other("voucher_mint: voucher_read_cap is None".to_string())
+            })?,
+            voucher_secret_key: reply.voucher_secret_key.ok_or_else(|| {
+                ThinClientError::Other("voucher_mint: voucher_secret_key is None".to_string())
+            })?,
+            voucher_public_key: reply.voucher_public_key.ok_or_else(|| {
+                ThinClientError::Other("voucher_mint: voucher_public_key is None".to_string())
+            })?,
         })
     }
 
@@ -1739,8 +1864,8 @@ impl ThinClient {
             voucher_payload: voucher_payload.to_vec(),
             who_reply: who_reply.to_vec(),
         };
-        let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(ThinClientError::CborError)?;
+        let request_value =
+            serde_cbor::value::to_value(&request_inner).map_err(ThinClientError::CborError)?;
         let mut request = BTreeMap::new();
         request.insert(Value::Text("voucher_induct".to_string()), request_value);
 
@@ -1752,11 +1877,23 @@ impl ThinClient {
         }
         Ok(VoucherInductResult {
             display_name: reply.display_name,
-            mutated_message_read_cap: reply.mutated_message_read_cap.ok_or_else(|| ThinClientError::Other("voucher_induct: mutated_message_read_cap is None".to_string()))?,
-            sealed_reply: reply.sealed_reply.ok_or_else(|| ThinClientError::Other("voucher_induct: sealed_reply is None".to_string()))?,
-            voucher_write_cap: reply.voucher_write_cap.ok_or_else(|| ThinClientError::Other("voucher_induct: voucher_write_cap is None".to_string()))?,
-            voucher_read_cap: reply.voucher_read_cap.ok_or_else(|| ThinClientError::Other("voucher_induct: voucher_read_cap is None".to_string()))?,
-            salt: reply.salt.ok_or_else(|| ThinClientError::Other("voucher_induct: salt is None".to_string()))?,
+            mutated_message_read_cap: reply.mutated_message_read_cap.ok_or_else(|| {
+                ThinClientError::Other(
+                    "voucher_induct: mutated_message_read_cap is None".to_string(),
+                )
+            })?,
+            sealed_reply: reply.sealed_reply.ok_or_else(|| {
+                ThinClientError::Other("voucher_induct: sealed_reply is None".to_string())
+            })?,
+            voucher_write_cap: reply.voucher_write_cap.ok_or_else(|| {
+                ThinClientError::Other("voucher_induct: voucher_write_cap is None".to_string())
+            })?,
+            voucher_read_cap: reply.voucher_read_cap.ok_or_else(|| {
+                ThinClientError::Other("voucher_induct: voucher_read_cap is None".to_string())
+            })?,
+            salt: reply.salt.ok_or_else(|| {
+                ThinClientError::Other("voucher_induct: salt is None".to_string())
+            })?,
         })
     }
 
@@ -1777,8 +1914,8 @@ impl ThinClient {
             sealed_reply: sealed_reply.to_vec(),
             message_write_cap: message_write_cap.to_vec(),
         };
-        let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(ThinClientError::CborError)?;
+        let request_value =
+            serde_cbor::value::to_value(&request_inner).map_err(ThinClientError::CborError)?;
         let mut request = BTreeMap::new();
         request.insert(Value::Text("voucher_open".to_string()), request_value);
 
@@ -1789,9 +1926,17 @@ impl ThinClient {
             return Err(error_code_to_error(reply.error_code));
         }
         Ok(VoucherOpenResult {
-            who_reply: reply.who_reply.ok_or_else(|| ThinClientError::Other("voucher_open: who_reply is None".to_string()))?,
-            salt: reply.salt.ok_or_else(|| ThinClientError::Other("voucher_open: salt is None".to_string()))?,
-            mutated_message_write_cap: reply.mutated_message_write_cap.ok_or_else(|| ThinClientError::Other("voucher_open: mutated_message_write_cap is None".to_string()))?,
+            who_reply: reply.who_reply.ok_or_else(|| {
+                ThinClientError::Other("voucher_open: who_reply is None".to_string())
+            })?,
+            salt: reply
+                .salt
+                .ok_or_else(|| ThinClientError::Other("voucher_open: salt is None".to_string()))?,
+            mutated_message_write_cap: reply.mutated_message_write_cap.ok_or_else(|| {
+                ThinClientError::Other(
+                    "voucher_open: mutated_message_write_cap is None".to_string(),
+                )
+            })?,
         })
     }
 
@@ -1806,10 +1951,13 @@ impl ThinClient {
             query_id: query_id.clone(),
             voucher: voucher.to_vec(),
         };
-        let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(ThinClientError::CborError)?;
+        let request_value =
+            serde_cbor::value::to_value(&request_inner).map_err(ThinClientError::CborError)?;
         let mut request = BTreeMap::new();
-        request.insert(Value::Text("voucher_derive_stream".to_string()), request_value);
+        request.insert(
+            Value::Text("voucher_derive_stream".to_string()),
+            request_value,
+        );
 
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
         let reply: VoucherDeriveStreamReply = serde_cbor::value::from_value(Value::Map(reply_map))
@@ -1818,8 +1966,16 @@ impl ThinClient {
             return Err(error_code_to_error(reply.error_code));
         }
         Ok(VoucherStreamResult {
-            voucher_write_cap: reply.voucher_write_cap.ok_or_else(|| ThinClientError::Other("voucher_derive_stream: voucher_write_cap is None".to_string()))?,
-            voucher_read_cap: reply.voucher_read_cap.ok_or_else(|| ThinClientError::Other("voucher_derive_stream: voucher_read_cap is None".to_string()))?,
+            voucher_write_cap: reply.voucher_write_cap.ok_or_else(|| {
+                ThinClientError::Other(
+                    "voucher_derive_stream: voucher_write_cap is None".to_string(),
+                )
+            })?,
+            voucher_read_cap: reply.voucher_read_cap.ok_or_else(|| {
+                ThinClientError::Other(
+                    "voucher_derive_stream: voucher_read_cap is None".to_string(),
+                )
+            })?,
         })
     }
 }
@@ -1849,13 +2005,15 @@ mod sack_request_tests {
         let req = WriteStreamRequest {
             query_id: vec![1, 2, 3],
             write_cap: vec![4, 5],
-            start_index: vec![6, 7],
             payload: vec![8, 9],
             window: 16,
         };
         let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
-        for expected in ["query_id", "write_cap", "start_index", "payload", "window"] {
-            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+        for expected in ["query_id", "write_cap", "payload", "window"] {
+            assert!(
+                keys.iter().any(|k| k == expected),
+                "missing field {expected}, got {keys:?}"
+            );
         }
     }
 
@@ -1864,13 +2022,15 @@ mod sack_request_tests {
         let req = ReadStreamRequest {
             query_id: vec![1],
             read_cap: vec![2],
-            start_index: vec![3],
             box_count: 4,
             window: 0,
         };
         let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
-        for expected in ["query_id", "read_cap", "start_index", "box_count", "window"] {
-            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+        for expected in ["query_id", "read_cap", "box_count", "window"] {
+            assert!(
+                keys.iter().any(|k| k == expected),
+                "missing field {expected}, got {keys:?}"
+            );
         }
     }
 
@@ -1883,7 +2043,10 @@ mod sack_request_tests {
         };
         let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
         for expected in ["query_id", "message_write_cap", "display_name"] {
-            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+            assert!(
+                keys.iter().any(|k| k == expected),
+                "missing field {expected}, got {keys:?}"
+            );
         }
     }
 
@@ -1897,7 +2060,10 @@ mod sack_request_tests {
         };
         let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
         for expected in ["query_id", "voucher", "voucher_payload", "who_reply"] {
-            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+            assert!(
+                keys.iter().any(|k| k == expected),
+                "missing field {expected}, got {keys:?}"
+            );
         }
     }
 
@@ -1910,8 +2076,16 @@ mod sack_request_tests {
             message_write_cap: vec![4],
         };
         let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
-        for expected in ["query_id", "voucher_secret_key", "sealed_reply", "message_write_cap"] {
-            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+        for expected in [
+            "query_id",
+            "voucher_secret_key",
+            "sealed_reply",
+            "message_write_cap",
+        ] {
+            assert!(
+                keys.iter().any(|k| k == expected),
+                "missing field {expected}, got {keys:?}"
+            );
         }
     }
 
@@ -1923,7 +2097,10 @@ mod sack_request_tests {
         };
         let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
         for expected in ["query_id", "voucher"] {
-            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+            assert!(
+                keys.iter().any(|k| k == expected),
+                "missing field {expected}, got {keys:?}"
+            );
         }
     }
 }
