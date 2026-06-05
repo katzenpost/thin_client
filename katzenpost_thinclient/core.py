@@ -86,6 +86,7 @@ THIN_CLIENT_ERROR_VOUCHER_HASH_MISMATCH = 28
 THIN_CLIENT_ERROR_VOUCHER_SIGNATURE_INVALID = 29
 THIN_CLIENT_ERROR_VOUCHER_SEAL_OPEN_FAILED = 30
 
+
 def thin_client_error_to_string(error_code: int) -> str:
     """Convert a thin client error code to a human-readable string."""
     error_messages = {
@@ -121,7 +122,9 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_VOUCHER_SIGNATURE_INVALID: "Voucher signed please-add did not verify",
         THIN_CLIENT_ERROR_VOUCHER_SEAL_OPEN_FAILED: "Voucher sealed reply could not be opened",
     }
-    return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
+    return error_messages.get(
+        error_code, f"Unknown thin client error code: {error_code}"
+    )
 
 
 class ConfigError(Exception):
@@ -134,6 +137,7 @@ class ConfigError(Exception):
     drifted config produces a loud, early failure instead of surfacing
     later as a mysterious runtime error during mixnet operations.
     """
+
     pass
 
 
@@ -141,68 +145,100 @@ class ConfigError(Exception):
 # These exceptions can be caught using isinstance() for specific error handling,
 # similar to how Go uses errors.Is() with sentinel errors.
 
+
 class ReplicaError(Exception):
     """Base class for all replica errors."""
+
     pass
+
 
 class BoxIDNotFoundError(ReplicaError):
     """Box ID not found on the replica. Occurs when reading from a non-existent mailbox."""
+
     pass
+
 
 class InvalidBoxIDError(ReplicaError):
     """Invalid box ID format."""
+
     pass
+
 
 class InvalidSignatureError(ReplicaError):
     """Signature verification failed."""
+
     pass
+
 
 class DatabaseFailureError(ReplicaError):
     """Replica encountered a database error."""
+
     pass
+
 
 class InvalidPayloadError(ReplicaError):
     """Payload data is invalid."""
+
     pass
+
 
 class StorageFullError(ReplicaError):
     """Replica's storage capacity has been exceeded."""
+
     pass
+
 
 class ReplicaInternalError(ReplicaError):
     """Internal error on the replica."""
+
     pass
+
 
 class InvalidEpochError(ReplicaError):
     """Epoch is invalid or expired."""
+
     pass
+
 
 class ReplicationFailedError(ReplicaError):
     """Replication to other replicas failed."""
+
     pass
+
 
 class BoxAlreadyExistsError(ReplicaError):
     """Box already contains data. Pigeonhole writes are immutable."""
+
     pass
+
 
 class TombstoneError(ReplicaError):
     """Box contains a tombstone (intentional deletion). This is not a failure."""
+
     pass
+
 
 class InvalidTombstoneSignatureError(Exception):
     """Tombstone signature verification failed (forgery or corruption)."""
+
     pass
+
 
 class MKEMDecryptionFailedError(Exception):
     """MKEM envelope decryption failed with all replica keys."""
+
     pass
+
 
 class BACAPDecryptionFailedError(Exception):
     """BACAP payload decryption or signature verification failed."""
+
     pass
+
 
 class StartResendingCancelledError(Exception):
     """StartResendingEncryptedMessage operation was cancelled."""
+
     pass
 
 
@@ -220,7 +256,9 @@ class CopyCommandFailedError(Exception):
             applicable. This is NOT a BACAP message index.
     """
 
-    def __init__(self, replica_error_code: int = 0, failed_envelope_index: int = 0) -> None:
+    def __init__(
+        self, replica_error_code: int = 0, failed_envelope_index: int = 0
+    ) -> None:
         self.replica_error_code = replica_error_code
         self.failed_envelope_index = failed_envelope_index
         super().__init__(
@@ -232,6 +270,7 @@ class CopyCommandFailedError(Exception):
 class PayloadTooLargeError(Exception):
     """A WriteStream plaintext or a ReadStream result exceeded the daemon's
     configured maximum stream payload size."""
+
     pass
 
 
@@ -329,6 +368,7 @@ def is_expected_outcome(exc: Exception) -> bool:
 class ThinClientOfflineError(Exception):
     pass
 
+
 # SURB_ID_SIZE is the size in bytes for the
 # Katzenpost SURB ID.
 SURB_ID_SIZE = 16
@@ -369,7 +409,24 @@ class Geometry:
         KEMName (str): Name of the KEM scheme (if used). Mutually exclusive with NIKEName.
     """
 
-    def __init__(self, *, PacketLength:int, NrHops:int, HeaderLength:int, RoutingInfoLength:int, PerHopRoutingInfoLength:int, SURBLength:int, SphinxPlaintextHeaderLength:int, PayloadTagLength:int, ForwardPayloadLength:int, UserForwardPayloadLength:int, NextNodeHopLength:int, SPRPKeyMaterialLength:int, NIKEName:str='', KEMName:str='') -> None:
+    def __init__(
+        self,
+        *,
+        PacketLength: int,
+        NrHops: int,
+        HeaderLength: int,
+        RoutingInfoLength: int,
+        PerHopRoutingInfoLength: int,
+        SURBLength: int,
+        SphinxPlaintextHeaderLength: int,
+        PayloadTagLength: int,
+        ForwardPayloadLength: int,
+        UserForwardPayloadLength: int,
+        NextNodeHopLength: int,
+        SPRPKeyMaterialLength: int,
+        NIKEName: str = "",
+        KEMName: str = "",
+    ) -> None:
         self.PacketLength = PacketLength
         self.NrHops = NrHops
         self.HeaderLength = HeaderLength
@@ -438,7 +495,7 @@ class PigeonholeGeometry:
         courier_query_reply_read_length: int = 0,
         courier_query_reply_write_length: int = 0,
         nike_name: str = "",
-        signature_scheme_name: str = "Ed25519"
+        signature_scheme_name: str = "Ed25519",
     ) -> None:
         self.max_plaintext_payload_length = max_plaintext_payload_length
         self.courier_query_read_length = courier_query_read_length
@@ -510,14 +567,15 @@ class ConfigFile:
     subtable-discriminated Dial transport config. The geometries are
     supplied by the daemon over the handshake, not configured here.
     """
+
     def __init__(
         self,
         dial: "DialConfig",
     ) -> None:
-        self.dial : "DialConfig" = dial
+        self.dial: "DialConfig" = dial
 
     @classmethod
-    def load(cls, toml_path:str) -> "ConfigFile":
+    def load(cls, toml_path: str) -> "ConfigFile":
         """
         Parse a kpclientd-style thin-client TOML config.
 
@@ -530,7 +588,7 @@ class ConfigFile:
         runtime failure later.
         """
         try:
-            with open(toml_path, 'r') as f:
+            with open(toml_path, "r") as f:
                 data = toml.load(f)
         except FileNotFoundError as e:
             raise ConfigError(f"config: {toml_path}: file not found") from e
@@ -625,8 +683,10 @@ def pretty_print_obj(obj: "Any") -> str:
     pp = pprintpp.PrettyPrinter(indent=4)
     return pp.pformat(obj)
 
-def blake2_256_sum(data:bytes) -> bytes:
+
+def blake2_256_sum(data: bytes) -> bytes:
     return hashlib.blake2b(data, digest_size=32).digest()
+
 
 class ServiceDescriptor:
     """
@@ -646,16 +706,19 @@ class ServiceDescriptor:
             where the provider ID is a 32-byte BLAKE2b hash of the IdentityKey.
     """
 
-    def __init__(self, recipient_queue_id:bytes, mix_descriptor: "Dict[Any,Any]") -> None:
+    def __init__(
+        self, recipient_queue_id: bytes, mix_descriptor: "Dict[Any,Any]"
+    ) -> None:
         self.recipient_queue_id = recipient_queue_id
         self.mix_descriptor = mix_descriptor
 
     def to_destination(self) -> "Tuple[bytes,bytes]":
         "provider identity key hash and queue id"
-        provider_id_hash = blake2_256_sum(self.mix_descriptor['IdentityKey'])
+        provider_id_hash = blake2_256_sum(self.mix_descriptor["IdentityKey"])
         return (provider_id_hash, self.recipient_queue_id)
 
-def find_services(capability:str, doc:"Dict[str,Any]") -> "List[ServiceDescriptor]":
+
+def find_services(capability: str, doc: "Dict[str,Any]") -> "List[ServiceDescriptor]":
     """
     Search the PKI document for services supporting the specified capability.
 
@@ -676,16 +739,18 @@ def find_services(capability:str, doc:"Dict[str,Any]") -> "List[ServiceDescripto
         KeyError: If the 'ServiceNodes' field is missing from the PKI document.
     """
     services = []
-    for node in doc['ServiceNodes']:
+    for node in doc["ServiceNodes"]:
         mynode = cbor2.loads(node)
 
         # Check if the node has services in Kaetzchen field (fixed from omitempty)
-        if 'Kaetzchen' in mynode:
-            for cap, details in mynode['Kaetzchen'].items():
+        if "Kaetzchen" in mynode:
+            for cap, details in mynode["Kaetzchen"].items():
                 if cap == capability:
                     service_desc = ServiceDescriptor(
-                        recipient_queue_id=bytes(details['endpoint'], 'utf-8'), # why is this bytes when it's string in PKI?
-                        mix_descriptor=mynode
+                        recipient_queue_id=bytes(
+                            details["endpoint"], "utf-8"
+                        ),  # why is this bytes when it's string in PKI?
+                        mix_descriptor=mynode,
                     )
                     services.append(service_desc)
     return services
@@ -716,12 +781,15 @@ class Config:
         >>> client = ThinClient(config)
     """
 
-    def __init__(self, filepath:str,
-                 on_connection_status:"Callable|None"=None,
-                 on_new_pki_document:"Callable|None"=None,
-                 on_message_sent:"Callable|None"=None,
-                 on_message_reply:"Callable|None"=None,
-                 on_daemon_disconnected:"Callable|None"=None) -> None:
+    def __init__(
+        self,
+        filepath: str,
+        on_connection_status: "Callable|None" = None,
+        on_new_pki_document: "Callable|None" = None,
+        on_message_sent: "Callable|None" = None,
+        on_message_reply: "Callable|None" = None,
+        on_daemon_disconnected: "Callable|None" = None,
+    ) -> None:
         """
         Initialize the Config object.
 
@@ -820,7 +888,7 @@ class ThinClient:
     All cryptographic operations are handled by the daemon, not by this client.
     """
 
-    def __init__(self, config:Config) -> None:
+    def __init__(self, config: Config) -> None:
         """
         Initialize the thin client with the given configuration.
 
@@ -830,35 +898,47 @@ class ThinClient:
         Raises:
             RuntimeError: If the network type is not recognized or config is incomplete.
         """
-        self.pki_doc : Dict[Any,Any] | None = None
-        self._pki_doc_cache : Dict[int, Dict[Any,Any]] = {}  # epoch -> parsed PKI doc
+        self.pki_doc: Dict[Any, Any] | None = None
+        self._pki_doc_cache: Dict[int, Dict[Any, Any]] = {}  # epoch -> parsed PKI doc
         self.config = config
         # Geometry is runtime state the daemon supplies in its
         # ConnectionStatusEvent during the handshake; None until the
         # first connection status event has been parsed.
-        self.geometry : "Geometry | None" = None
-        self.pigeonhole_geometry : "PigeonholeGeometry | None" = None
+        self.geometry: "Geometry | None" = None
+        self.pigeonhole_geometry: "PigeonholeGeometry | None" = None
         self.reply_received_event = asyncio.Event()
-        self._is_connected : bool = False  # Track connection state
-        self._stopping : bool = False  # Track shutdown state to suppress expected errors
-        self._received_shutdown : bool = False  # Track if daemon sent ShutdownEvent before disconnect
-        self._daemon_instance_token : "bytes|None" = None  # Daemon instance token for reconnect detection
-        self._in_flight_resends : Dict[bytes, Dict[str, Any]] = {}  # envelope_hash -> request dict
-        self.instance_token : bytes = os.urandom(16)  # Client instance token for session resumption
+        self._is_connected: bool = False  # Track connection state
+        self._stopping: bool = False  # Track shutdown state to suppress expected errors
+        self._received_shutdown: bool = (
+            False  # Track if daemon sent ShutdownEvent before disconnect
+        )
+        self._daemon_instance_token: "bytes|None" = (
+            None  # Daemon instance token for reconnect detection
+        )
+        self._in_flight_resends: Dict[
+            bytes, Dict[str, Any]
+        ] = {}  # envelope_hash -> request dict
+        self.instance_token: bytes = os.urandom(
+            16
+        )  # Client instance token for session resumption
 
         # Mutexes to serialize socket send/recv operations:
         self._send_lock = asyncio.Lock()
         self._recv_lock = asyncio.Lock()
 
         # Letterbox for each response associated (by query_id) with a request.
-        self.response_queues : Dict[bytes, asyncio.Queue[Dict[str,Any]]] = {}  # (query_id|message_id) -> Queue
-        self.ack_queues : Dict[bytes, asyncio.Queue[Dict[str,Any]]] = {}  # (query_id|message_id) -> Queue
+        self.response_queues: Dict[
+            bytes, asyncio.Queue[Dict[str, Any]]
+        ] = {}  # (query_id|message_id) -> Queue
+        self.ack_queues: Dict[
+            bytes, asyncio.Queue[Dict[str, Any]]
+        ] = {}  # (query_id|message_id) -> Queue
 
-        self.logger = logging.getLogger('thinclient')
+        self.logger = logging.getLogger("thinclient")
         self.logger.setLevel(logging.DEBUG)
         # Only add handler if none exists to avoid duplicate log messages
         # XXX: commented out because it did in fact log twice:
-        #if not self.logger.handlers:
+        # if not self.logger.handlers:
         #    handler = logging.StreamHandler(sys.stderr)
         #    self.logger.addHandler(handler)
 
@@ -868,8 +948,7 @@ class ThinClient:
         dialer = self.config.dial.resolve()
         self.socket, self.server_addr = dialer.setup_socket()
 
-
-    async def start(self, loop:asyncio.AbstractEventLoop) -> None:
+    async def start(self, loop: asyncio.AbstractEventLoop) -> None:
         """
         Start the thin client: establish connection to the daemon, read initial events,
         and begin the background event loop.
@@ -896,21 +975,28 @@ class ThinClient:
         await self.handle_response(response)
 
         # 3rd: send SessionToken and read SessionTokenReply
-        session_token_req = cbor2.dumps({
-            "session_token": {
-                "client_instance_token": self.instance_token,
+        session_token_req = cbor2.dumps(
+            {
+                "session_token": {
+                    "client_instance_token": self.instance_token,
+                }
             }
-        })
-        length_prefix = struct.pack('>I', len(session_token_req))
+        )
+        length_prefix = struct.pack(">I", len(session_token_req))
         await self._send_all(length_prefix + session_token_req)
 
         session_reply = await self.recv(loop)
-        assert session_reply.get("session_token_reply") is not None, f"expected session_token_reply, got {session_reply}"
-        self.logger.debug(f"Session token reply: resumed={session_reply['session_token_reply'].get('resumed')}")
+        assert session_reply.get("session_token_reply") is not None, (
+            f"expected session_token_reply, got {session_reply}"
+        )
+        self.logger.debug(
+            f"Session token reply: resumed={session_reply['session_token_reply'].get('resumed')}"
+        )
 
         # Start the read loop as a background task
         self.logger.debug("starting read loop")
         self.task = loop.create_task(self.worker_loop(loop))
+
         def handle_loop_err(task):
             # Check stopping flag first - if we're shutting down, all errors are expected
             if self._stopping:
@@ -924,11 +1010,15 @@ class ThinClient:
                 # Connection errors can occur due to race conditions during shutdown
                 # Double-check _stopping flag as it may have been set after the exception
                 if not self._stopping:
-                    self.logger.error(f"Unexpected connection error in worker loop: {e}")
+                    self.logger.error(
+                        f"Unexpected connection error in worker loop: {e}"
+                    )
             except Exception:
                 import traceback
+
                 traceback.print_exc()
                 raise
+
         self.task.add_done_callback(handle_loop_err)
 
     def get_config(self) -> Config:
@@ -981,7 +1071,7 @@ class ThinClient:
         # Without this, stale ARQ entries poll forever and crowd out new requests.
         try:
             close_msg = cbor2.dumps({"thin_close": {}})
-            length_prefix = struct.pack('>I', len(close_msg))
+            length_prefix = struct.pack(">I", len(close_msg))
             self.socket.sendall(length_prefix + close_msg)
         except Exception:
             pass  # Best effort — socket may already be closed
@@ -1013,17 +1103,19 @@ class ThinClient:
             loop = asyncio.get_running_loop()
             await loop.sock_sendall(self.socket, data)
 
-    async def __recv_exactly(self, total:int, loop:asyncio.AbstractEventLoop) -> bytes:
-      "receive exactly (total) bytes or die trying raising BrokenPipeError"
-      buf = bytearray(total)
-      remain = memoryview(buf)
-      while len(remain):
-        if not (nread := await loop.sock_recv_into(self.socket, remain)):
-            raise BrokenPipeError
-        remain = remain[nread:]
-      return buf
+    async def __recv_exactly(
+        self, total: int, loop: asyncio.AbstractEventLoop
+    ) -> bytes:
+        "receive exactly (total) bytes or die trying raising BrokenPipeError"
+        buf = bytearray(total)
+        remain = memoryview(buf)
+        while len(remain):
+            if not (nread := await loop.sock_recv_into(self.socket, remain)):
+                raise BrokenPipeError
+            remain = remain[nread:]
+        return buf
 
-    async def recv(self, loop:asyncio.AbstractEventLoop) -> "Dict[Any,Any]":
+    async def recv(self, loop: asyncio.AbstractEventLoop) -> "Dict[Any,Any]":
         """
         Receive a CBOR-encoded message from the daemon.
 
@@ -1038,20 +1130,23 @@ class ThinClient:
             ValueError: If message framing fails.
         """
         async with self._recv_lock:
-          length_prefix = await self.__recv_exactly(4, loop)
-          message_length = struct.unpack('>I', length_prefix)[0]
-          if message_length > MAX_MESSAGE_SIZE:
-              raise ValueError(
-                  f"daemon response frame too large: {message_length} bytes "
-                  f"(max {MAX_MESSAGE_SIZE})")
-          raw_data = await self.__recv_exactly(message_length, loop)
+            length_prefix = await self.__recv_exactly(4, loop)
+            message_length = struct.unpack(">I", length_prefix)[0]
+            if message_length > MAX_MESSAGE_SIZE:
+                raise ValueError(
+                    f"daemon response frame too large: {message_length} bytes "
+                    f"(max {MAX_MESSAGE_SIZE})"
+                )
+            raw_data = await self.__recv_exactly(message_length, loop)
         try:
-          response = cbor2.loads(raw_data)
+            response = cbor2.loads(raw_data)
         except cbor2.CBORDecodeValueError as e:
-          self.logger.error(f"{e}")
-          raise ValueError(f"{e}")
-        if not (set(response.keys()) & {'new_pki_document_event'}):
-            self.logger.debug(f"Received daemon response: [{len(raw_data)}] {type(response)} {response}")
+            self.logger.error(f"{e}")
+            raise ValueError(f"{e}")
+        if not (set(response.keys()) & {"new_pki_document_event"}):
+            self.logger.debug(
+                f"Received daemon response: [{len(raw_data)}] {type(response)} {response}"
+            )
         return response
 
     async def _reconnect(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -1065,45 +1160,64 @@ class ThinClient:
                 return
 
             try:
-                self.logger.debug(f"Attempting to reconnect to daemon via {self.config.dial}")
+                self.logger.debug(
+                    f"Attempting to reconnect to daemon via {self.config.dial}"
+                )
                 self.socket = self._create_socket()
                 await loop.sock_connect(self.socket, self.server_addr)
 
                 # Handshake: read ConnectionStatusEvent
                 response1 = await self.recv(loop)
                 if response1.get("connection_status_event") is None:
-                    self.logger.error("Reconnect handshake failed: expected connection_status_event")
+                    self.logger.error(
+                        "Reconnect handshake failed: expected connection_status_event"
+                    )
                     self.socket.close()
                     continue
                 self.parse_status(response1["connection_status_event"])
-                await self.config.handle_connection_status_event(response1["connection_status_event"])
+                await self.config.handle_connection_status_event(
+                    response1["connection_status_event"]
+                )
 
                 # Handshake: read NewPKIDocumentEvent (may have empty payload)
                 response2 = await self.recv(loop)
                 if response2.get("new_pki_document_event") is not None:
                     if response2["new_pki_document_event"].get("payload"):
                         self.parse_pki_doc(response2["new_pki_document_event"])
-                        await self.config.handle_new_pki_document_event(response2["new_pki_document_event"])
+                        await self.config.handle_new_pki_document_event(
+                            response2["new_pki_document_event"]
+                        )
 
                 # Handshake: send SessionToken and read SessionTokenReply
-                session_token_req = cbor2.dumps({
-                    "session_token": {
-                        "client_instance_token": self.instance_token,
+                session_token_req = cbor2.dumps(
+                    {
+                        "session_token": {
+                            "client_instance_token": self.instance_token,
+                        }
                     }
-                })
-                length_prefix = struct.pack('>I', len(session_token_req))
+                )
+                length_prefix = struct.pack(">I", len(session_token_req))
                 await self._send_all(length_prefix + session_token_req)
 
                 response3 = await self.recv(loop)
                 if response3.get("session_token_reply") is None:
-                    self.logger.error("Reconnect handshake failed: expected session_token_reply")
+                    self.logger.error(
+                        "Reconnect handshake failed: expected session_token_reply"
+                    )
                     self.socket.close()
                     continue
                 resumed = response3["session_token_reply"].get("resumed", False)
-                self.logger.info(f"Reconnected to daemon (connected={self._is_connected}, resumed={resumed})")
+                self.logger.info(
+                    f"Reconnected to daemon (connected={self._is_connected}, resumed={resumed})"
+                )
                 return
 
-            except (BrokenPipeError, ConnectionResetError, OSError, asyncio.CancelledError) as e:
+            except (
+                BrokenPipeError,
+                ConnectionResetError,
+                OSError,
+                asyncio.CancelledError,
+            ) as e:
                 if self._stopping:
                     return
                 self.logger.debug(f"Reconnect failed: {e} (backoff {backoff}s)")
@@ -1118,13 +1232,15 @@ class ThinClient:
         for key, request in list(self._in_flight_resends.items()):
             try:
                 cbor_request = cbor2.dumps(request)
-                length_prefix = struct.pack('>I', len(cbor_request))
+                length_prefix = struct.pack(">I", len(cbor_request))
                 await self._send_all(length_prefix + cbor_request)
                 self.logger.debug(f"Replayed in-flight request: {key.hex()[:16]}...")
             except Exception as e:
                 self.logger.error(f"Failed to replay in-flight request: {e}")
 
-    async def _read_until_disconnect(self, loop: asyncio.AbstractEventLoop) -> "Exception|None":
+    async def _read_until_disconnect(
+        self, loop: asyncio.AbstractEventLoop
+    ) -> "Exception|None":
         """Read and dispatch messages until disconnect or stop. Returns the disconnect error, or None if stopped."""
         while not self._stopping:
             try:
@@ -1141,12 +1257,15 @@ class ThinClient:
                 self.logger.error(f"Error reading from socket: {e}")
                 return e
             else:
+
                 def handle_response_err(task):
                     try:
                         task.result()
                     except Exception:
                         import traceback
+
                         traceback.print_exc()
+
                 resp = asyncio.create_task(self.handle_response(response))
                 resp.add_done_callback(handle_response_err)
         return None
@@ -1162,7 +1281,9 @@ class ThinClient:
             if disconnect_err is None:
                 return
 
-            self.logger.info(f"Daemon disconnected (graceful={self._received_shutdown}, err={disconnect_err})")
+            self.logger.info(
+                f"Daemon disconnected (graceful={self._received_shutdown}, err={disconnect_err})"
+            )
             try:
                 self.socket.close()
             except Exception:
@@ -1170,10 +1291,12 @@ class ThinClient:
             self._is_connected = False
             previous_token = self._daemon_instance_token
 
-            await self.config.handle_daemon_disconnected_event({
-                "is_graceful": self._received_shutdown,
-                "error": str(disconnect_err) if disconnect_err else None,
-            })
+            await self.config.handle_daemon_disconnected_event(
+                {
+                    "is_graceful": self._received_shutdown,
+                    "error": str(disconnect_err) if disconnect_err else None,
+                }
+            )
             self._received_shutdown = False
 
             await self._reconnect(loop)
@@ -1181,7 +1304,9 @@ class ThinClient:
                 return
 
             if self._daemon_instance_token != previous_token:
-                self.logger.info("New daemon instance detected, replaying in-flight requests")
+                self.logger.info(
+                    "New daemon instance detected, replaying in-flight requests"
+                )
                 await self._replay_in_flight_resends()
             else:
                 self.logger.info("Same daemon instance, skipping replay")
@@ -1196,7 +1321,9 @@ class ThinClient:
         self._is_connected = event.get("is_connected", False)
         token = event.get("instance_token")
         if token is not None:
-            self._daemon_instance_token = bytes(token) if not isinstance(token, bytes) else token
+            self._daemon_instance_token = (
+                bytes(token) if not isinstance(token, bytes) else token
+            )
 
         # The daemon supplies the geometries here rather than the thin
         # client carrying them in its config file. A daemon that omits
@@ -1205,17 +1332,25 @@ class ThinClient:
         if sphinx_geo is not None:
             self.geometry = _sphinx_geometry_from_event(sphinx_geo)
         else:
-            self.logger.error("Daemon did not supply sphinx_geometry in its ConnectionStatusEvent (incompatible daemon)")
+            self.logger.error(
+                "Daemon did not supply sphinx_geometry in its ConnectionStatusEvent (incompatible daemon)"
+            )
         pigeonhole_geo = event.get("pigeonhole_geometry")
         if pigeonhole_geo is not None:
             self.pigeonhole_geometry = _pigeonhole_geometry_from_event(pigeonhole_geo)
         else:
-            self.logger.error("Daemon did not supply pigeonhole_geometry in its ConnectionStatusEvent (incompatible daemon)")
+            self.logger.error(
+                "Daemon did not supply pigeonhole_geometry in its ConnectionStatusEvent (incompatible daemon)"
+            )
 
         if self._is_connected:
-            self.logger.debug("Daemon is connected to mixnet - full functionality available")
+            self.logger.debug(
+                "Daemon is connected to mixnet - full functionality available"
+            )
         else:
-            self.logger.info("Daemon is not connected to mixnet - entering offline mode (channel operations will work)")
+            self.logger.info(
+                "Daemon is not connected to mixnet - entering offline mode (channel operations will work)"
+            )
 
         self.logger.debug("parse status success")
 
@@ -1238,7 +1373,7 @@ class ThinClient:
         """
         return self.pki_doc
 
-    def pki_document_for_epoch(self, epoch:int) -> "Dict[str,Any]":
+    def pki_document_for_epoch(self, epoch: int) -> "Dict[str,Any]":
         """
         Return the cached PKI document for a specific epoch.
 
@@ -1261,7 +1396,7 @@ class ThinClient:
             return self.pki_doc
         raise Exception("no PKI document available for the requested epoch")
 
-    async def get_pki_document_raw(self, epoch:int = 0) -> "Tuple[bytes,int]":
+    async def get_pki_document_raw(self, epoch: int = 0) -> "Tuple[bytes,int]":
         """
         Return the cert.Certificate-wrapped signed PKI document for the
         requested epoch, with every directory authority signature intact.
@@ -1335,7 +1470,7 @@ class ThinClient:
 
         self.logger.debug("parse pki doc success")
 
-    def get_services(self, capability:str) -> "List[ServiceDescriptor]":
+    def get_services(self, capability: str) -> "List[ServiceDescriptor]":
         """
         Look up all services in the PKI that advertise a given capability.
 
@@ -1356,7 +1491,7 @@ class ThinClient:
             raise Exception("service not found in pki doc")
         return descriptors
 
-    def get_service(self, service_name:str) -> ServiceDescriptor:
+    def get_service(self, service_name: str) -> ServiceDescriptor:
         """
         Select one random service matching a capability from the current
         PKI document.
@@ -1401,11 +1536,11 @@ class ThinClient:
         services = self.get_services("courier")
         couriers = []
         for svc in services:
-            identity_hash = blake2_256_sum(svc.mix_descriptor['IdentityKey'])
+            identity_hash = blake2_256_sum(svc.mix_descriptor["IdentityKey"])
             couriers.append((identity_hash, svc.recipient_queue_id))
         return couriers
 
-    def get_distinct_couriers(self, n:int) -> "List[Tuple[bytes, bytes]]":
+    def get_distinct_couriers(self, n: int) -> "List[Tuple[bytes, bytes]]":
         """
         Draw ``n`` couriers uniformly at random from the list returned by
         ``get_all_couriers``, without replacement, so that no two entries
@@ -1428,7 +1563,13 @@ class ThinClient:
             raise Exception("not enough couriers available")
         return random.sample(couriers, n)
 
-    async def blocking_send_message(self, payload:bytes|str, dest_node:bytes, dest_queue:bytes, timeout_seconds:float=30.0) -> bytes:
+    async def blocking_send_message(
+        self,
+        payload: bytes | str,
+        dest_node: bytes,
+        dest_queue: bytes,
+        timeout_seconds: float = 30.0,
+    ) -> bytes:
         """
         Send a message and block until a reply is received or timeout.
 
@@ -1446,7 +1587,9 @@ class ThinClient:
             asyncio.TimeoutError: If no reply within timeout.
         """
         if not self._is_connected:
-            raise ThinClientOfflineError("cannot send message in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError(
+                "cannot send message in offline mode - daemon not connected to mixnet"
+            )
 
         surb_id = self.new_surb_id()
         reply_future = asyncio.get_event_loop().create_future()
@@ -1513,10 +1656,11 @@ class ThinClient:
         """
         return os.urandom(16)
 
-
-    async def _send_and_wait(self, *, query_id:bytes, request: Dict[str, Any]) -> Dict[str, Any]:
+    async def _send_and_wait(
+        self, *, query_id: bytes, request: Dict[str, Any]
+    ) -> Dict[str, Any]:
         cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefix = struct.pack(">I", len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
         assert query_id not in self.response_queues
         self.response_queues[query_id] = asyncio.Queue(maxsize=1)
@@ -1547,7 +1691,9 @@ class ThinClient:
         if response.get("connection_status_event") is not None:
             self.logger.debug("connection status event")
             self.parse_status(response["connection_status_event"])
-            await self.config.handle_connection_status_event(response["connection_status_event"])
+            await self.config.handle_connection_status_event(
+                response["connection_status_event"]
+            )
             return
         if response.get("new_pki_document_event") is not None:
             self.logger.debug("new pki doc event")
@@ -1570,7 +1716,9 @@ class ThinClient:
             if not reply:
                 continue
             self.logger.debug(f"channel {reply_type} event")
-            if not reply_type.endswith("_reply") or not (query_id := reply.get("query_id", None)):
+            if not reply_type.endswith("_reply") or not (
+                query_id := reply.get("query_id", None)
+            ):
                 self.logger.debug(f"{reply_type} is not a reply, or can't get query_id")
                 continue
             if not (queue := self.response_queues.get(query_id, None)):
@@ -1579,9 +1727,9 @@ class ThinClient:
             # avoid blocking recv loop:
             asyncio.create_task(queue.put(reply))
 
-
-
-    async def send_message_without_reply(self, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
+    async def send_message_without_reply(
+        self, payload: bytes | str, dest_node: bytes, dest_queue: bytes
+    ) -> None:
         """
         Send a fire-and-forget message with no SURB or reply handling.
         This method requires mixnet connectivity.
@@ -1596,10 +1744,12 @@ class ThinClient:
         """
         # Check if we're in offline mode
         if not self._is_connected:
-            raise ThinClientOfflineError("cannot send_message_without_reply in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError(
+                "cannot send_message_without_reply in offline mode - daemon not connected to mixnet"
+            )
 
         if not isinstance(payload, bytes):
-            payload = payload.encode('utf-8')  # Encoding the string to bytes
+            payload = payload.encode("utf-8")  # Encoding the string to bytes
 
         # Create the SendMessage structure
         send_message = {
@@ -1612,12 +1762,10 @@ class ThinClient:
         }
 
         # Wrap in the new Request structure
-        request = {
-            "send_message": send_message
-        }
+        request = {"send_message": send_message}
 
         cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefix = struct.pack(">I", len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
         try:
             await self._send_all(length_prefixed_request)
@@ -1625,7 +1773,9 @@ class ThinClient:
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
 
-    async def send_message(self, surb_id:bytes, payload:bytes|str, dest_node:bytes, dest_queue:bytes) -> None:
+    async def send_message(
+        self, surb_id: bytes, payload: bytes | str, dest_node: bytes, dest_queue: bytes
+    ) -> None:
         """
         Send a message using a SURB to allow the recipient to send a reply.
         This method requires mixnet connectivity.
@@ -1641,10 +1791,12 @@ class ThinClient:
         """
         # Check if we're in offline mode
         if not self._is_connected:
-            raise ThinClientOfflineError("cannot send message in offline mode - daemon not connected to mixnet")
+            raise ThinClientOfflineError(
+                "cannot send message in offline mode - daemon not connected to mixnet"
+            )
 
         if not isinstance(payload, bytes):
-            payload = payload.encode('utf-8')  # Encoding the string to bytes
+            payload = payload.encode("utf-8")  # Encoding the string to bytes
 
         # Create the SendMessage structure
         send_message = {
@@ -1657,12 +1809,10 @@ class ThinClient:
         }
 
         # Wrap in the new Request structure
-        request = {
-            "send_message": send_message
-        }
+        request = {"send_message": send_message}
 
         cbor_request = cbor2.dumps(request)
-        length_prefix = struct.pack('>I', len(cbor_request))
+        length_prefix = struct.pack(">I", len(cbor_request))
         length_prefixed_request = length_prefix + cbor_request
         try:
             await self._send_all(length_prefixed_request)
@@ -1678,31 +1828,29 @@ class ThinClient:
             doc (dict): Raw PKI document from the daemon.
         """
         assert doc is not None
-        assert doc['GatewayNodes'] is not None
-        assert doc['ServiceNodes'] is not None
-        assert doc['Topology'] is not None
+        assert doc["GatewayNodes"] is not None
+        assert doc["ServiceNodes"] is not None
+        assert doc["Topology"] is not None
 
         new_doc = doc
         gateway_nodes = []
         service_nodes = []
         topology = []
 
-        for gateway_cert_blob in doc['GatewayNodes']:
+        for gateway_cert_blob in doc["GatewayNodes"]:
             gateway_cert = cbor2.loads(gateway_cert_blob)
             gateway_nodes.append(gateway_cert)
 
-        for service_cert_blob in doc['ServiceNodes']:
+        for service_cert_blob in doc["ServiceNodes"]:
             service_cert = cbor2.loads(service_cert_blob)
             service_nodes.append(service_cert)
 
-        for layer in doc['Topology']:
+        for layer in doc["Topology"]:
             for mix_desc_blob in layer:
                 mix_cert = cbor2.loads(mix_desc_blob)
-                topology.append(mix_cert) # flatten, no prob, relax
+                topology.append(mix_cert)  # flatten, no prob, relax
 
-        new_doc['GatewayNodes'] = gateway_nodes
-        new_doc['ServiceNodes'] = service_nodes
-        new_doc['Topology'] = topology
+        new_doc["GatewayNodes"] = gateway_nodes
+        new_doc["ServiceNodes"] = service_nodes
+        new_doc["Topology"] = topology
         pretty_print_obj(new_doc)
-
-

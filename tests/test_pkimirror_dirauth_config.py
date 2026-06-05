@@ -21,8 +21,7 @@ kXn/CF+vkxup1qa4r9BBwl1aJXHjf51Ls/2rTH6i1Dk=
 """
 
 ED25519_BYTES = bytes.fromhex(
-    "9179ff085faf931ba9d6a6b8afd041c25d5a2571"
-    "e37f9d4bb3fdab4c7ea2d439"
+    "9179ff085faf931ba9d6a6b8afd041c25d5a2571e37f9d4bb3fdab4c7ea2d439"
 )
 
 # A synthetic ML-DSA-44-Ed25519 hybrid block (the Ed25519 half above,
@@ -95,7 +94,9 @@ def test_loads_minimal_config(tmp_path):
     assert isinstance(cfg, DirauthConfig)
     assert cfg.identities == [
         DirauthIdentity(
-            name="auth1", scheme="ED25519", pubkey=ED25519_BYTES,
+            name="auth1",
+            scheme="ED25519",
+            pubkey=ED25519_BYTES,
         ),
     ]
 
@@ -118,9 +119,7 @@ def test_loads_multiple_identities_and_schemes(tmp_path, caplog):
     assert len(cfg.identities) == 2
     assert cfg.identities[0].scheme == "ED25519"
     assert cfg.identities[1].scheme == "ML-DSA-44-ED25519"
-    assert any(
-        "ED25519" in rec.getMessage() for rec in caplog.records
-    )
+    assert any("ED25519" in rec.getMessage() for rec in caplog.records)
 
 
 def test_empty_identities_logs_warning(tmp_path, caplog):
@@ -142,11 +141,11 @@ def test_missing_file_returns_empty_config(tmp_path, caplog):
 def test_malformed_pem_raises_with_helpful_message(tmp_path):
     p = _write(
         tmp_path,
-        '''
+        """
         [[dirauths]]
         name = "broken"
         identity_public_key = "not a PEM block"
-        ''',
+        """,
     )
     with pytest.raises(DirauthConfigError) as exc_info:
         load_dirauth_config(str(p))
@@ -168,10 +167,10 @@ def test_missing_name_raises(tmp_path):
 def test_missing_identity_public_key_raises(tmp_path):
     p = _write(
         tmp_path,
-        '''
+        """
         [[dirauths]]
         name = "auth1"
-        ''',
+        """,
     )
     with pytest.raises(DirauthConfigError):
         load_dirauth_config(str(p))

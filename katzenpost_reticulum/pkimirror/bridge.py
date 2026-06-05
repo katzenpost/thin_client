@@ -39,10 +39,13 @@ class ThinClientBridge:
         if self._thread is not None:
             raise RuntimeError("ThinClientBridge already started")
         logger.info(
-            "ThinClientBridge starting; thinclient config at %s", self._cfg_path,
+            "ThinClientBridge starting; thinclient config at %s",
+            self._cfg_path,
         )
         self._thread = threading.Thread(
-            target=self._run, name="pkimirror-thinclient", daemon=True,
+            target=self._run,
+            name="pkimirror-thinclient",
+            daemon=True,
         )
         self._thread.start()
         try:
@@ -63,7 +66,8 @@ class ThinClientBridge:
             self._thread.join(timeout=timeout)
             if self._thread.is_alive():
                 logger.warning(
-                    "thin-client thread did not exit within %.1fs", timeout,
+                    "thin-client thread did not exit within %.1fs",
+                    timeout,
                 )
             self._thread = None
 
@@ -125,7 +129,8 @@ class ThinClientBridge:
         except Exception as exc:
             logger.warning(
                 "Failed to fetch signed PKI document for epoch %d: %s",
-                epoch, exc,
+                epoch,
+                exc,
             )
             return
         if not raw:
@@ -137,7 +142,8 @@ class ThinClientBridge:
         self._cache.put(returned_epoch, bytes(raw))
         logger.info(
             "Cached signed PKI document for epoch %d (%d bytes).",
-            returned_epoch, len(raw),
+            returned_epoch,
+            len(raw),
         )
         if not self._ready.done():
             self._ready.set_result(None)

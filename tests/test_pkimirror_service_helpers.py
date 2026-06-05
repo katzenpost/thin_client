@@ -17,9 +17,5 @@ def test_rns_handler_signatures_have_six_params():
         announce_interval=300.0,
         stale_after=600.0,
     )
-    assert (
-        len(inspect.signature(service._rns_handle_current).parameters) == 6
-    )
-    assert (
-        len(inspect.signature(service._rns_handle_epoch).parameters) == 6
-    )
+    assert len(inspect.signature(service._rns_handle_current).parameters) == 6
+    assert len(inspect.signature(service._rns_handle_epoch).parameters) == 6

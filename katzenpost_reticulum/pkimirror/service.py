@@ -52,7 +52,10 @@ class PkiMirrorService:
 
     def run(self) -> None:
         import RNS  # noqa: WPS433
-        RNS.Reticulum(self._reticulum_config) if self._reticulum_config else RNS.Reticulum()
+
+        RNS.Reticulum(
+            self._reticulum_config
+        ) if self._reticulum_config else RNS.Reticulum()
 
         identity = self._load_or_create_identity(RNS)
 
@@ -79,7 +82,9 @@ class PkiMirrorService:
         hexhash = RNS.prettyhexrep(self._destination.hash)
         logger.info(
             "pkimirror destination ready at %s (app=%s aspect=%s).",
-            hexhash, self._app_name, self._aspect,
+            hexhash,
+            self._app_name,
+            self._aspect,
         )
         print("pkimirror destination hash: " + hexhash, flush=True)
 
@@ -118,12 +123,24 @@ class PkiMirrorService:
         )
 
     def _rns_handle_current(
-        self, path, data, request_id, link_id, remote_identity, requested_at,
+        self,
+        path,
+        data,
+        request_id,
+        link_id,
+        remote_identity,
+        requested_at,
     ) -> bytes:
         return self._handlers.handle_current(data or b"")
 
     def _rns_handle_epoch(
-        self, path, data, request_id, link_id, remote_identity, requested_at,
+        self,
+        path,
+        data,
+        request_id,
+        link_id,
+        remote_identity,
+        requested_at,
     ) -> bytes:
         return self._handlers.handle_epoch(data or b"")
 

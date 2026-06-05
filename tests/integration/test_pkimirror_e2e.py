@@ -41,9 +41,7 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _write_rns_config(
-    config_dir: Path, role: str, port: int
-) -> Path:
+def _write_rns_config(config_dir: Path, role: str, port: int) -> Path:
     """Write a minimal Reticulum config that talks only over loopback TCP.
 
     For the server: a TCPServerInterface listening on the chosen port.
@@ -127,7 +125,9 @@ def daemon_required() -> None:
 
 @pytest.fixture(scope="session")
 def thinclient_config(daemon_required) -> str:
-    path = Path(__file__).resolve().parent.parent.parent / "testdata" / "thinclient.toml"
+    path = (
+        Path(__file__).resolve().parent.parent.parent / "testdata" / "thinclient.toml"
+    )
     if not path.is_file():
         pytest.skip(f"thin client config not found at {path}")
     return str(path)
@@ -156,14 +156,23 @@ def pkimirror_server(
     log_path = workdir / "pkimirror.log"
 
     cmd = [
-        sys.executable, "-m", "katzenpost_reticulum.pkimirror",
-        "--thinclient-config", thinclient_config,
-        "--identity", str(identity_path),
-        "--rns-config", server_rns_config,
-        "--dirauth-config", str(dirauth_path),
-        "--announce-interval", "5",
-        "--stale-after", "600",
-        "--log-level", "DEBUG",
+        sys.executable,
+        "-m",
+        "katzenpost_reticulum.pkimirror",
+        "--thinclient-config",
+        thinclient_config,
+        "--identity",
+        str(identity_path),
+        "--rns-config",
+        server_rns_config,
+        "--dirauth-config",
+        str(dirauth_path),
+        "--announce-interval",
+        "5",
+        "--stale-after",
+        "600",
+        "--log-level",
+        "DEBUG",
     ]
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
@@ -187,9 +196,7 @@ def pkimirror_server(
         for line in content.splitlines():
             if "pkimirror destination hash:" in line:
                 hex_part = line.split("destination hash:")[-1].strip()
-                hex_compact = (
-                    hex_part.strip("<>").replace(":", "").replace(" ", "")
-                )
+                hex_compact = hex_part.strip("<>").replace(":", "").replace(" ", "")
                 try:
                     destination_hash = bytes.fromhex(hex_compact)
                 except ValueError:
@@ -291,8 +298,6 @@ def test_get_for_unknown_epoch_returns_error(connected_client):
     assert result.epoch > 1
 
 
-
-
 def test_fetch_cli_retrieves_pki(pkimirror_server, client_rns_config, tmp_path):
     """Drive the pkimirror-fetch CLI as an operator would: a separate
     process that connects to the live mirror and writes the consensus
@@ -302,13 +307,21 @@ def test_fetch_cli_retrieves_pki(pkimirror_server, client_rns_config, tmp_path):
 
     proc = subprocess.run(
         [
-            sys.executable, "-m", "katzenpost_reticulum.pkimirror.fetch",
-            "--rns-config", client_rns_config,
-            "--destination", destination_hash.hex(),
-            "--connect-timeout", "90",
-            "--request-timeout", "60",
-            "--output", str(out),
-            "--log-level", "INFO",
+            sys.executable,
+            "-m",
+            "katzenpost_reticulum.pkimirror.fetch",
+            "--rns-config",
+            client_rns_config,
+            "--destination",
+            destination_hash.hex(),
+            "--connect-timeout",
+            "90",
+            "--request-timeout",
+            "60",
+            "--output",
+            str(out),
+            "--log-level",
+            "INFO",
         ],
         capture_output=True,
         text=True,
@@ -316,8 +329,7 @@ def test_fetch_cli_retrieves_pki(pkimirror_server, client_rns_config, tmp_path):
     )
 
     assert proc.returncode == 0, (
-        f"pkimirror-fetch exited {proc.returncode}\n"
-        f"stderr:\n{proc.stderr[-4000:]}"
+        f"pkimirror-fetch exited {proc.returncode}\nstderr:\n{proc.stderr[-4000:]}"
     )
     doc = out.read_bytes()
     assert len(doc) > 4 * 1024, f"document smaller than expected: {len(doc)}"

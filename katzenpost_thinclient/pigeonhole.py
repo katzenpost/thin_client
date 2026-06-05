@@ -27,6 +27,7 @@ from .core import (
 @dataclass
 class KeypairResult:
     """Result from new_keypair containing the generated capabilities."""
+
     write_cap: bytes
     read_cap: bytes
 
@@ -34,6 +35,7 @@ class KeypairResult:
 @dataclass
 class EncryptReadResult:
     """Result from encrypt_read containing the encrypted read request."""
+
     message_ciphertext: bytes
     envelope_descriptor: bytes
     envelope_hash: bytes
@@ -43,6 +45,7 @@ class EncryptReadResult:
 @dataclass
 class EncryptWriteResult:
     """Result from encrypt_write containing the encrypted write request."""
+
     message_ciphertext: bytes
     envelope_descriptor: bytes
     envelope_hash: bytes
@@ -52,6 +55,7 @@ class EncryptWriteResult:
 @dataclass
 class StartResendingResult:
     """Result from start_resending_encrypted_message and its variants."""
+
     plaintext: bytes
     """Decrypted message for read operations, or empty bytes for writes."""
     courier_identity_hash: "bytes | None"
@@ -70,6 +74,7 @@ class VoucherMintResult:
     ``voucher_payload`` to VoucherStream box 0. Persist ``voucher_secret_key``
     to open the inductor's reply later.
     """
+
     voucher: bytes
     voucher_payload: bytes
     voucher_write_cap: bytes
@@ -86,6 +91,7 @@ class VoucherInductResult:
     live read cap the inductor hands the group. Write ``sealed_reply`` to
     VoucherStream box 1.
     """
+
     display_name: str
     mutated_message_read_cap: bytes
     sealed_reply: bytes
@@ -102,6 +108,7 @@ class VoucherOpenResult:
     live write cap for real messages, which lands on the same box sequence as
     the read cap the inductor handed the group.
     """
+
     who_reply: bytes
     salt: bytes
     mutated_message_write_cap: bytes
@@ -110,6 +117,7 @@ class VoucherOpenResult:
 @dataclass
 class VoucherStreamResult:
     """Result from voucher_derive_stream: the rendezvous stream caps."""
+
     voucher_write_cap: bytes
     voucher_read_cap: bytes
 
@@ -148,12 +156,7 @@ async def new_keypair(self, seed: bytes) -> KeypairResult:
 
     query_id = self.new_query_id()
 
-    request = {
-        "new_keypair": {
-            "query_id": query_id,
-            "seed": seed
-        }
-    }
+    request = {"new_keypair": {"query_id": query_id, "seed": seed}}
 
     try:
         reply = await self._send_and_wait(query_id=query_id, request=request)
@@ -161,14 +164,11 @@ async def new_keypair(self, seed: bytes) -> KeypairResult:
         self.logger.error(f"Error creating keypair: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"new_keypair failed: {error_msg}")
 
-    return KeypairResult(
-        write_cap=reply["write_cap"],
-        read_cap=reply["read_cap"]
-    )
+    return KeypairResult(write_cap=reply["write_cap"], read_cap=reply["read_cap"])
 
 
 async def encrypt_read(self, read_cap: bytes) -> EncryptReadResult:
@@ -198,12 +198,7 @@ async def encrypt_read(self, read_cap: bytes) -> EncryptReadResult:
     """
     query_id = self.new_query_id()
 
-    request = {
-        "encrypt_read": {
-            "query_id": query_id,
-            "read_cap": read_cap
-        }
-    }
+    request = {"encrypt_read": {"query_id": query_id, "read_cap": read_cap}}
 
     try:
         reply = await self._send_and_wait(query_id=query_id, request=request)
@@ -211,15 +206,15 @@ async def encrypt_read(self, read_cap: bytes) -> EncryptReadResult:
         self.logger.error(f"Error encrypting read: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"encrypt_read failed: {error_msg}")
 
     return EncryptReadResult(
         message_ciphertext=reply["message_ciphertext"],
         envelope_descriptor=reply["envelope_descriptor"],
         envelope_hash=reply["envelope_hash"],
-        read_cap=reply["read_cap"]
+        read_cap=reply["read_cap"],
     )
 
 
@@ -264,7 +259,7 @@ async def encrypt_write(self, plaintext: bytes, write_cap: bytes) -> EncryptWrit
         "encrypt_write": {
             "query_id": query_id,
             "plaintext": plaintext,
-            "write_cap": write_cap
+            "write_cap": write_cap,
         }
     }
 
@@ -274,15 +269,15 @@ async def encrypt_write(self, plaintext: bytes, write_cap: bytes) -> EncryptWrit
         self.logger.error(f"Error encrypting write: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"encrypt_write failed: {error_msg}")
 
     return EncryptWriteResult(
         message_ciphertext=reply["message_ciphertext"],
         envelope_descriptor=reply["envelope_descriptor"],
         envelope_hash=reply["envelope_hash"],
-        write_cap=reply["write_cap"]
+        write_cap=reply["write_cap"],
     )
 
 
@@ -295,7 +290,7 @@ async def start_resending_encrypted_message(
     message_ciphertext: bytes,
     envelope_hash: bytes,
     no_retry_on_box_id_not_found: bool = False,
-    no_idempotent_box_already_exists: bool = False
+    no_idempotent_box_already_exists: bool = False,
 ) -> StartResendingResult:
     """
     Starts resending an encrypted message via ARQ.
@@ -369,7 +364,7 @@ async def start_resending_encrypted_message(
             "message_ciphertext": message_ciphertext,
             "envelope_hash": envelope_hash,
             "no_retry_on_box_id_not_found": no_retry_on_box_id_not_found,
-            "no_idempotent_box_already_exists": no_idempotent_box_already_exists
+            "no_idempotent_box_already_exists": no_idempotent_box_already_exists,
         }
     }
 
@@ -384,7 +379,7 @@ async def start_resending_encrypted_message(
     finally:
         self._in_flight_resends.pop(tracking_key, None)
 
-    error_code = reply.get('error_code', 0)
+    error_code = reply.get("error_code", 0)
     if error_code != THIN_CLIENT_SUCCESS:
         exc = error_code_to_exception(error_code)
         if exc:
@@ -436,7 +431,9 @@ async def write_stream(self, write_cap, payload, window=0):
         exc = error_code_to_exception(error_code)
         if exc:
             raise exc
-        raise Exception(f"write_stream failed: {thin_client_error_to_string(error_code)}")
+        raise Exception(
+            f"write_stream failed: {thin_client_error_to_string(error_code)}"
+        )
     return reply.get("write_cap")
 
 
@@ -473,7 +470,9 @@ async def read_stream(self, read_cap, box_count, window=0):
         exc = error_code_to_exception(error_code)
         if exc:
             raise exc
-        raise Exception(f"read_stream failed: {thin_client_error_to_string(error_code)}")
+        raise Exception(
+            f"read_stream failed: {thin_client_error_to_string(error_code)}"
+        )
     return reply.get("payload", b""), reply.get("read_cap")
 
 
@@ -484,7 +483,7 @@ async def start_resending_encrypted_message_return_box_exists(
     reply_index: "int|None",
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
-    envelope_hash: bytes
+    envelope_hash: bytes,
 ) -> StartResendingResult:
     """
     Behaves exactly like ``start_resending_encrypted_message`` save that
@@ -534,7 +533,7 @@ async def start_resending_encrypted_message_return_box_exists(
         envelope_descriptor=envelope_descriptor,
         message_ciphertext=message_ciphertext,
         envelope_hash=envelope_hash,
-        no_idempotent_box_already_exists=True
+        no_idempotent_box_already_exists=True,
     )
 
 
@@ -545,7 +544,7 @@ async def start_resending_encrypted_message_no_retry(
     reply_index: "int|None",
     envelope_descriptor: bytes,
     message_ciphertext: bytes,
-    envelope_hash: bytes
+    envelope_hash: bytes,
 ) -> StartResendingResult:
     """
     Behaves exactly like ``start_resending_encrypted_message`` save that
@@ -591,7 +590,7 @@ async def start_resending_encrypted_message_no_retry(
         envelope_descriptor=envelope_descriptor,
         message_ciphertext=message_ciphertext,
         envelope_hash=envelope_hash,
-        no_retry_on_box_id_not_found=True
+        no_retry_on_box_id_not_found=True,
     )
 
 
@@ -627,7 +626,7 @@ async def cancel_resending_encrypted_message(self, envelope_hash: bytes) -> None
     request = {
         "cancel_resending_encrypted_message": {
             "query_id": query_id,
-            "envelope_hash": envelope_hash
+            "envelope_hash": envelope_hash,
         }
     }
 
@@ -637,8 +636,8 @@ async def cancel_resending_encrypted_message(self, envelope_hash: bytes) -> None
         self.logger.error(f"Error cancelling resending encrypted message: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"cancel_resending_encrypted_message failed: {error_msg}")
 
 
@@ -674,7 +673,7 @@ async def next_message_box_index(self, message_box_index: bytes) -> bytes:
     request = {
         "next_message_box_index": {
             "query_id": query_id,
-            "message_box_index": message_box_index
+            "message_box_index": message_box_index,
         }
     }
 
@@ -684,8 +683,8 @@ async def next_message_box_index(self, message_box_index: bytes) -> bytes:
         self.logger.error(f"Error incrementing message box index: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"next_message_box_index failed: {error_msg}")
 
     return reply.get("next_message_box_index")
@@ -733,8 +732,8 @@ async def get_message_box_index_counter(self, message_box_index: bytes) -> int:
         self.logger.error(f"Error reading message box index counter: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"get_message_box_index_counter failed: {error_msg}")
 
     return reply.get("counter")
@@ -744,7 +743,7 @@ async def start_resending_copy_command(
     self,
     write_cap: bytes,
     courier_identity_hash: "bytes|None" = None,
-    courier_queue_id: "bytes|None" = None
+    courier_queue_id: "bytes|None" = None,
 ) -> None:
     """
     Starts resending a copy command to a courier via ARQ.
@@ -788,9 +787,7 @@ async def start_resending_copy_command(
     if courier_queue_id is not None:
         request_data["courier_queue_id"] = courier_queue_id
 
-    request = {
-        "start_resending_copy_command": request_data
-    }
+    request = {"start_resending_copy_command": request_data}
 
     # Track in-flight request for replay on reconnect to new daemon instance
     self._in_flight_resends[tracking_key] = request
@@ -839,7 +836,7 @@ async def cancel_resending_copy_command(self, write_cap_hash: bytes) -> None:
     request = {
         "cancel_resending_copy_command": {
             "query_id": query_id,
-            "write_cap_hash": write_cap_hash
+            "write_cap_hash": write_cap_hash,
         }
     }
 
@@ -849,17 +846,13 @@ async def cancel_resending_copy_command(self, write_cap_hash: bytes) -> None:
         self.logger.error(f"Error cancelling resending copy command: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"cancel_resending_copy_command failed: {error_msg}")
 
 
 async def create_courier_envelopes_from_payload(
-    self,
-    payload: bytes,
-    dest_write_cap: bytes,
-    is_start: bool,
-    is_last: bool
+    self, payload: bytes, dest_write_cap: bytes, is_start: bool, is_last: bool
 ) -> "CreateEnvelopesResult":
     """
     Packs a payload of arbitrary size (up to 10 MB) into properly sized
@@ -904,7 +897,7 @@ async def create_courier_envelopes_from_payload(
             "payload": payload,
             "dest_write_cap": dest_write_cap,
             "is_start": is_start,
-            "is_last": is_last
+            "is_last": is_last,
         }
     }
 
@@ -914,13 +907,13 @@ async def create_courier_envelopes_from_payload(
         self.logger.error(f"Error creating courier envelopes from payload: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"create_courier_envelopes_from_payload failed: {error_msg}")
 
     return CreateEnvelopesResult(
         envelopes=reply.get("envelopes", []),
-        dest_write_cap=reply.get("dest_write_cap", None)
+        dest_write_cap=reply.get("dest_write_cap", None),
     )
 
 
@@ -929,7 +922,7 @@ async def create_courier_envelopes_from_multi_payload(
     destinations: "List[Dict[str, Any]]",
     is_start: bool,
     is_last: bool,
-    buffer: "bytes | None" = None
+    buffer: "bytes | None" = None,
 ) -> "CreateEnvelopesResult":
     """
     Packs payloads bound for several destination channels into a single
@@ -983,9 +976,7 @@ async def create_courier_envelopes_from_multi_payload(
     if buffer is not None:
         req_inner["buffer"] = buffer
 
-    request = {
-        "create_courier_envelopes_from_multi_payload": req_inner
-    }
+    request = {"create_courier_envelopes_from_multi_payload": req_inner}
 
     try:
         reply = await self._send_and_wait(query_id=query_id, request=request)
@@ -993,20 +984,23 @@ async def create_courier_envelopes_from_multi_payload(
         self.logger.error(f"Error creating courier envelopes from payloads: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
-        raise Exception(f"create_courier_envelopes_from_multi_payload failed: {error_msg}")
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
+        raise Exception(
+            f"create_courier_envelopes_from_multi_payload failed: {error_msg}"
+        )
 
     return CreateEnvelopesResult(
         envelopes=reply.get("envelopes", []),
         buffer=reply.get("buffer", b""),
-        dest_write_caps=reply.get("dest_write_caps", None)
+        dest_write_caps=reply.get("dest_write_caps", None),
     )
 
 
 @dataclass
 class CreateEnvelopesResult:
     """Result of creating courier envelopes."""
+
     envelopes: "List[bytes]"
     """The serialized CopyStreamElements to send to the network."""
     buffer: bytes = b""
@@ -1023,6 +1017,7 @@ class CreateEnvelopesResult:
 @dataclass
 class TombstoneEnvelope:
     """A single tombstone envelope ready to be sent."""
+
     message_ciphertext: bytes
     envelope_descriptor: bytes
     envelope_hash: bytes
@@ -1032,15 +1027,13 @@ class TombstoneEnvelope:
 @dataclass
 class TombstoneRangeResult:
     """Result of a tombstone_range operation."""
+
     envelopes: "List[TombstoneEnvelope]"
     next: bytes
 
 
 async def tombstone_range(
-    self,
-    write_cap: bytes,
-    start: bytes,
-    max_count: int
+    self, write_cap: bytes, start: bytes, max_count: int
 ) -> TombstoneRangeResult:
     """
     Prepares the encrypted envelopes needed to tombstone a consecutive
@@ -1087,13 +1080,15 @@ async def tombstone_range(
     envelopes = []
 
     while len(envelopes) < max_count:
-        result = await self.encrypt_write(b'', cur)
-        envelopes.append(TombstoneEnvelope(
-            message_ciphertext=result.message_ciphertext,
-            envelope_descriptor=result.envelope_descriptor,
-            envelope_hash=result.envelope_hash,
-            box_index=cur,
-        ))
+        result = await self.encrypt_write(b"", cur)
+        envelopes.append(
+            TombstoneEnvelope(
+                message_ciphertext=result.message_ciphertext,
+                envelope_descriptor=result.envelope_descriptor,
+                envelope_hash=result.envelope_hash,
+                box_index=cur,
+            )
+        )
         cur = result.write_cap
 
     return TombstoneRangeResult(envelopes=envelopes, next=cur)
@@ -1105,7 +1100,7 @@ async def create_courier_envelopes_from_tombstone_range(
     max_count: int,
     is_start: bool,
     is_last: bool,
-    buffer: "bytes | None" = None
+    buffer: "bytes | None" = None,
 ) -> "CreateEnvelopesResult":
     """
     Packs tombstones for a consecutive range of destination boxes into
@@ -1154,9 +1149,7 @@ async def create_courier_envelopes_from_tombstone_range(
     if buffer is not None:
         req_inner["buffer"] = buffer
 
-    request = {
-        "create_courier_envelopes_from_tombstone_range": req_inner
-    }
+    request = {"create_courier_envelopes_from_tombstone_range": req_inner}
 
     try:
         reply = await self._send_and_wait(query_id=query_id, request=request)
@@ -1164,14 +1157,16 @@ async def create_courier_envelopes_from_tombstone_range(
         self.logger.error(f"Error creating tombstone courier envelopes: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
-        raise Exception(f"create_courier_envelopes_from_tombstone_range failed: {error_msg}")
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
+        raise Exception(
+            f"create_courier_envelopes_from_tombstone_range failed: {error_msg}"
+        )
 
     return CreateEnvelopesResult(
         envelopes=reply.get("envelopes", []),
         buffer=reply.get("buffer", b""),
-        dest_write_cap=reply.get("dest_write_cap", None)
+        dest_write_cap=reply.get("dest_write_cap", None),
     )
 
 
@@ -1182,7 +1177,9 @@ async def create_courier_envelopes_from_tombstone_range(
 # fresh randomness for the reply keypair, the salt, and the seal.
 
 
-async def voucher_mint(self, message_write_cap: bytes, display_name: str) -> VoucherMintResult:
+async def voucher_mint(
+    self, message_write_cap: bytes, display_name: str
+) -> VoucherMintResult:
     """
     Mints a Voucher from the joiner's MessageStream write cap.
 
@@ -1211,8 +1208,8 @@ async def voucher_mint(self, message_write_cap: bytes, display_name: str) -> Vou
         self.logger.error(f"Error minting voucher: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"voucher_mint failed: {error_msg}")
 
     return VoucherMintResult(
@@ -1225,7 +1222,9 @@ async def voucher_mint(self, message_write_cap: bytes, display_name: str) -> Vou
     )
 
 
-async def voucher_induct(self, voucher: bytes, voucher_payload: bytes, who_reply: bytes) -> VoucherInductResult:
+async def voucher_induct(
+    self, voucher: bytes, voucher_payload: bytes, who_reply: bytes
+) -> VoucherInductResult:
     """
     Verifies a published VoucherPayload and seals a reply to the joiner.
 
@@ -1256,8 +1255,8 @@ async def voucher_induct(self, voucher: bytes, voucher_payload: bytes, who_reply
         self.logger.error(f"Error inducting voucher: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"voucher_induct failed: {error_msg}")
 
     return VoucherInductResult(
@@ -1270,7 +1269,9 @@ async def voucher_induct(self, voucher: bytes, voucher_payload: bytes, who_reply
     )
 
 
-async def voucher_open(self, voucher_secret_key: bytes, sealed_reply: bytes, message_write_cap: bytes) -> VoucherOpenResult:
+async def voucher_open(
+    self, voucher_secret_key: bytes, sealed_reply: bytes, message_write_cap: bytes
+) -> VoucherOpenResult:
     """
     Opens the inductor's sealed reply with the joiner's voucher secret key,
     recovers the salt, and mutates the joiner's MessageStream write cap by it.
@@ -1303,8 +1304,8 @@ async def voucher_open(self, voucher_secret_key: bytes, sealed_reply: bytes, mes
         self.logger.error(f"Error opening voucher reply: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"voucher_open failed: {error_msg}")
 
     return VoucherOpenResult(
@@ -1341,12 +1342,11 @@ async def voucher_derive_stream(self, voucher: bytes) -> VoucherStreamResult:
         self.logger.error(f"Error deriving voucher stream: {e}")
         raise
 
-    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
-        error_msg = thin_client_error_to_string(reply['error_code'])
+    if reply.get("error_code", 0) != THIN_CLIENT_SUCCESS:
+        error_msg = thin_client_error_to_string(reply["error_code"])
         raise Exception(f"voucher_derive_stream failed: {error_msg}")
 
     return VoucherStreamResult(
         voucher_write_cap=reply["voucher_write_cap"],
         voucher_read_cap=reply["voucher_read_cap"],
     )
-

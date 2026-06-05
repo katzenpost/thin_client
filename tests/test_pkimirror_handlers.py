@@ -52,9 +52,7 @@ def test_handle_epoch_returns_cached():
     cache = PkiCache()
     cache.put(10, b"ten")
     cache.put(11, b"eleven")
-    out = decode_envelope(
-        _make_handlers(cache).handle_epoch(cbor2.dumps(10))
-    )
+    out = decode_envelope(_make_handlers(cache).handle_epoch(cbor2.dumps(10)))
     assert out["code"] == PKIMIRROR_OK
     assert out["epoch"] == 10
     assert out["doc"] == b"ten"
@@ -63,9 +61,7 @@ def test_handle_epoch_returns_cached():
 def test_handle_epoch_not_cached_returns_current_epoch():
     cache = PkiCache()
     cache.put(11, b"eleven")
-    out = decode_envelope(
-        _make_handlers(cache).handle_epoch(cbor2.dumps(7))
-    )
+    out = decode_envelope(_make_handlers(cache).handle_epoch(cbor2.dumps(7)))
     assert out["code"] == PKIMIRROR_EPOCH_NOT_CACHED
     assert out["epoch"] == 11
     assert out["doc"] is None
@@ -74,9 +70,7 @@ def test_handle_epoch_not_cached_returns_current_epoch():
 def test_handle_epoch_bad_request_non_cbor():
     cache = PkiCache()
     cache.put(1, b"one")
-    out = decode_envelope(
-        _make_handlers(cache).handle_epoch(b"\xff\xff\xff not cbor")
-    )
+    out = decode_envelope(_make_handlers(cache).handle_epoch(b"\xff\xff\xff not cbor"))
     assert out["code"] == PKIMIRROR_BAD_REQUEST
     assert out["doc"] is None
     assert out["epoch"] is None
@@ -85,18 +79,14 @@ def test_handle_epoch_bad_request_non_cbor():
 def test_handle_epoch_bad_request_non_int():
     cache = PkiCache()
     cache.put(1, b"one")
-    out = decode_envelope(
-        _make_handlers(cache).handle_epoch(cbor2.dumps("five"))
-    )
+    out = decode_envelope(_make_handlers(cache).handle_epoch(cbor2.dumps("five")))
     assert out["code"] == PKIMIRROR_BAD_REQUEST
 
 
 def test_handle_epoch_bad_request_negative():
     cache = PkiCache()
     cache.put(1, b"one")
-    out = decode_envelope(
-        _make_handlers(cache).handle_epoch(cbor2.dumps(-1))
-    )
+    out = decode_envelope(_make_handlers(cache).handle_epoch(cbor2.dumps(-1)))
     assert out["code"] == PKIMIRROR_BAD_REQUEST
 
 

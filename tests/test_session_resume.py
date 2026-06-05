@@ -24,6 +24,7 @@ def make_config():
     # Set up no-op callbacks
     async def noop_event(event):
         pass
+
     cfg.handle_connection_status_event = noop_event
     cfg.handle_new_pki_document_event = noop_event
     cfg.handle_message_sent_event = noop_event
@@ -41,7 +42,7 @@ class TestInstanceToken:
         client = ThinClient.__new__(ThinClient)
         # Manually call __init__ parts that don't need a real socket
         client.instance_token = os.urandom(16)
-        assert hasattr(client, 'instance_token')
+        assert hasattr(client, "instance_token")
         assert len(client.instance_token) == 16
 
     def test_instance_token_is_random(self):
@@ -56,7 +57,7 @@ class TestInstanceToken:
     def test_instance_token_nonzero(self):
         """Instance token should not be all zeros."""
         token = os.urandom(16)
-        assert token != b'\x00' * 16
+        assert token != b"\x00" * 16
 
 
 class TestDisconnect:
@@ -64,15 +65,15 @@ class TestDisconnect:
 
     def test_disconnect_method_exists(self):
         """ThinClient should have a disconnect() method."""
-        assert hasattr(ThinClient, 'disconnect')
+        assert hasattr(ThinClient, "disconnect")
 
     def test_disconnect_does_not_send_thin_close(self):
         """disconnect() should close the socket without sending thin_close."""
         # This is a design contract test - the actual socket behavior
         # is tested in integration tests. Here we verify the method exists
         # and is distinct from stop().
-        assert hasattr(ThinClient, 'disconnect')
-        assert hasattr(ThinClient, 'stop')
+        assert hasattr(ThinClient, "disconnect")
+        assert hasattr(ThinClient, "stop")
         assert ThinClient.disconnect is not ThinClient.stop
 
 
@@ -137,7 +138,8 @@ class TestHandleSessionTokenReply:
         client.response_queues = {}
         client.ack_queues = {}
         import logging
-        client.logger = logging.getLogger('test')
+
+        client.logger = logging.getLogger("test")
 
         response = {
             "session_token_reply": {

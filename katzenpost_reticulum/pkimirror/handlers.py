@@ -77,7 +77,10 @@ class Handlers:
                     msg=f"epoch {epoch} not in cache",
                 )
             return encode_envelope(
-                PKIMIRROR_OK, epoch=epoch, doc=raw, stale=self._is_stale(),
+                PKIMIRROR_OK,
+                epoch=epoch,
+                doc=raw,
+                stale=self._is_stale(),
             )
         except Exception as exc:
             logger.exception("handle_epoch: unexpected exception")

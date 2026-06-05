@@ -107,6 +107,7 @@ class PkiMirrorClient:
 
     def _init_reticulum(self, config_path: Optional[str]) -> None:
         import RNS  # noqa: WPS433
+
         try:
             RNS.Reticulum(config_path)
         except OSError as exc:
@@ -120,11 +121,15 @@ class PkiMirrorClient:
         max_announces: int = 1,
     ) -> List[MirrorAnnouncement]:
         import RNS  # noqa: WPS433
+
         aspect_filter = f"{self._app_name}.{self._aspect}"
         received: List[MirrorAnnouncement] = []
         done = threading.Event()
         handler = _DiscoverAnnounceHandler(
-            aspect_filter, received, done, max_announces,
+            aspect_filter,
+            received,
+            done,
+            max_announces,
         )
         RNS.Transport.register_announce_handler(handler)
         try:
@@ -133,12 +138,14 @@ class PkiMirrorClient:
             RNS.Transport.deregister_announce_handler(handler)
         logger.info(
             "discover returning %d announce(s) for filter %r",
-            len(received), aspect_filter,
+            len(received),
+            aspect_filter,
         )
         return received
 
     def connect(self, destination_hash: bytes, timeout: float = 30.0) -> None:
         import RNS  # noqa: WPS433
+
         if not RNS.Transport.has_path(destination_hash):
             RNS.Transport.request_path(destination_hash)
             deadline = time.monotonic() + timeout
@@ -225,9 +232,7 @@ class PkiMirrorClient:
 
     def _fetch(self, path: str, data: bytes, timeout: float) -> PkiResult:
         if self._transport is None:
-            raise RuntimeError(
-                "PkiMirrorClient is not connected; call connect() first"
-            )
+            raise RuntimeError("PkiMirrorClient is not connected; call connect() first")
         env = decode_envelope(self._transport.request(path, data, timeout))
         if env["code"] not in _KNOWN_CODES:
             raise PkiMirrorProtocolError(

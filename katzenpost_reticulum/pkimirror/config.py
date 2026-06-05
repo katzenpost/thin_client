@@ -26,17 +26,13 @@ def _default_identity_path() -> str:
 
 
 def _default_dirauth_path() -> str:
-    return os.path.expanduser(
-        os.path.join("~", ".config", "pkimirror", "dirauth.toml")
-    )
+    return os.path.expanduser(os.path.join("~", ".config", "pkimirror", "dirauth.toml"))
 
 
 def _non_negative_float(value: str) -> float:
     parsed = float(value)
     if parsed < 0:
-        raise argparse.ArgumentTypeError(
-            f"value must be non-negative, got {value!r}"
-        )
+        raise argparse.ArgumentTypeError(f"value must be non-negative, got {value!r}")
     return parsed
 
 

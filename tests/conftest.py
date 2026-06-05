@@ -37,7 +37,7 @@ def check_daemon_available():
         # Try to connect to the daemon socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1.0)
-        result = sock.connect_ex(('127.0.0.1', 64331))
+        result = sock.connect_ex(("127.0.0.1", 64331))
         sock.close()
         return result == 0
     except Exception:
@@ -58,7 +58,7 @@ def config_path():
     return path
 
 
-@pytest.fixture(scope="session") 
+@pytest.fixture(scope="session")
 def daemon_available():
     """Check if daemon is available, skip tests if not."""
     if not check_daemon_available():
@@ -78,19 +78,21 @@ async def thin_client(config_path, daemon_available):
         yield client
     except Exception as e:
         import logging
-        logger = logging.getLogger('conftest')
+
+        logger = logging.getLogger("conftest")
         logger.error(f"Failed to start thin client: {e}")
         raise
     finally:
         # Safe stop - only call if client was successfully started
         import logging
-        logger = logging.getLogger('conftest')
+
+        logger = logging.getLogger("conftest")
         try:
-            if hasattr(client, 'task') and client.task is not None:
+            if hasattr(client, "task") and client.task is not None:
                 client.stop()
             else:
                 # Just close the socket if start() failed
-                if hasattr(client, 'socket'):
+                if hasattr(client, "socket"):
                     client.socket.close()
         except Exception as e:
             logger.error(f"Error during client cleanup: {e}")
@@ -120,11 +122,11 @@ async def thin_client_with_reply_handler(config_path, daemon_available, reply_ha
         yield client, reply_handler
     finally:
         # Safe stop - only call if client was successfully started
-        if hasattr(client, 'task') and client.task is not None:
+        if hasattr(client, "task") and client.task is not None:
             client.stop()
         else:
             # Just close the socket if start() failed
-            if hasattr(client, 'socket'):
+            if hasattr(client, "socket"):
                 client.socket.close()
 
 
@@ -134,12 +136,8 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: mark test as integration test requiring running mixnet"
     )
-    config.addinivalue_line(
-        "markers", "channel: mark test as channel API test"
-    )
-    config.addinivalue_line(
-        "markers", "echo: mark test as echo service test"
-    )
+    config.addinivalue_line("markers", "channel: mark test as channel API test")
+    config.addinivalue_line("markers", "echo: mark test as echo service test")
 
 
 # Timeout configuration
@@ -147,8 +145,8 @@ def pytest_configure(config):
 def timeout_config():
     """Configure reasonable timeouts for async tests."""
     return {
-        'echo_timeout': 30.0,
-        'channel_timeout': 10.0,
-        'connection_timeout': 15.0,
-        'read_timeout': 5.0
+        "echo_timeout": 30.0,
+        "channel_timeout": 10.0,
+        "connection_timeout": 15.0,
+        "read_timeout": 5.0,
     }

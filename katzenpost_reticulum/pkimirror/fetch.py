@@ -30,8 +30,7 @@ logger = logging.getLogger("pkimirror-fetch")
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pkimirror-fetch",
-        description="Fetch a Katzenpost PKI document from a pkimirror "
-        "over Reticulum.",
+        description="Fetch a Katzenpost PKI document from a pkimirror over Reticulum.",
     )
     p.add_argument(
         "--rns-config",
@@ -50,8 +49,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--epoch",
         type=int,
         default=None,
-        help="Fetch this specific epoch instead of the current "
-        "consensus.",
+        help="Fetch this specific epoch instead of the current consensus.",
     )
     p.add_argument(
         "--dirauth-config",
@@ -79,9 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _select_destination(
-    client: PkiMirrorClient, args: argparse.Namespace
-) -> bytes:
+def _select_destination(client: PkiMirrorClient, args: argparse.Namespace) -> bytes:
     """Return the mirror destination hash, discovering one if the
     caller did not name it. Among announces, prefer those carrying a
     PKI document and then the highest epoch."""
@@ -94,13 +90,14 @@ def _select_destination(
     )
     if not announces:
         raise RuntimeError(
-            "no pkimirror announced within "
-            f"{args.discover_timeout:.0f}s"
+            f"no pkimirror announced within {args.discover_timeout:.0f}s"
         )
     best = max(announces, key=lambda a: (a.has_pki, a.epoch))
     logger.info(
         "selected mirror %s (epoch %d, has_pki=%s) from %d announce(s)",
-        best.destination_hash.hex(), best.epoch, best.has_pki,
+        best.destination_hash.hex(),
+        best.epoch,
+        best.has_pki,
         len(announces),
     )
     return best.destination_hash
@@ -153,14 +150,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     if result.code != PKIMIRROR_OK or result.doc is None:
         logger.error(
             "mirror returned code=%d (%s); epoch=%s",
-            result.code, result.msg, result.epoch,
+            result.code,
+            result.msg,
+            result.epoch,
         )
         return 1
 
     _write_output(args.output, result.doc)
     logger.info(
         "fetched %d bytes; epoch=%s stale=%s verified=%s",
-        len(result.doc), result.epoch, result.stale, result.verified,
+        len(result.doc),
+        result.epoch,
+        result.stale,
+        result.verified,
     )
     return 0
 

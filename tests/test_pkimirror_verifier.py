@@ -24,7 +24,9 @@ from katzenpost_reticulum.pkimirror.errors import PkiMirrorVerificationError
 from katzenpost_reticulum.pkimirror.verifier import verify_and_unwrap
 
 
-def _signed_message(version: int, expiration: int, key_type: str, certified: bytes) -> bytes:
+def _signed_message(
+    version: int, expiration: int, key_type: str, certified: bytes
+) -> bytes:
     return (
         struct.pack("<I", version)
         + struct.pack("<Q", expiration)
@@ -33,7 +35,9 @@ def _signed_message(version: int, expiration: int, key_type: str, certified: byt
     )
 
 
-def _build_cert(version: int, expiration: int, key_type: str, certified: bytes, signatures: dict) -> bytes:
+def _build_cert(
+    version: int, expiration: int, key_type: str, certified: bytes, signatures: dict
+) -> bytes:
     return cbor2.dumps(
         {
             "Version": version,

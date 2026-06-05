@@ -114,9 +114,7 @@ def test_concurrent_readers_and_writer():
 
     def writer():
         try:
-            for i, payload in enumerate(
-                [b"two", b"three", b"four", b"five"], start=2
-            ):
+            for i, payload in enumerate([b"two", b"three", b"four", b"five"], start=2):
                 for _ in range(50):
                     c.put(i, payload)
         except BaseException as e:

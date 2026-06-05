@@ -19,9 +19,7 @@ def test_defaults_are_set(tmp_path):
     assert cfg.thinclient_config == "/tmp/tc.toml"
     assert cfg.identity_path.endswith(os.path.join("pkimirror", "identity"))
     assert cfg.rns_config is None
-    assert cfg.dirauth_config.endswith(
-        os.path.join("pkimirror", "dirauth.toml")
-    )
+    assert cfg.dirauth_config.endswith(os.path.join("pkimirror", "dirauth.toml"))
     assert cfg.announce_interval == 300.0
     assert cfg.stale_after == 600.0
     assert cfg.app_name == "katzenpost"
@@ -32,8 +30,10 @@ def test_defaults_are_set(tmp_path):
 def test_aspect_overridable():
     cfg = parse_args(
         [
-            "--thinclient-config", "/x.toml",
-            "--aspect", "experimental",
+            "--thinclient-config",
+            "/x.toml",
+            "--aspect",
+            "experimental",
         ]
     )
     assert cfg.aspect == "experimental"
@@ -42,9 +42,12 @@ def test_aspect_overridable():
 def test_intervals_parse_as_float():
     cfg = parse_args(
         [
-            "--thinclient-config", "/x.toml",
-            "--announce-interval", "5",
-            "--stale-after", "12.5",
+            "--thinclient-config",
+            "/x.toml",
+            "--announce-interval",
+            "5",
+            "--stale-after",
+            "12.5",
         ]
     )
     assert cfg.announce_interval == 5.0
@@ -52,33 +55,31 @@ def test_intervals_parse_as_float():
 
 
 def test_log_level_normalised_to_upper():
-    cfg = parse_args(
-        ["--thinclient-config", "/x.toml", "--log-level", "debug"]
-    )
+    cfg = parse_args(["--thinclient-config", "/x.toml", "--log-level", "debug"])
     assert cfg.log_level == "DEBUG"
 
 
 def test_log_level_rejects_garbage():
     with pytest.raises(SystemExit):
-        parse_args(
-            ["--thinclient-config", "/x.toml", "--log-level", "WHISPER"]
-        )
+        parse_args(["--thinclient-config", "/x.toml", "--log-level", "WHISPER"])
 
 
 def test_negative_interval_rejected():
     with pytest.raises(SystemExit):
-        parse_args(
-            ["--thinclient-config", "/x.toml", "--announce-interval", "-1"]
-        )
+        parse_args(["--thinclient-config", "/x.toml", "--announce-interval", "-1"])
 
 
 def test_paths_propagate_through(tmp_path):
     cfg = parse_args(
         [
-            "--thinclient-config", str(tmp_path / "tc.toml"),
-            "--identity", str(tmp_path / "id"),
-            "--rns-config", str(tmp_path / "rns"),
-            "--dirauth-config", str(tmp_path / "dirauth.toml"),
+            "--thinclient-config",
+            str(tmp_path / "tc.toml"),
+            "--identity",
+            str(tmp_path / "id"),
+            "--rns-config",
+            str(tmp_path / "rns"),
+            "--dirauth-config",
+            str(tmp_path / "dirauth.toml"),
         ]
     )
     assert cfg.thinclient_config == str(tmp_path / "tc.toml")

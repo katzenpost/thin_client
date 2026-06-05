@@ -88,9 +88,7 @@ class PkiCache:
             self._current_epoch = None
             self._last_refresh = None
 
-    def set_on_new_epoch(
-        self, callback: Optional[Callable[[int], None]]
-    ) -> None:
+    def set_on_new_epoch(self, callback: Optional[Callable[[int], None]]) -> None:
         """Replace the on_new_epoch callback. Useful when the cache is
         created before the announce-loop owner exists.
         """

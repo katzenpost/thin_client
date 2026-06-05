@@ -44,7 +44,10 @@ _SCHEMES_BY_LABEL = {
 
 
 def _cert_signed_message(
-    version: int, expiration: int, key_type: str, certified: bytes,
+    version: int,
+    expiration: int,
+    key_type: str,
+    certified: bytes,
 ) -> bytes:
     return (
         struct.pack("<I", version)
@@ -77,15 +80,17 @@ def _verifier_for_identity(identity: DirauthIdentity) -> Optional[object]:
         logger.warning(
             "Dirauth %r uses unsupported signature scheme %r; "
             "cannot verify against this identity",
-            identity.name, identity.scheme,
+            identity.name,
+            identity.scheme,
         )
         return None
     if len(identity.pubkey) != scheme.public_key_size:
         logger.warning(
-            "Dirauth %r public key length %d does not match "
-            "scheme %s expected size %d",
-            identity.name, len(identity.pubkey),
-            identity.scheme, scheme.public_key_size,
+            "Dirauth %r public key length %d does not match scheme %s expected size %d",
+            identity.name,
+            len(identity.pubkey),
+            identity.scheme,
+            scheme.public_key_size,
         )
         return None
     return scheme

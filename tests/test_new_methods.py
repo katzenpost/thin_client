@@ -27,7 +27,7 @@ def make_service_node(identity_key: bytes, capability: str, endpoint: str) -> by
             capability: {
                 "endpoint": endpoint,
             }
-        }
+        },
     }
     return cbor2.dumps(node)
 
@@ -45,13 +45,13 @@ def make_pki_doc(service_nodes: list, epoch: int = 1) -> dict:
 def make_client() -> ThinClient:
     """Create a ThinClient with a minimal config, no daemon connection."""
     from .conftest import get_config_path
+
     config_path = get_config_path()
     cfg = Config(config_path)
     return ThinClient(cfg)
 
 
 class TestGetAllCouriers:
-
     def test_returns_couriers(self):
         client = make_client()
         key1 = b"courier_identity_key_1__________"
@@ -90,7 +90,6 @@ class TestGetAllCouriers:
 
 
 class TestGetDistinctCouriers:
-
     def test_returns_n_distinct(self):
         client = make_client()
         keys = [f"courier_key_{i:021d}".encode() for i in range(5)]
@@ -112,7 +111,9 @@ class TestGetDistinctCouriers:
     def test_not_enough_couriers_raises(self):
         client = make_client()
         nodes = [
-            make_service_node(b"courier_key_only________________", "courier", "courier"),
+            make_service_node(
+                b"courier_key_only________________", "courier", "courier"
+            ),
         ]
         client.pki_doc = make_pki_doc(nodes)
 
@@ -134,7 +135,6 @@ class TestGetDistinctCouriers:
 
 
 class TestPkiDocumentForEpoch:
-
     def test_returns_cached_epoch(self):
         client = make_client()
         doc1 = make_pki_doc([], epoch=10)

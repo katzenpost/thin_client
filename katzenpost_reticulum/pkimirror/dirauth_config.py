@@ -93,16 +93,13 @@ def load_dirauth_config(path: str) -> DirauthConfig:
     raw_entries = data.get("dirauths", [])
     if not isinstance(raw_entries, list):
         raise DirauthConfigError(
-            f"[[dirauths]] must be an array of tables, got "
-            f"{type(raw_entries).__name__}"
+            f"[[dirauths]] must be an array of tables, got {type(raw_entries).__name__}"
         )
 
     identities: List[DirauthIdentity] = []
     for idx, entry in enumerate(raw_entries):
         if not isinstance(entry, dict):
-            raise DirauthConfigError(
-                f"dirauth entry #{idx} is not a table"
-            )
+            raise DirauthConfigError(f"dirauth entry #{idx} is not a table")
         name = entry.get("name")
         if not isinstance(name, str) or not name:
             raise DirauthConfigError(
@@ -120,9 +117,7 @@ def load_dirauth_config(path: str) -> DirauthConfig:
             raise DirauthConfigError(
                 f"dirauth '{name}' has malformed identity_public_key: {exc}"
             ) from exc
-        identities.append(
-            DirauthIdentity(name=name, scheme=scheme, pubkey=pubkey)
-        )
+        identities.append(DirauthIdentity(name=name, scheme=scheme, pubkey=pubkey))
 
     if not identities:
         logger.warning(

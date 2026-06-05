@@ -10,6 +10,7 @@ from katzenpost_thinclient import ThinClient, Config
 # Global variable to store reply message
 reply_message = None
 
+
 async def save_reply(event):
     """Callback function to save reply messages."""
     global reply_message
@@ -26,7 +27,7 @@ async def test_thin_client_send_receive_integration_test():
         pytest.skip("Katzenpost client daemon not available")
     from .conftest import get_config_path
 
-    config_path= get_config_path()
+    config_path = get_config_path()
 
     assert os.path.exists(config_path), f"Missing config file: {config_path}"
 
@@ -40,7 +41,9 @@ async def test_thin_client_send_receive_integration_test():
         # Wait for daemon to connect to mixnet and receive PKI document
         print("Waiting for daemon to connect to mixnet...")
         attempts = 0
-        while (not client.is_connected() or client.pki_document() is None) and attempts < 30:
+        while (
+            not client.is_connected() or client.pki_document() is None
+        ) and attempts < 30:
             await asyncio.sleep(1)
             attempts += 1
 
@@ -62,7 +65,7 @@ async def test_thin_client_send_receive_integration_test():
         await client.reply_received_event.wait()
 
         global reply_message
-        payload2 = reply_message['payload'][:len(payload)]
+        payload2 = reply_message["payload"][: len(payload)]
 
         assert payload2.decode() == payload
 
@@ -88,7 +91,7 @@ async def test_config_validation():
     cfg_with_callbacks = Config(
         config_path,
         on_message_reply=dummy_callback,
-        on_connection_status=dummy_callback
+        on_connection_status=dummy_callback,
     )
     assert cfg_with_callbacks is not None, "Config with callbacks should work"
 
@@ -128,7 +131,7 @@ def test_error_codes_completeness():
         THIN_CLIENT_ERROR_MKEM_DECRYPTION_FAILED,
         THIN_CLIENT_ERROR_BACAP_DECRYPTION_FAILED,
         THIN_CLIENT_ERROR_START_RESENDING_CANCELLED,
-        thin_client_error_to_string
+        thin_client_error_to_string,
     )
 
     # Verify all error codes have sequential values 0-24
@@ -161,16 +164,23 @@ def test_error_codes_completeness():
     }
 
     for const, expected_value in expected_codes.items():
-        assert const == expected_value, f"Error code constant has wrong value: expected {expected_value}, got {const}"
+        assert const == expected_value, (
+            f"Error code constant has wrong value: expected {expected_value}, got {const}"
+        )
 
     # Verify all error codes have non-empty, non-"Unknown" error strings
     for code in range(25):
         error_str = thin_client_error_to_string(code)
         assert error_str, f"Error code {code} has empty error string"
-        assert "Unknown" not in error_str, f"Error code {code} has 'Unknown' in error string: {error_str}"
+        assert "Unknown" not in error_str, (
+            f"Error code {code} has 'Unknown' in error string: {error_str}"
+        )
 
     # Verify specific error strings for cancel behavior
-    assert thin_client_error_to_string(THIN_CLIENT_ERROR_START_RESENDING_CANCELLED) == "Start resending cancelled"
+    assert (
+        thin_client_error_to_string(THIN_CLIENT_ERROR_START_RESENDING_CANCELLED)
+        == "Start resending cancelled"
+    )
 
     print("✅ All error codes 0-24 are defined with proper error strings")
 
@@ -210,6 +220,7 @@ class TestGracefulShutdown:
         class MockTask:
             def cancel(self):
                 pass
+
         client.task = MockTask()
 
         assert client._stopping is False, "_stopping should be False before stop()"
@@ -284,7 +295,9 @@ class TestGracefulShutdown:
         assert disconnected_events[0]["is_graceful"] == False
 
         client.socket.close()
-        print("✅ worker_loop emits disconnect event on BrokenPipeError when not stopping")
+        print(
+            "✅ worker_loop emits disconnect event on BrokenPipeError when not stopping"
+        )
 
     @pytest.mark.asyncio
     async def test_worker_loop_handles_connection_reset_during_shutdown(self):
