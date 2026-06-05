@@ -20,9 +20,9 @@
 //!
 //! These tests require a running mixnet with client daemon for integration testing.
 
+use katzenpost_thin_client::pigeonhole::{EncryptWriteResult, KeypairResult};
+use katzenpost_thin_client::{Config, ThinClient, ThinClientError};
 use std::time::Duration;
-use katzenpost_thin_client::{ThinClient, Config, ThinClientError};
-use katzenpost_thin_client::pigeonhole::{KeypairResult, EncryptWriteResult};
 
 /// Test helper to setup a thin client for integration tests
 async fn setup_thin_client() -> Result<std::sync::Arc<ThinClient>, Box<dyn std::error::Error>> {
@@ -49,53 +49,73 @@ async fn test_new_keypair_basic() {
     if let Err(ref e) = result {
         println!("new_keypair error: {:?}", e);
     }
-    assert!(result.is_ok(), "new_keypair should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "new_keypair should succeed: {:?}",
+        result.err()
+    );
 
-    let KeypairResult { write_cap, read_cap, first_message_index: first_index } = result.unwrap();
+    let KeypairResult {
+        write_cap,
+        read_cap,
+    } = result.unwrap();
 
     // Verify we got non-empty capabilities
     assert!(!write_cap.is_empty(), "WriteCap should not be empty");
     assert!(!read_cap.is_empty(), "ReadCap should not be empty");
-    assert!(!first_index.is_empty(), "First message index should not be empty");
 
     println!("✓ Created keypair successfully");
     println!("  WriteCap length: {}", write_cap.len());
     println!("  ReadCap length: {}", read_cap.len());
-    println!("  First index length: {}", first_index.len());
 }
 
 #[tokio::test]
 async fn test_alice_sends_bob_complete_workflow() {
     println!("\n=== Test: Complete Alice sends to Bob workflow ===");
 
-    let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
-    let bob_client = setup_thin_client().await.expect("Failed to setup Bob client");
+    let alice_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Alice client");
+    let bob_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Bob client");
 
     // Alice creates a keypair
     let alice_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: alice_write_cap, read_cap: bob_read_cap, first_message_index: first_index } =
-        alice_client.new_keypair(&alice_seed).await
-            .expect("Failed to create Alice's keypair");
+    let KeypairResult {
+        write_cap: alice_write_cap,
+        read_cap: bob_read_cap,
+    } = alice_client
+        .new_keypair(&alice_seed)
+        .await
+        .expect("Failed to create Alice's keypair");
     println!("✓ Alice created keypair");
 
     // Alice encrypts and sends a message
     let message = b"Hello Bob, this is Alice!";
-    let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
-        alice_client
-            .encrypt_write(message, &alice_write_cap, &first_index).await
-            .expect("Failed to encrypt write");
+    let EncryptWriteResult {
+        message_ciphertext: ciphertext,
+        envelope_descriptor: env_desc,
+        envelope_hash: env_hash,
+        ..
+    } = alice_client
+        .encrypt_write(message, &alice_write_cap)
+        .await
+        .expect("Failed to encrypt write");
     println!("✓ Alice encrypted message");
 
     // Alice starts resending the encrypted message
-    let _alice_plaintext = alice_client.start_resending_encrypted_message(
-        None,
-        Some(&alice_write_cap),
-        None,
-        Some(0),
-        &env_desc,
-        &ciphertext,
-        &env_hash
-    ).await.expect("Failed to start resending");
+    let _alice_plaintext = alice_client
+        .start_resending_encrypted_message(
+            None,
+            Some(&alice_write_cap),
+            Some(0),
+            &env_desc,
+            &ciphertext,
+            &env_hash,
+        )
+        .await
+        .expect("Failed to start resending");
 
     println!("✓ Alice sent message via ARQ");
 
@@ -105,29 +125,38 @@ async fn test_alice_sends_bob_complete_workflow() {
 
     // Bob encrypts a read operation
     let bob_read_result = bob_client
-        .encrypt_read(&bob_read_cap, &first_index).await
+        .encrypt_read(&bob_read_cap)
+        .await
         .expect("Failed to encrypt read");
     println!("✓ Bob encrypted read operation");
 
     // Bob starts resending to retrieve the message
-    let bob_result = bob_client.start_resending_encrypted_message(
-        Some(&bob_read_cap),
-        None,
-        Some(&first_index),
-        Some(0),
-        &bob_read_result.envelope_descriptor,
-        &bob_read_result.message_ciphertext,
-        &bob_read_result.envelope_hash
-    ).await.expect("Failed to retrieve message");
+    let bob_result = bob_client
+        .start_resending_encrypted_message(
+            Some(&bob_read_cap),
+            None,
+            Some(0),
+            &bob_read_result.envelope_descriptor,
+            &bob_read_result.message_ciphertext,
+            &bob_read_result.envelope_hash,
+        )
+        .await
+        .expect("Failed to retrieve message");
 
     println!("✓ Bob received message");
 
     // Verify the message matches
-    assert_eq!(bob_result.plaintext, message, "Bob should receive Alice's message");
+    assert_eq!(
+        bob_result.plaintext, message,
+        "Bob should receive Alice's message"
+    );
 
     println!("✅ Complete workflow test passed!");
     println!("  Message sent: {:?}", String::from_utf8_lossy(message));
-    println!("  Message received: {:?}", String::from_utf8_lossy(&bob_result.plaintext));
+    println!(
+        "  Message received: {:?}",
+        String::from_utf8_lossy(&bob_result.plaintext)
+    );
 }
 
 #[tokio::test]
@@ -136,29 +165,44 @@ async fn test_next_message_box_index() {
 
     let client = setup_thin_client().await.expect("Failed to setup client");
 
-    // Generate keypair to get a first_index
+    // Generate a keypair; the write_cap is positioned at the first box, so
+    // it doubles as the starting message box index for this test.
     let seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: _write_cap, read_cap: _read_cap, first_message_index: first_index } =
-        client.new_keypair(&seed).await
-            .expect("Failed to create keypair");
+    let KeypairResult {
+        write_cap: first_index,
+        read_cap: _read_cap,
+    } = client
+        .new_keypair(&seed)
+        .await
+        .expect("Failed to create keypair");
 
     println!("✓ Created keypair");
     println!("  First index length: {}", first_index.len());
 
     // Increment the index
-    let second_index = client.next_message_box_index(&first_index).await
+    let second_index = client
+        .next_message_box_index(&first_index)
+        .await
         .expect("Failed to get next message box index");
 
     assert!(!second_index.is_empty(), "Second index should not be empty");
-    assert_ne!(first_index, second_index, "Second index should differ from first");
+    assert_ne!(
+        first_index, second_index,
+        "Second index should differ from first"
+    );
     println!("✓ Got second index (length: {})", second_index.len());
 
     // Increment again
-    let third_index = client.next_message_box_index(&second_index).await
+    let third_index = client
+        .next_message_box_index(&second_index)
+        .await
         .expect("Failed to get third message box index");
 
     assert!(!third_index.is_empty(), "Third index should not be empty");
-    assert_ne!(second_index, third_index, "Third index should differ from second");
+    assert_ne!(
+        second_index, third_index,
+        "Third index should differ from second"
+    );
     println!("✓ Got third index (length: {})", third_index.len());
 
     println!("✅ next_message_box_index test passed!");
@@ -168,23 +212,35 @@ async fn test_next_message_box_index() {
 async fn test_create_courier_envelopes_from_payload() {
     println!("\n=== Test: create_courier_envelopes_from_payload with Copy Command ===");
 
-    let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
-    let bob_client = setup_thin_client().await.expect("Failed to setup Bob client");
+    let alice_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Alice client");
+    let bob_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Bob client");
 
     // Step 1: Alice creates destination channel
     println!("\n--- Step 1: Creating destination channel ---");
     let dest_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: dest_write_cap, read_cap: dest_read_cap, first_message_index: dest_first_index } =
-        alice_client.new_keypair(&dest_seed).await
-            .expect("Failed to create destination keypair");
+    let KeypairResult {
+        write_cap: dest_write_cap,
+        read_cap: dest_read_cap,
+    } = alice_client
+        .new_keypair(&dest_seed)
+        .await
+        .expect("Failed to create destination keypair");
     println!("✓ Alice created destination channel");
 
     // Step 2: Alice creates temporary copy stream channel
     println!("\n--- Step 2: Creating temporary copy stream channel ---");
     let temp_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: temp_write_cap, read_cap: temp_read_cap, first_message_index: temp_first_index } =
-        alice_client.new_keypair(&temp_seed).await
-            .expect("Failed to create temp keypair");
+    let KeypairResult {
+        write_cap: temp_write_cap,
+        read_cap: temp_read_cap,
+    } = alice_client
+        .new_keypair(&temp_seed)
+        .await
+        .expect("Failed to create temp keypair");
     println!("✓ Alice created temporary copy stream channel");
 
     // Step 3: Create a payload with length prefix (like Go/Python tests)
@@ -197,63 +253,80 @@ async fn test_create_courier_envelopes_from_payload() {
 
     // Step 4: Create copy stream chunks from the payload
     println!("\n--- Step 4: Creating copy stream chunks ---");
-    let copy_stream_result = alice_client.create_courier_envelopes_from_payload(
-        &large_payload,
-        &dest_write_cap,
-        &dest_first_index,
-        true,  // is_start
-        true,  // is_last
-    ).await.expect("Failed to create courier envelopes from payload");
+    let copy_stream_result = alice_client
+        .create_courier_envelopes_from_payload(
+            &large_payload,
+            &dest_write_cap,
+            true, // is_start
+            true, // is_last
+        )
+        .await
+        .expect("Failed to create courier envelopes from payload");
 
-    assert!(!copy_stream_result.envelopes.is_empty(), "Should have at least one chunk");
-    println!("✓ Alice created {} copy stream chunks", copy_stream_result.envelopes.len());
+    assert!(
+        !copy_stream_result.envelopes.is_empty(),
+        "Should have at least one chunk"
+    );
+    println!(
+        "✓ Alice created {} copy stream chunks",
+        copy_stream_result.envelopes.len()
+    );
 
     // Step 5: Write all copy stream chunks to the temporary channel
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
-    let mut temp_index = temp_first_index.clone();
-    let mut last_temp_index = temp_first_index.clone();
+    let mut temp_index = temp_write_cap.clone();
     for (i, chunk) in copy_stream_result.envelopes.iter().enumerate() {
-        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
-            alice_client
-                .encrypt_write(chunk, &temp_write_cap, &temp_index).await
-                .expect("Failed to encrypt chunk");
+        let EncryptWriteResult {
+            message_ciphertext: ciphertext,
+            envelope_descriptor: env_desc,
+            envelope_hash: env_hash,
+            write_cap: next_temp_index,
+        } = alice_client
+            .encrypt_write(chunk, &temp_index)
+            .await
+            .expect("Failed to encrypt chunk");
 
-        let _ = alice_client.start_resending_encrypted_message(
-            None,
-            Some(&temp_write_cap),
-            None,
-            Some(0),
-            &env_desc,
-            &ciphertext,
-            &env_hash
-        ).await.expect("Failed to send chunk via ARQ");
+        let _ = alice_client
+            .start_resending_encrypted_message(
+                None,
+                Some(&temp_index),
+                Some(0),
+                &env_desc,
+                &ciphertext,
+                &env_hash,
+            )
+            .await
+            .expect("Failed to send chunk via ARQ");
 
         println!("  ✓ Wrote chunk {} ({} bytes)", i + 1, chunk.len());
 
-        // Advance to next index for next chunk
-        last_temp_index = temp_index.clone();
-        temp_index = alice_client.next_message_box_index(&temp_index).await
-            .expect("Failed to get next index");
+        // Advance to next box for next chunk.
+        temp_index = next_temp_index;
     }
 
     // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
-    // Gate on a single default ARQ read of the temp stream's final box.
+    // Gate on a single default ARQ read of the temp stream's first box.
     let temp_gate_read = alice_client
-        .encrypt_read(&temp_read_cap, &last_temp_index).await
+        .encrypt_read(&temp_read_cap)
+        .await
         .expect("Failed to encrypt temp gate read");
-    let _ = alice_client.start_resending_encrypted_message(
-        Some(&temp_read_cap),
-        None,
-        Some(&last_temp_index),
-        Some(0),
-        &temp_gate_read.envelope_descriptor,
-        &temp_gate_read.message_ciphertext,
-        &temp_gate_read.envelope_hash
-    ).await.expect("Failed to await temp stream propagation");
+    let _ = alice_client
+        .start_resending_encrypted_message(
+            Some(&temp_read_cap),
+            None,
+            Some(0),
+            &temp_gate_read.envelope_descriptor,
+            &temp_gate_read.message_ciphertext,
+            &temp_gate_read.envelope_hash,
+        )
+        .await
+        .expect("Failed to await temp stream propagation");
 
     // Step 6: Send Copy command to courier
     println!("\n--- Step 6: Sending Copy command to courier via ARQ ---");
-    alice_client.start_resending_copy_command(&temp_write_cap, None, None).await
+    alice_client
+        .start_resending_copy_command(&temp_write_cap, None, None)
+        .await
         .expect("Failed to send copy command");
     println!("✓ Alice copy command completed");
 
@@ -262,124 +335,170 @@ async fn test_create_courier_envelopes_from_payload() {
     // Step 7: Bob reads from destination channel
     println!("\n--- Step 7: Bob reads from destination channel ---");
     let bob_read_result = bob_client
-        .encrypt_read(&dest_read_cap, &dest_first_index).await
+        .encrypt_read(&dest_read_cap)
+        .await
         .expect("Failed to encrypt read");
 
-    let bob_result = bob_client.start_resending_encrypted_message(
-        Some(&dest_read_cap),
-        None,
-        Some(&dest_first_index),
-        Some(0),
-        &bob_read_result.envelope_descriptor,
-        &bob_read_result.message_ciphertext,
-        &bob_read_result.envelope_hash
-    ).await.expect("Failed to retrieve message");
+    let bob_result = bob_client
+        .start_resending_encrypted_message(
+            Some(&dest_read_cap),
+            None,
+            Some(0),
+            &bob_read_result.envelope_descriptor,
+            &bob_read_result.message_ciphertext,
+            &bob_read_result.envelope_hash,
+        )
+        .await
+        .expect("Failed to retrieve message");
 
     println!("✓ Bob received {} bytes", bob_result.plaintext.len());
 
     // Verify the payload matches
-    assert_eq!(bob_result.plaintext, large_payload, "Received payload should match original");
+    assert_eq!(
+        bob_result.plaintext, large_payload,
+        "Received payload should match original"
+    );
 
     println!("✅ create_courier_envelopes_from_payload test passed!");
 }
 
 #[tokio::test]
 async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
-    println!("\n=== Test: create_courier_envelopes_from_multi_payload (efficient multi-channel) ===");
+    println!(
+        "\n=== Test: create_courier_envelopes_from_multi_payload (efficient multi-channel) ==="
+    );
 
-    let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
-    let bob_client = setup_thin_client().await.expect("Failed to setup Bob client");
+    let alice_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Alice client");
+    let bob_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Bob client");
 
     // Step 1: Create two destination channels
     println!("\n--- Step 1: Creating two destination channels ---");
     let chan1_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: chan1_write_cap, read_cap: chan1_read_cap, first_message_index: chan1_first_index } =
-        alice_client.new_keypair(&chan1_seed).await
-            .expect("Failed to create channel 1 keypair");
+    let KeypairResult {
+        write_cap: chan1_write_cap,
+        read_cap: chan1_read_cap,
+    } = alice_client
+        .new_keypair(&chan1_seed)
+        .await
+        .expect("Failed to create channel 1 keypair");
     println!("✓ Created Channel 1");
 
     let chan2_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: chan2_write_cap, read_cap: chan2_read_cap, first_message_index: chan2_first_index } =
-        alice_client.new_keypair(&chan2_seed).await
-            .expect("Failed to create channel 2 keypair");
+    let KeypairResult {
+        write_cap: chan2_write_cap,
+        read_cap: chan2_read_cap,
+    } = alice_client
+        .new_keypair(&chan2_seed)
+        .await
+        .expect("Failed to create channel 2 keypair");
     println!("✓ Created Channel 2");
 
     // Step 2: Create temporary copy stream channel
     println!("\n--- Step 2: Creating temporary copy stream channel ---");
     let temp_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: temp_write_cap, read_cap: temp_read_cap, first_message_index: temp_first_index } =
-        alice_client.new_keypair(&temp_seed).await
-            .expect("Failed to create temp keypair");
+    let KeypairResult {
+        write_cap: temp_write_cap,
+        read_cap: temp_read_cap,
+    } = alice_client
+        .new_keypair(&temp_seed)
+        .await
+        .expect("Failed to create temp keypair");
     println!("✓ Created temporary copy stream channel");
 
     // Step 3: Create payloads for each channel
     println!("\n--- Step 3: Creating payloads ---");
     let payload1 = b"Hello from Channel 1! This is payload one.".to_vec();
     let payload2 = b"Hello from Channel 2! This is payload two.".to_vec();
-    println!("✓ Created payload1 ({} bytes) and payload2 ({} bytes)", payload1.len(), payload2.len());
+    println!(
+        "✓ Created payload1 ({} bytes) and payload2 ({} bytes)",
+        payload1.len(),
+        payload2.len()
+    );
 
     // Step 4: Create copy stream chunks using efficient multi-destination API
     println!("\n--- Step 4: Creating copy stream chunks using efficient API ---");
     let destinations = vec![
-        (payload1.as_slice(), chan1_write_cap.as_slice(), chan1_first_index.as_slice()),
-        (payload2.as_slice(), chan2_write_cap.as_slice(), chan2_first_index.as_slice()),
+        (payload1.as_slice(), chan1_write_cap.as_slice()),
+        (payload2.as_slice(), chan2_write_cap.as_slice()),
     ];
 
-    let result = alice_client.create_courier_envelopes_from_multi_payload(
-        destinations,
-        true, // is_start
-        true, // is_last
-        None, // buffer
-    ).await.expect("Failed to create courier envelopes from multi payload");
+    let result = alice_client
+        .create_courier_envelopes_from_multi_payload(
+            destinations,
+            true, // is_start
+            true, // is_last
+            None, // buffer
+        )
+        .await
+        .expect("Failed to create courier envelopes from multi payload");
 
-    assert!(!result.envelopes.is_empty(), "Should have at least one chunk");
-    println!("✓ Created {} copy stream chunks for both destinations", result.envelopes.len());
+    assert!(
+        !result.envelopes.is_empty(),
+        "Should have at least one chunk"
+    );
+    println!(
+        "✓ Created {} copy stream chunks for both destinations",
+        result.envelopes.len()
+    );
 
     // Step 5: Write all chunks to temporary channel
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
-    let mut temp_index = temp_first_index.clone();
-    let mut last_temp_index = temp_first_index.clone();
+    let mut temp_index = temp_write_cap.clone();
     for (i, chunk) in result.envelopes.iter().enumerate() {
-        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
-            alice_client
-                .encrypt_write(chunk, &temp_write_cap, &temp_index).await
-                .expect("Failed to encrypt chunk");
+        let EncryptWriteResult {
+            message_ciphertext: ciphertext,
+            envelope_descriptor: env_desc,
+            envelope_hash: env_hash,
+            write_cap: next_temp_index,
+        } = alice_client
+            .encrypt_write(chunk, &temp_index)
+            .await
+            .expect("Failed to encrypt chunk");
 
-        let _ = alice_client.start_resending_encrypted_message(
-            None,
-            Some(&temp_write_cap),
-            None,
-            Some(0),
-            &env_desc,
-            &ciphertext,
-            &env_hash
-        ).await.expect("Failed to send chunk via ARQ");
+        let _ = alice_client
+            .start_resending_encrypted_message(
+                None,
+                Some(&temp_index),
+                Some(0),
+                &env_desc,
+                &ciphertext,
+                &env_hash,
+            )
+            .await
+            .expect("Failed to send chunk via ARQ");
 
         println!("  ✓ Wrote chunk {} ({} bytes)", i + 1, chunk.len());
 
-        last_temp_index = temp_index.clone();
-        temp_index = alice_client.next_message_box_index(&temp_index).await
-            .expect("Failed to get next index");
+        temp_index = next_temp_index;
     }
 
     // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
-    // Gate on a single default ARQ read of the temp stream's final box.
+    // Gate on a single default ARQ read of the temp stream's first box.
     let temp_gate_read = alice_client
-        .encrypt_read(&temp_read_cap, &last_temp_index).await
+        .encrypt_read(&temp_read_cap)
+        .await
         .expect("Failed to encrypt temp gate read");
-    let _ = alice_client.start_resending_encrypted_message(
-        Some(&temp_read_cap),
-        None,
-        Some(&last_temp_index),
-        Some(0),
-        &temp_gate_read.envelope_descriptor,
-        &temp_gate_read.message_ciphertext,
-        &temp_gate_read.envelope_hash
-    ).await.expect("Failed to await temp stream propagation");
+    let _ = alice_client
+        .start_resending_encrypted_message(
+            Some(&temp_read_cap),
+            None,
+            Some(0),
+            &temp_gate_read.envelope_descriptor,
+            &temp_gate_read.message_ciphertext,
+            &temp_gate_read.envelope_hash,
+        )
+        .await
+        .expect("Failed to await temp stream propagation");
 
     // Step 6: Send Copy command
     println!("\n--- Step 6: Sending Copy command via ARQ ---");
-    alice_client.start_resending_copy_command(&temp_write_cap, None, None).await
+    alice_client
+        .start_resending_copy_command(&temp_write_cap, None, None)
+        .await
         .expect("Failed to send copy command");
     println!("✓ Copy command completed");
 
@@ -388,40 +507,58 @@ async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
     // Step 7: Bob reads from Channel 1
     println!("\n--- Step 7: Bob reads from Channel 1 ---");
     let bob1_read_result = bob_client
-        .encrypt_read(&chan1_read_cap, &chan1_first_index).await
+        .encrypt_read(&chan1_read_cap)
+        .await
         .expect("Failed to encrypt read for channel 1");
 
-    let bob1_result = bob_client.start_resending_encrypted_message(
-        Some(&chan1_read_cap),
-        None,
-        Some(&chan1_first_index),
-        Some(0),
-        &bob1_read_result.envelope_descriptor,
-        &bob1_read_result.message_ciphertext,
-        &bob1_read_result.envelope_hash
-    ).await.expect("Failed to retrieve from channel 1");
+    let bob1_result = bob_client
+        .start_resending_encrypted_message(
+            Some(&chan1_read_cap),
+            None,
+            Some(0),
+            &bob1_read_result.envelope_descriptor,
+            &bob1_read_result.message_ciphertext,
+            &bob1_read_result.envelope_hash,
+        )
+        .await
+        .expect("Failed to retrieve from channel 1");
 
-    println!("✓ Bob received from Channel 1: {:?}", String::from_utf8_lossy(&bob1_result.plaintext));
-    assert_eq!(bob1_result.plaintext, payload1, "Channel 1 payload mismatch");
+    println!(
+        "✓ Bob received from Channel 1: {:?}",
+        String::from_utf8_lossy(&bob1_result.plaintext)
+    );
+    assert_eq!(
+        bob1_result.plaintext, payload1,
+        "Channel 1 payload mismatch"
+    );
 
     // Step 8: Bob reads from Channel 2
     println!("\n--- Step 8: Bob reads from Channel 2 ---");
     let bob2_read_result = bob_client
-        .encrypt_read(&chan2_read_cap, &chan2_first_index).await
+        .encrypt_read(&chan2_read_cap)
+        .await
         .expect("Failed to encrypt read for channel 2");
 
-    let bob2_result = bob_client.start_resending_encrypted_message(
-        Some(&chan2_read_cap),
-        None,
-        Some(&chan2_first_index),
-        Some(0),
-        &bob2_read_result.envelope_descriptor,
-        &bob2_read_result.message_ciphertext,
-        &bob2_read_result.envelope_hash
-    ).await.expect("Failed to retrieve from channel 2");
+    let bob2_result = bob_client
+        .start_resending_encrypted_message(
+            Some(&chan2_read_cap),
+            None,
+            Some(0),
+            &bob2_read_result.envelope_descriptor,
+            &bob2_read_result.message_ciphertext,
+            &bob2_read_result.envelope_hash,
+        )
+        .await
+        .expect("Failed to retrieve from channel 2");
 
-    println!("✓ Bob received from Channel 2: {:?}", String::from_utf8_lossy(&bob2_result.plaintext));
-    assert_eq!(bob2_result.plaintext, payload2, "Channel 2 payload mismatch");
+    println!(
+        "✓ Bob received from Channel 2: {:?}",
+        String::from_utf8_lossy(&bob2_result.plaintext)
+    );
+    assert_eq!(
+        bob2_result.plaintext, payload2,
+        "Channel 2 payload mismatch"
+    );
 
     println!("✅ create_courier_envelopes_from_multi_payload multi-channel test passed!");
 }
@@ -433,74 +570,107 @@ async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
 // 4. Bob reads again and verifies the tombstone
 #[tokio::test]
 async fn test_tombstone_box() {
-    let alice = setup_thin_client().await.expect("Failed to setup Alice client");
-    let bob = setup_thin_client().await.expect("Failed to setup Bob client");
+    let alice = setup_thin_client()
+        .await
+        .expect("Failed to setup Alice client");
+    let bob = setup_thin_client()
+        .await
+        .expect("Failed to setup Bob client");
 
     // Create keypair
     let seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap, read_cap, first_message_index: first_index } =
-        alice.new_keypair(&seed).await
-            .expect("Failed to create keypair");
+    let KeypairResult {
+        write_cap,
+        read_cap,
+    } = alice
+        .new_keypair(&seed)
+        .await
+        .expect("Failed to create keypair");
     println!("✓ Created keypair");
 
     // Step 1: Alice writes a message
     let message = b"Secret message that will be tombstoned";
-    let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
-        alice
-            .encrypt_write(message, &write_cap, &first_index).await
-            .expect("Failed to encrypt write");
+    let EncryptWriteResult {
+        message_ciphertext: ciphertext,
+        envelope_descriptor: env_desc,
+        envelope_hash: env_hash,
+        ..
+    } = alice
+        .encrypt_write(message, &write_cap)
+        .await
+        .expect("Failed to encrypt write");
 
     let reply_index: u8 = 0;
-    alice.start_resending_encrypted_message(
-        None,
-        Some(&write_cap),
-        None,
-        Some(reply_index),
-        &env_desc,
-        &ciphertext,
-        &env_hash
-    ).await.expect("Failed to send message");
+    alice
+        .start_resending_encrypted_message(
+            None,
+            Some(&write_cap),
+            Some(reply_index),
+            &env_desc,
+            &ciphertext,
+            &env_hash,
+        )
+        .await
+        .expect("Failed to send message");
     println!("✓ Alice wrote message");
 
     // No propagation sleep: the retrying read below gates itself on BoxIDNotFound until the box propagates.
 
     // Step 2: Bob reads and verifies
     let bob_read_result = bob
-        .encrypt_read(&read_cap, &first_index).await
+        .encrypt_read(&read_cap)
+        .await
         .expect("Failed to encrypt read");
 
-    let read_result = bob.start_resending_encrypted_message(
-        Some(&read_cap),
-        None,
-        Some(&first_index),
-        Some(reply_index),
-        &bob_read_result.envelope_descriptor,
-        &bob_read_result.message_ciphertext,
-        &bob_read_result.envelope_hash
-    ).await.expect("Failed to read message");
+    let read_result = bob
+        .start_resending_encrypted_message(
+            Some(&read_cap),
+            None,
+            Some(reply_index),
+            &bob_read_result.envelope_descriptor,
+            &bob_read_result.message_ciphertext,
+            &bob_read_result.envelope_hash,
+        )
+        .await
+        .expect("Failed to read message");
 
     assert_eq!(read_result.plaintext, message, "Message mismatch");
-    println!("✓ Bob read message: {:?}", String::from_utf8_lossy(&read_result.plaintext));
+    println!(
+        "✓ Bob read message: {:?}",
+        String::from_utf8_lossy(&read_result.plaintext)
+    );
 
     // Step 3: Alice tombstones the box using tombstone_range with max_count=1
-    let tomb_result = alice
-        .tombstone_range(&write_cap, &first_index, 1).await;
-    assert!(tomb_result.error.is_none(), "tombstone_range failed: {:?}", tomb_result.error);
-    assert_eq!(tomb_result.envelopes.len(), 1, "Expected 1 tombstone envelope");
+    let tomb_result = alice.tombstone_range(&write_cap, 1).await;
+    assert!(
+        tomb_result.error.is_none(),
+        "tombstone_range failed: {:?}",
+        tomb_result.error
+    );
+    assert_eq!(
+        tomb_result.envelopes.len(),
+        1,
+        "Expected 1 tombstone envelope"
+    );
     let tomb_env = &tomb_result.envelopes[0];
 
-    let tomb_env_hash_arr: [u8; 32] = tomb_env.envelope_hash.clone().try_into()
+    let tomb_env_hash_arr: [u8; 32] = tomb_env
+        .envelope_hash
+        .clone()
+        .try_into()
         .expect("envelope_hash should be 32 bytes");
 
-    alice.start_resending_encrypted_message(
-        None,
-        Some(&write_cap),
-        None,
-        None,  // reply_index is nil for tombstone writes
-        &tomb_env.envelope_descriptor,
-        &tomb_env.message_ciphertext,
-        &tomb_env_hash_arr
-    ).await.expect("Failed to send tombstone");
+    alice
+        .start_resending_encrypted_message(
+            None,
+            Some(&write_cap),
+            None, // reply_index is nil for tombstone writes
+            &tomb_env.envelope_descriptor,
+            &tomb_env.message_ciphertext,
+            &tomb_env_hash_arr,
+        )
+        .await
+        .expect("Failed to send tombstone");
     println!("✓ Alice tombstoned the box");
 
     // Step 4: Bob polls for tombstone with retries (matching Go test)
@@ -509,22 +679,28 @@ async fn test_tombstone_box() {
     let mut tombstone_verified = false;
 
     for attempt in 1..=MAX_ATTEMPTS {
-        println!("Polling for tombstone (attempt {}/{})...", attempt, MAX_ATTEMPTS);
+        println!(
+            "Polling for tombstone (attempt {}/{})...",
+            attempt, MAX_ATTEMPTS
+        );
         tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
 
         let tomb_read_result = bob
-            .encrypt_read(&read_cap, &first_index).await
+            .encrypt_read(&read_cap)
+            .await
             .expect("Failed to encrypt read for tombstone check");
 
-        match bob.start_resending_encrypted_message(
-            Some(&read_cap),
-            None,
-            Some(&first_index),
-            Some(reply_index),
-            &tomb_read_result.envelope_descriptor,
-            &tomb_read_result.message_ciphertext,
-            &tomb_read_result.envelope_hash
-        ).await {
+        match bob
+            .start_resending_encrypted_message(
+                Some(&read_cap),
+                None,
+                Some(reply_index),
+                &tomb_read_result.envelope_descriptor,
+                &tomb_read_result.message_ciphertext,
+                &tomb_read_result.envelope_hash,
+            )
+            .await
+        {
             Err(katzenpost_thin_client::ThinClientError::Tombstone) => {
                 tombstone_verified = true;
                 println!("✓ Bob verified tombstone on attempt {}", attempt);
@@ -537,7 +713,11 @@ async fn test_tombstone_box() {
         }
     }
 
-    assert!(tombstone_verified, "Tombstone not propagated after {} attempts", MAX_ATTEMPTS);
+    assert!(
+        tombstone_verified,
+        "Tombstone not propagated after {} attempts",
+        MAX_ATTEMPTS
+    );
     println!("\n✅ Tombstoning test passed!");
 }
 
@@ -545,89 +725,122 @@ async fn test_tombstone_box() {
 async fn test_tombstone_range() {
     println!("\n=== Test: tombstone_range ===");
 
-    let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
+    let alice_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Alice client");
 
     // Create keypair
     let seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap, read_cap, first_message_index: first_index } =
-        alice_client.new_keypair(&seed).await
-            .expect("Failed to create keypair");
+    let KeypairResult {
+        write_cap,
+        read_cap,
+    } = alice_client
+        .new_keypair(&seed)
+        .await
+        .expect("Failed to create keypair");
     println!("✓ Created keypair");
 
     // Write 3 messages to sequential boxes
     let num_messages: u32 = 3;
-    let mut current_index = first_index.clone();
+    let mut current_index = write_cap.clone();
 
     println!("\n--- Writing {} messages ---", num_messages);
     for i in 0..num_messages {
         let message = format!("Message {} to be tombstoned", i + 1);
-        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
-            alice_client
-                .encrypt_write(message.as_bytes(), &write_cap, &current_index).await
-                .expect("Failed to encrypt write");
+        let EncryptWriteResult {
+            message_ciphertext: ciphertext,
+            envelope_descriptor: env_desc,
+            envelope_hash: env_hash,
+            write_cap: next_index,
+        } = alice_client
+            .encrypt_write(message.as_bytes(), &current_index)
+            .await
+            .expect("Failed to encrypt write");
 
-        let _ = alice_client.start_resending_encrypted_message(
-            None,
-            Some(&write_cap),
-            None,
-            Some(0),
-            &env_desc,
-            &ciphertext,
-            &env_hash
-        ).await.expect("Failed to send message");
+        let _ = alice_client
+            .start_resending_encrypted_message(
+                None,
+                Some(&current_index),
+                Some(0),
+                &env_desc,
+                &ciphertext,
+                &env_hash,
+            )
+            .await
+            .expect("Failed to send message");
         println!("✓ Wrote message {}", i + 1);
 
-        if i < num_messages - 1 {
-            current_index = alice_client.next_message_box_index(&current_index).await
-                .expect("Failed to get next index");
-        }
+        current_index = next_index;
     }
 
     // Deterministic propagation gate, in place of a blind sleep: a
-    // retrying read of the last-written box returns only once the
-    // writes have landed, so the range is tombstoned over boxes that
-    // exist. current_index holds the final written box's index.
+    // retrying read of the first box returns only once the writes have
+    // started landing, so the range is tombstoned over boxes that exist.
+    let _ = &current_index;
     let gate_read = alice_client
-        .encrypt_read(&read_cap, &current_index).await
+        .encrypt_read(&read_cap)
+        .await
         .expect("Failed to encrypt propagation-gate read");
-    let _ = alice_client.start_resending_encrypted_message(
-        Some(&read_cap),
-        None,
-        Some(&current_index),
-        Some(0),
-        &gate_read.envelope_descriptor,
-        &gate_read.message_ciphertext,
-        &gate_read.envelope_hash
-    ).await.expect("Failed propagation-gate read");
+    let _ = alice_client
+        .start_resending_encrypted_message(
+            Some(&read_cap),
+            None,
+            Some(0),
+            &gate_read.envelope_descriptor,
+            &gate_read.message_ciphertext,
+            &gate_read.envelope_hash,
+        )
+        .await
+        .expect("Failed propagation-gate read");
 
-    // Tombstone the range - creates envelopes without sending
+    // Tombstone the range - creates envelopes without sending. The write
+    // cap carries the start position; the range covers num_messages boxes.
     println!("\n--- Creating tombstones for {} boxes ---", num_messages);
-    let result = alice_client.tombstone_range(&write_cap, &first_index, num_messages).await;
+    let result = alice_client.tombstone_range(&write_cap, num_messages).await;
 
-    assert!(result.error.is_none(), "Unexpected error: {:?}", result.error);
-    assert_eq!(result.envelopes.len(), num_messages as usize, "Expected {} envelopes, got {}", num_messages, result.envelopes.len());
-    assert!(!result.next.is_empty(), "Next index should not be empty");
+    assert!(
+        result.error.is_none(),
+        "Unexpected error: {:?}",
+        result.error
+    );
+    assert_eq!(
+        result.envelopes.len(),
+        num_messages as usize,
+        "Expected {} envelopes, got {}",
+        num_messages,
+        result.envelopes.len()
+    );
+    assert!(!result.next_cap.is_empty(), "Next cap should not be empty");
     println!("✓ Created {} tombstone envelopes", result.envelopes.len());
 
-    // Send all tombstone envelopes
+    // Send all tombstone envelopes. Each envelope's box_cap is the write
+    // cap positioned at the box being tombstoned.
     println!("\n--- Sending {} tombstone envelopes ---", num_messages);
     for (i, envelope) in result.envelopes.iter().enumerate() {
         // Convert envelope_hash Vec<u8> to [u8; 32]
-        let env_hash: [u8; 32] = envelope.envelope_hash.clone().try_into()
+        let env_hash: [u8; 32] = envelope
+            .envelope_hash
+            .clone()
+            .try_into()
             .expect("envelope_hash should be 32 bytes");
-        alice_client.start_resending_encrypted_message(
-            None,
-            Some(&write_cap),
-            None,
-            None, // reply_index must be None for tombstone writes
-            &envelope.envelope_descriptor,
-            &envelope.message_ciphertext,
-            &env_hash
-        ).await.expect("Failed to send tombstone envelope");
+        alice_client
+            .start_resending_encrypted_message(
+                None,
+                Some(&envelope.box_cap),
+                None, // reply_index must be None for tombstone writes
+                &envelope.envelope_descriptor,
+                &envelope.message_ciphertext,
+                &env_hash,
+            )
+            .await
+            .expect("Failed to send tombstone envelope");
         println!("✓ Sent tombstone envelope {}", i + 1);
     }
 
-    println!("✅ tombstone_range test passed! Created and sent {} tombstones successfully!", num_messages);
+    println!(
+        "✅ tombstone_range test passed! Created and sent {} tombstones successfully!",
+        num_messages
+    );
 }
 
 #[tokio::test]
@@ -639,29 +852,35 @@ async fn test_box_id_not_found_error() {
 
     // Create a fresh keypair - but do NOT write anything to it
     let seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: _write_cap, read_cap, first_message_index: first_index } =
-        client.new_keypair(&seed).await
-            .expect("Failed to create keypair");
+    let KeypairResult {
+        write_cap: _write_cap,
+        read_cap,
+    } = client
+        .new_keypair(&seed)
+        .await
+        .expect("Failed to create keypair");
     println!("✓ Created fresh keypair (no messages written)");
 
     // Encrypt a read request for the non-existent box
     let read_result = client
-        .encrypt_read(&read_cap, &first_index).await
+        .encrypt_read(&read_cap)
+        .await
         .expect("Failed to encrypt read");
     println!("✓ Encrypted read request for non-existent box");
 
     // Attempt to read - this should return BoxNotFound error
     // Use start_resending_encrypted_message_no_retry to get immediate error without retries
     println!("--- Attempting to read from non-existent box ---");
-    let result = client.start_resending_encrypted_message_no_retry(
-        Some(&read_cap),
-        None,
-        Some(&first_index),
-        Some(0),
-        &read_result.envelope_descriptor,
-        &read_result.message_ciphertext,
-        &read_result.envelope_hash
-    ).await;
+    let result = client
+        .start_resending_encrypted_message_no_retry(
+            Some(&read_cap),
+            None,
+            Some(0),
+            &read_result.envelope_descriptor,
+            &read_result.message_ciphertext,
+            &read_result.envelope_hash,
+        )
+        .await;
 
     // Verify we got the expected error
     match result {
@@ -673,7 +892,10 @@ async fn test_box_id_not_found_error() {
             panic!("Expected BoxNotFound error but got: {:?}", e);
         }
         Ok(result) => {
-            panic!("Expected BoxNotFound error but got success with plaintext len: {}", result.plaintext.len());
+            panic!(
+                "Expected BoxNotFound error but got success with plaintext len: {}",
+                result.plaintext.len()
+            );
         }
     }
 }
@@ -687,20 +909,32 @@ async fn test_box_id_not_found_error() {
 async fn test_from_payload_multi_call() {
     println!("\n=== Test: FromPayload Multi-Call ===");
 
-    let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
-    let bob_client = setup_thin_client().await.expect("Failed to setup Bob client");
+    let alice_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Alice client");
+    let bob_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Bob client");
 
     // Create destination channel
     let dest_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: dest_write_cap, read_cap: dest_read_cap, first_message_index: dest_first_index } =
-        alice_client.new_keypair(&dest_seed).await
-            .expect("Failed to create destination keypair");
+    let KeypairResult {
+        write_cap: dest_write_cap,
+        read_cap: dest_read_cap,
+    } = alice_client
+        .new_keypair(&dest_seed)
+        .await
+        .expect("Failed to create destination keypair");
 
     // Create temp copy stream channel
     let temp_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: temp_write_cap, read_cap: temp_read_cap, first_message_index: temp_first_index } =
-        alice_client.new_keypair(&temp_seed).await
-            .expect("Failed to create temp keypair");
+    let KeypairResult {
+        write_cap: temp_write_cap,
+        read_cap: temp_read_cap,
+    } = alice_client
+        .new_keypair(&temp_seed)
+        .await
+        .expect("Failed to create temp keypair");
 
     // Create payload large enough to split into 3 chunks
     let chunk_size = 2000;
@@ -713,91 +947,140 @@ async fn test_from_payload_multi_call() {
     let mut all_temp_elements: Vec<Vec<u8>> = Vec::new();
 
     // First call: is_start=true, is_last=false
-    let result1 = alice_client.create_courier_envelopes_from_payload(
-        chunk1, &dest_write_cap, &dest_first_index, true, false,
-    ).await.expect("Call 1 failed");
+    let result1 = alice_client
+        .create_courier_envelopes_from_payload(chunk1, &dest_write_cap, true, false)
+        .await
+        .expect("Call 1 failed");
     assert!(!result1.envelopes.is_empty());
-    assert!(result1.next_dest_index.is_some(), "Call 1 should return next_dest_index");
+    assert!(
+        result1.dest_write_cap.is_some(),
+        "Call 1 should return dest_write_cap"
+    );
     all_temp_elements.extend(result1.envelopes);
     println!("Call 1: {} temp elements", all_temp_elements.len());
 
-    // Second call: is_start=false, is_last=false — uses next_dest_index from reply
-    let result2 = alice_client.create_courier_envelopes_from_payload(
-        chunk2, &dest_write_cap, result1.next_dest_index.as_ref().unwrap(), false, false,
-    ).await.expect("Call 2 failed");
+    // Second call: is_start=false, is_last=false — uses dest_write_cap from reply
+    let result2 = alice_client
+        .create_courier_envelopes_from_payload(
+            chunk2,
+            result1.dest_write_cap.as_ref().unwrap(),
+            false,
+            false,
+        )
+        .await
+        .expect("Call 2 failed");
     assert!(!result2.envelopes.is_empty());
-    assert!(result2.next_dest_index.is_some(), "Call 2 should return next_dest_index");
+    assert!(
+        result2.dest_write_cap.is_some(),
+        "Call 2 should return dest_write_cap"
+    );
     let result2_count = result2.envelopes.len();
     all_temp_elements.extend(result2.envelopes);
     println!("Call 2: {} new temp elements", result2_count);
 
     // Third call: is_start=false, is_last=true
-    let result3 = alice_client.create_courier_envelopes_from_payload(
-        chunk3, &dest_write_cap, result2.next_dest_index.as_ref().unwrap(), false, true,
-    ).await.expect("Call 3 failed");
+    let result3 = alice_client
+        .create_courier_envelopes_from_payload(
+            chunk3,
+            result2.dest_write_cap.as_ref().unwrap(),
+            false,
+            true,
+        )
+        .await
+        .expect("Call 3 failed");
     assert!(!result3.envelopes.is_empty());
-    assert!(result3.next_dest_index.is_some(), "Call 3 should return next_dest_index");
+    assert!(
+        result3.dest_write_cap.is_some(),
+        "Call 3 should return dest_write_cap"
+    );
     let result3_count = result3.envelopes.len();
     all_temp_elements.extend(result3.envelopes);
     println!("Call 3: {} new temp elements", result3_count);
 
     // Write all temp stream elements to temp channel
-    let mut temp_index = temp_first_index.clone();
-    let mut last_temp_index = temp_first_index.clone();
+    let mut temp_index = temp_write_cap.clone();
     for (i, elem) in all_temp_elements.iter().enumerate() {
-        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
-            alice_client.encrypt_write(elem, &temp_write_cap, &temp_index).await
-                .expect("Failed to encrypt chunk");
+        let EncryptWriteResult {
+            message_ciphertext: ciphertext,
+            envelope_descriptor: env_desc,
+            envelope_hash: env_hash,
+            write_cap: next_temp_index,
+        } = alice_client
+            .encrypt_write(elem, &temp_index)
+            .await
+            .expect("Failed to encrypt chunk");
 
-        let _ = alice_client.start_resending_encrypted_message(
-            None, Some(&temp_write_cap), None, Some(0),
-            &env_desc, &ciphertext, &env_hash,
-        ).await.expect("Failed to send chunk via ARQ");
+        let _ = alice_client
+            .start_resending_encrypted_message(
+                None,
+                Some(&temp_index),
+                Some(0),
+                &env_desc,
+                &ciphertext,
+                &env_hash,
+            )
+            .await
+            .expect("Failed to send chunk via ARQ");
 
-        last_temp_index = temp_index.clone();
-        temp_index = alice_client.next_message_box_index(&temp_index).await
-            .expect("Failed to get next index");
+        temp_index = next_temp_index;
         println!("  Wrote temp element {}/{}", i + 1, all_temp_elements.len());
     }
 
     // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
-    // Gate on a single default ARQ read of the temp stream's final box.
+    // Gate on a single default ARQ read of the temp stream's first box.
     let temp_gate_read = alice_client
-        .encrypt_read(&temp_read_cap, &last_temp_index).await
+        .encrypt_read(&temp_read_cap)
+        .await
         .expect("Failed to encrypt temp gate read");
-    let _ = alice_client.start_resending_encrypted_message(
-        Some(&temp_read_cap), None, Some(&last_temp_index), Some(0),
-        &temp_gate_read.envelope_descriptor,
-        &temp_gate_read.message_ciphertext,
-        &temp_gate_read.envelope_hash,
-    ).await.expect("Failed to await temp stream propagation");
+    let _ = alice_client
+        .start_resending_encrypted_message(
+            Some(&temp_read_cap),
+            None,
+            Some(0),
+            &temp_gate_read.envelope_descriptor,
+            &temp_gate_read.message_ciphertext,
+            &temp_gate_read.envelope_hash,
+        )
+        .await
+        .expect("Failed to await temp stream propagation");
 
     // Send copy command
-    alice_client.start_resending_copy_command(&temp_write_cap, None, None).await
+    alice_client
+        .start_resending_copy_command(&temp_write_cap, None, None)
+        .await
         .expect("Failed to send copy command");
     println!("Copy command completed");
 
     // No propagation sleep: Bob's default ARQ reads below auto-retry on BoxIDNotFound until the copy lands.
 
     // Bob reads all destination boxes and reconstructs the payload
-    let mut bob_index = dest_first_index.clone();
+    let mut bob_index = dest_read_cap.clone();
     let mut reconstructed = Vec::new();
     while reconstructed.len() < full_payload.len() {
-        let read_result = bob_client.encrypt_read(&dest_read_cap, &bob_index).await
+        let read_result = bob_client
+            .encrypt_read(&bob_index)
+            .await
             .expect("Failed to encrypt read");
-        let msg_result = bob_client.start_resending_encrypted_message(
-            Some(&dest_read_cap), None, Some(&bob_index), Some(0),
-            &read_result.envelope_descriptor,
-            &read_result.message_ciphertext,
-            &read_result.envelope_hash,
-        ).await.expect("Failed to retrieve message");
+        let msg_result = bob_client
+            .start_resending_encrypted_message(
+                Some(&bob_index),
+                None,
+                Some(0),
+                &read_result.envelope_descriptor,
+                &read_result.message_ciphertext,
+                &read_result.envelope_hash,
+            )
+            .await
+            .expect("Failed to retrieve message");
         assert!(!msg_result.plaintext.is_empty());
         reconstructed.extend_from_slice(&msg_result.plaintext);
-        bob_index = bob_client.next_message_box_index(&bob_index).await
-            .expect("Failed to get next index");
+        bob_index = read_result.read_cap;
     }
 
-    assert_eq!(reconstructed, full_payload, "Reconstructed payload doesn't match original");
+    assert_eq!(
+        reconstructed, full_payload,
+        "Reconstructed payload doesn't match original"
+    );
     println!("✅ FromPayload multi-call test passed!");
 }
 
@@ -810,25 +1093,41 @@ async fn test_from_payload_multi_call() {
 async fn test_from_multi_payload_multi_call() {
     println!("\n=== Test: FromMultiPayload Multi-Call ===");
 
-    let alice_client = setup_thin_client().await.expect("Failed to setup Alice client");
-    let bob_client = setup_thin_client().await.expect("Failed to setup Bob client");
+    let alice_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Alice client");
+    let bob_client = setup_thin_client()
+        .await
+        .expect("Failed to setup Bob client");
 
     // Create two destination channels
     let chan1_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: chan1_write_cap, read_cap: chan1_read_cap, first_message_index: chan1_first_index } =
-        alice_client.new_keypair(&chan1_seed).await
-            .expect("Failed to create channel 1 keypair");
+    let KeypairResult {
+        write_cap: chan1_write_cap,
+        read_cap: chan1_read_cap,
+    } = alice_client
+        .new_keypair(&chan1_seed)
+        .await
+        .expect("Failed to create channel 1 keypair");
 
     let chan2_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: chan2_write_cap, read_cap: chan2_read_cap, first_message_index: chan2_first_index } =
-        alice_client.new_keypair(&chan2_seed).await
-            .expect("Failed to create channel 2 keypair");
+    let KeypairResult {
+        write_cap: chan2_write_cap,
+        read_cap: chan2_read_cap,
+    } = alice_client
+        .new_keypair(&chan2_seed)
+        .await
+        .expect("Failed to create channel 2 keypair");
 
     // Create temp copy stream channel
     let temp_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: temp_write_cap, read_cap: temp_read_cap, first_message_index: temp_first_index } =
-        alice_client.new_keypair(&temp_seed).await
-            .expect("Failed to create temp keypair");
+    let KeypairResult {
+        write_cap: temp_write_cap,
+        read_cap: temp_read_cap,
+    } = alice_client
+        .new_keypair(&temp_seed)
+        .await
+        .expect("Failed to create temp keypair");
 
     // Create payloads — small enough to fit in one box each
     let payload1a = b"First batch of data for channel 1 - testing multi-call".to_vec();
@@ -838,66 +1137,97 @@ async fn test_from_multi_payload_multi_call() {
 
     // First call: two destinations, is_start=true, is_last=false
     let destinations1 = vec![
-        (payload1a.as_slice(), chan1_write_cap.as_slice(), chan1_first_index.as_slice()),
-        (payload2a.as_slice(), chan2_write_cap.as_slice(), chan2_first_index.as_slice()),
+        (payload1a.as_slice(), chan1_write_cap.as_slice()),
+        (payload2a.as_slice(), chan2_write_cap.as_slice()),
     ];
-    let result1 = alice_client.create_courier_envelopes_from_multi_payload(
-        destinations1, true, false, None,
-    ).await.expect("Multi-payload call 1 failed");
+    let result1 = alice_client
+        .create_courier_envelopes_from_multi_payload(destinations1, true, false, None)
+        .await
+        .expect("Multi-payload call 1 failed");
     assert!(!result1.envelopes.is_empty());
-    assert!(result1.next_dest_indices.is_some(), "Call 1 should return next_dest_indices");
-    let next_indices = result1.next_dest_indices.as_ref().unwrap();
-    assert_eq!(next_indices.len(), 2, "Should have 2 next_dest_indices");
+    assert!(
+        result1.dest_write_caps.is_some(),
+        "Call 1 should return dest_write_caps"
+    );
+    let next_caps = result1.dest_write_caps.as_ref().unwrap();
+    assert_eq!(next_caps.len(), 2, "Should have 2 dest_write_caps");
     println!("Call 1: {} temp elements", result1.envelopes.len());
 
-    // Second call: same destinations, continue from next_dest_indices, is_last=true
+    // Second call: same destinations, continue from dest_write_caps, is_last=true
     let destinations2 = vec![
-        (payload1b.as_slice(), chan1_write_cap.as_slice(), next_indices[0].as_slice()),
-        (payload2b.as_slice(), chan2_write_cap.as_slice(), next_indices[1].as_slice()),
+        (payload1b.as_slice(), next_caps[0].as_slice()),
+        (payload2b.as_slice(), next_caps[1].as_slice()),
     ];
-    let result2 = alice_client.create_courier_envelopes_from_multi_payload(
-        destinations2, false, true, Some(result1.buffer.clone()),
-    ).await.expect("Multi-payload call 2 failed");
+    let result2 = alice_client
+        .create_courier_envelopes_from_multi_payload(
+            destinations2,
+            false,
+            true,
+            Some(result1.buffer.clone()),
+        )
+        .await
+        .expect("Multi-payload call 2 failed");
     assert!(!result2.envelopes.is_empty());
-    assert!(result2.next_dest_indices.is_some(), "Call 2 should return next_dest_indices");
-    assert_eq!(result2.next_dest_indices.as_ref().unwrap().len(), 2);
+    assert!(
+        result2.dest_write_caps.is_some(),
+        "Call 2 should return dest_write_caps"
+    );
+    assert_eq!(result2.dest_write_caps.as_ref().unwrap().len(), 2);
     println!("Call 2: {} temp elements", result2.envelopes.len());
 
     // Write all temp stream elements
     let mut all_elements = result1.envelopes.clone();
     all_elements.extend(result2.envelopes.clone());
-    let mut temp_index = temp_first_index.clone();
-    let mut last_temp_index = temp_first_index.clone();
+    let mut temp_index = temp_write_cap.clone();
     for (i, elem) in all_elements.iter().enumerate() {
-        let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
-            alice_client.encrypt_write(elem, &temp_write_cap, &temp_index).await
-                .expect("Failed to encrypt chunk");
+        let EncryptWriteResult {
+            message_ciphertext: ciphertext,
+            envelope_descriptor: env_desc,
+            envelope_hash: env_hash,
+            write_cap: next_temp_index,
+        } = alice_client
+            .encrypt_write(elem, &temp_index)
+            .await
+            .expect("Failed to encrypt chunk");
 
-        let _ = alice_client.start_resending_encrypted_message(
-            None, Some(&temp_write_cap), None, Some(0),
-            &env_desc, &ciphertext, &env_hash,
-        ).await.expect("Failed to send chunk via ARQ");
+        let _ = alice_client
+            .start_resending_encrypted_message(
+                None,
+                Some(&temp_index),
+                Some(0),
+                &env_desc,
+                &ciphertext,
+                &env_hash,
+            )
+            .await
+            .expect("Failed to send chunk via ARQ");
 
-        last_temp_index = temp_index.clone();
-        temp_index = alice_client.next_message_box_index(&temp_index).await
-            .expect("Failed to get next index");
+        temp_index = next_temp_index;
         println!("  Wrote temp element {}/{}", i + 1, all_elements.len());
     }
 
     // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
-    // Gate on a single default ARQ read of the temp stream's final box.
+    // Gate on a single default ARQ read of the temp stream's first box.
     let temp_gate_read = alice_client
-        .encrypt_read(&temp_read_cap, &last_temp_index).await
+        .encrypt_read(&temp_read_cap)
+        .await
         .expect("Failed to encrypt temp gate read");
-    let _ = alice_client.start_resending_encrypted_message(
-        Some(&temp_read_cap), None, Some(&last_temp_index), Some(0),
-        &temp_gate_read.envelope_descriptor,
-        &temp_gate_read.message_ciphertext,
-        &temp_gate_read.envelope_hash,
-    ).await.expect("Failed to await temp stream propagation");
+    let _ = alice_client
+        .start_resending_encrypted_message(
+            Some(&temp_read_cap),
+            None,
+            Some(0),
+            &temp_gate_read.envelope_descriptor,
+            &temp_gate_read.message_ciphertext,
+            &temp_gate_read.envelope_hash,
+        )
+        .await
+        .expect("Failed to await temp stream propagation");
 
     // Send copy command
-    alice_client.start_resending_copy_command(&temp_write_cap, None, None).await
+    alice_client
+        .start_resending_copy_command(&temp_write_cap, None, None)
+        .await
         .expect("Failed to send copy command");
     println!("Copy command completed");
 
@@ -905,42 +1235,54 @@ async fn test_from_multi_payload_multi_call() {
 
     // Bob reads from channel 1 — expects payload1a + payload1b
     let expected_chan1 = [payload1a.as_slice(), payload1b.as_slice()].concat();
-    let mut bob_index = chan1_first_index.clone();
+    let mut bob_index = chan1_read_cap.clone();
     let mut chan1_data = Vec::new();
     while chan1_data.len() < expected_chan1.len() {
-        let read_result = bob_client.encrypt_read(&chan1_read_cap, &bob_index).await
+        let read_result = bob_client
+            .encrypt_read(&bob_index)
+            .await
             .expect("Failed to encrypt read for channel 1");
-        let msg_result = bob_client.start_resending_encrypted_message(
-            Some(&chan1_read_cap), None, Some(&bob_index), Some(0),
-            &read_result.envelope_descriptor,
-            &read_result.message_ciphertext,
-            &read_result.envelope_hash,
-        ).await.expect("Failed to retrieve from channel 1");
+        let msg_result = bob_client
+            .start_resending_encrypted_message(
+                Some(&bob_index),
+                None,
+                Some(0),
+                &read_result.envelope_descriptor,
+                &read_result.message_ciphertext,
+                &read_result.envelope_hash,
+            )
+            .await
+            .expect("Failed to retrieve from channel 1");
         assert!(!msg_result.plaintext.is_empty());
         chan1_data.extend_from_slice(&msg_result.plaintext);
-        bob_index = bob_client.next_message_box_index(&bob_index).await
-            .expect("Failed to get next index");
+        bob_index = read_result.read_cap;
     }
     assert_eq!(chan1_data, expected_chan1, "Channel 1 data doesn't match");
     println!("Channel 1 verified");
 
     // Bob reads from channel 2 — expects payload2a + payload2b
     let expected_chan2 = [payload2a.as_slice(), payload2b.as_slice()].concat();
-    let mut bob_index = chan2_first_index.clone();
+    let mut bob_index = chan2_read_cap.clone();
     let mut chan2_data = Vec::new();
     while chan2_data.len() < expected_chan2.len() {
-        let read_result = bob_client.encrypt_read(&chan2_read_cap, &bob_index).await
+        let read_result = bob_client
+            .encrypt_read(&bob_index)
+            .await
             .expect("Failed to encrypt read for channel 2");
-        let msg_result = bob_client.start_resending_encrypted_message(
-            Some(&chan2_read_cap), None, Some(&bob_index), Some(0),
-            &read_result.envelope_descriptor,
-            &read_result.message_ciphertext,
-            &read_result.envelope_hash,
-        ).await.expect("Failed to retrieve from channel 2");
+        let msg_result = bob_client
+            .start_resending_encrypted_message(
+                Some(&bob_index),
+                None,
+                Some(0),
+                &read_result.envelope_descriptor,
+                &read_result.message_ciphertext,
+                &read_result.envelope_hash,
+            )
+            .await
+            .expect("Failed to retrieve from channel 2");
         assert!(!msg_result.plaintext.is_empty());
         chan2_data.extend_from_slice(&msg_result.plaintext);
-        bob_index = bob_client.next_message_box_index(&bob_index).await
-            .expect("Failed to get next index");
+        bob_index = read_result.read_cap;
     }
     assert_eq!(chan2_data, expected_chan2, "Channel 2 data doesn't match");
     println!("Channel 2 verified");
@@ -969,26 +1311,33 @@ async fn test_copy_onto_already_existing_box_error() {
 
     // Step 1: Create destination keypair.
     let dest_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: dest_write_cap, read_cap: dest_read_cap, first_message_index: dest_first_index } =
-        client.new_keypair(&dest_seed).await
-            .expect("Failed to create destination keypair");
+    let KeypairResult {
+        write_cap: dest_write_cap,
+        read_cap: dest_read_cap,
+    } = client
+        .new_keypair(&dest_seed)
+        .await
+        .expect("Failed to create destination keypair");
     println!("✓ Created destination keypair");
 
     // Step 2: Write a message directly to the first destination box so the
     // subsequent Copy command has something to collide with.
     let first_message = b"First message - this should work";
     let first_write = client
-        .encrypt_write(first_message, &dest_write_cap, &dest_first_index).await
+        .encrypt_write(first_message, &dest_write_cap)
+        .await
         .expect("Failed to encrypt first write");
-    client.start_resending_encrypted_message(
-        None,
-        Some(&dest_write_cap),
-        None,
-        None,
-        &first_write.envelope_descriptor,
-        &first_write.message_ciphertext,
-        &first_write.envelope_hash,
-    ).await.expect("Failed to send first write");
+    client
+        .start_resending_encrypted_message(
+            None,
+            Some(&dest_write_cap),
+            None,
+            &first_write.envelope_descriptor,
+            &first_write.message_ciphertext,
+            &first_write.envelope_hash,
+        )
+        .await
+        .expect("Failed to send first write");
     println!("✓ First direct write succeeded");
 
     // Read-back to confirm the write is visible at the serving replica.
@@ -997,13 +1346,13 @@ async fn test_copy_onto_already_existing_box_error() {
     // with a deterministic propagation check.
     println!("--- Reading back to confirm propagation ---");
     let read_request = client
-        .encrypt_read(&dest_read_cap, &dest_first_index).await
+        .encrypt_read(&dest_read_cap)
+        .await
         .expect("Failed to encrypt read");
     let read_reply = client
         .start_resending_encrypted_message(
             Some(&dest_read_cap),
             None,
-            Some(&dest_first_index),
             Some(0),
             &read_request.envelope_descriptor,
             &read_request.message_ciphertext,
@@ -1019,73 +1368,97 @@ async fn test_copy_onto_already_existing_box_error() {
 
     // Step 3: Create temporary copy stream channel.
     let temp_seed: [u8; 32] = rand::random();
-    let KeypairResult { write_cap: temp_write_cap, read_cap: temp_read_cap, first_message_index: temp_first_index } =
-        client.new_keypair(&temp_seed).await
-            .expect("Failed to create temp keypair");
+    let KeypairResult {
+        write_cap: temp_write_cap,
+        read_cap: temp_read_cap,
+    } = client
+        .new_keypair(&temp_seed)
+        .await
+        .expect("Failed to create temp keypair");
     println!("✓ Created temporary copy stream channel");
 
     // Step 4: Create copy stream chunks targeting the already-written destination.
     let random_data: Vec<u8> = (0..2000).map(|_| rand::random::<u8>()).collect();
-    let copy_stream_result = client.create_courier_envelopes_from_payload(
-        &random_data,
-        &dest_write_cap,
-        &dest_first_index,
-        true,   // is_start
-        true,   // is_last
-    ).await.expect("Failed to create courier envelopes from payload");
-    assert!(!copy_stream_result.envelopes.is_empty(), "Should have at least one chunk");
+    let copy_stream_result = client
+        .create_courier_envelopes_from_payload(
+            &random_data,
+            &dest_write_cap,
+            true, // is_start
+            true, // is_last
+        )
+        .await
+        .expect("Failed to create courier envelopes from payload");
+    assert!(
+        !copy_stream_result.envelopes.is_empty(),
+        "Should have at least one chunk"
+    );
     let num_chunks = copy_stream_result.envelopes.len();
     println!("✓ Created {} copy stream chunks", num_chunks);
 
     // Step 5: Write all copy stream chunks to the temporary channel.
-    let mut temp_index = temp_first_index.clone();
-    let mut last_temp_index = temp_first_index.clone();
+    let mut temp_index = temp_write_cap.clone();
     for (i, chunk) in copy_stream_result.envelopes.iter().enumerate() {
-        let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash, .. } =
-            client.encrypt_write(chunk, &temp_write_cap, &temp_index).await
-                .expect("Failed to encrypt chunk");
+        let EncryptWriteResult {
+            message_ciphertext,
+            envelope_descriptor,
+            envelope_hash,
+            write_cap: next_temp_index,
+        } = client
+            .encrypt_write(chunk, &temp_index)
+            .await
+            .expect("Failed to encrypt chunk");
 
-        client.start_resending_encrypted_message(
-            None,
-            Some(&temp_write_cap),
-            None,
-            Some(0),
-            &envelope_descriptor,
-            &message_ciphertext,
-            &envelope_hash,
-        ).await.expect("Failed to send chunk via ARQ");
+        client
+            .start_resending_encrypted_message(
+                None,
+                Some(&temp_index),
+                Some(0),
+                &envelope_descriptor,
+                &message_ciphertext,
+                &envelope_hash,
+            )
+            .await
+            .expect("Failed to send chunk via ARQ");
 
         println!("  ✓ Wrote chunk {}/{}", i + 1, num_chunks);
 
-        last_temp_index = temp_index.clone();
-        temp_index = client.next_message_box_index(&temp_index).await
-            .expect("Failed to get next index");
+        temp_index = next_temp_index;
     }
 
     // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
-    // Gate on a single default ARQ read of the temp stream's final box; the
+    // Gate on a single default ARQ read of the temp stream's first box; the
     // daemon auto-retries on BoxIDNotFound until that box has propagated.
     let temp_gate_read = client
-        .encrypt_read(&temp_read_cap, &last_temp_index).await
+        .encrypt_read(&temp_read_cap)
+        .await
         .expect("Failed to encrypt temp gate read");
-    let _ = client.start_resending_encrypted_message(
-        Some(&temp_read_cap),
-        None,
-        Some(&last_temp_index),
-        Some(0),
-        &temp_gate_read.envelope_descriptor,
-        &temp_gate_read.message_ciphertext,
-        &temp_gate_read.envelope_hash,
-    ).await.expect("Failed to await temp stream propagation");
+    let _ = client
+        .start_resending_encrypted_message(
+            Some(&temp_read_cap),
+            None,
+            Some(0),
+            &temp_gate_read.envelope_descriptor,
+            &temp_gate_read.message_ciphertext,
+            &temp_gate_read.envelope_hash,
+        )
+        .await
+        .expect("Failed to await temp stream propagation");
 
     // Step 6: Send Copy command — must fail because the destination's first
     // box was already populated in step 2.
     println!("--- Sending Copy command (should fail) ---");
-    let result = client.start_resending_copy_command(&temp_write_cap, None, None).await;
+    let result = client
+        .start_resending_copy_command(&temp_write_cap, None, None)
+        .await;
 
     match result {
-        Ok(()) => panic!("Expected CopyCommandFailed when copying onto already existing box, got Ok"),
-        Err(ThinClientError::CopyCommandFailed { replica_error_code, failed_envelope_index }) => {
+        Ok(()) => {
+            panic!("Expected CopyCommandFailed when copying onto already existing box, got Ok")
+        }
+        Err(ThinClientError::CopyCommandFailed {
+            replica_error_code,
+            failed_envelope_index,
+        }) => {
             println!(
                 "✓ Got ThinClientError::CopyCommandFailed \
                  (replica_error_code={}, failed_envelope_index={})",

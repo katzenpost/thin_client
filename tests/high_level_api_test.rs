@@ -26,12 +26,15 @@ async fn setup_clients() -> Result<(Arc<ThinClient>, Arc<ThinClient>), Box<dyn s
 }
 
 /// A matched pair of channels backed by a freshly-generated capability set.
-/// The start index is retained for tests that need to address specific boxes
-/// without relying on the channel's internally-tracked `next_index`.
+/// The start caps are retained for tests that need to address the first box
+/// directly without relying on the channel's internally-tracked `next_index`.
+/// Each cap carries its own box position, so the write side and read side use
+/// distinct caps even though they name the same box sequence.
 struct ChannelPair {
     writer: WriteChannel,
     reader: ReadChannel,
-    start_index: Vec<u8>,
+    write_start: Vec<u8>,
+    read_start: Vec<u8>,
 }
 
 async fn make_pair(
@@ -46,16 +49,18 @@ async fn make_pair(
         .new_keypair(&seed)
         .await
         .expect("Failed to generate keypair");
+    // For a fresh channel the cap itself is positioned at the first box.
     let writer = alice
-        .load_write_channel(name, &kp.write_cap, &kp.first_message_index)
+        .load_write_channel(name, &kp.write_cap, &kp.write_cap)
         .expect("Failed to load write channel");
     let reader = bob
-        .load_read_channel(name, &kp.read_cap, &kp.first_message_index)
+        .load_read_channel(name, &kp.read_cap, &kp.read_cap)
         .expect("Failed to load read channel");
     ChannelPair {
         writer,
         reader,
-        start_index: kp.first_message_index,
+        write_start: kp.write_cap,
+        read_start: kp.read_cap,
     }
 }
 
@@ -71,22 +76,34 @@ async fn test_high_level_send_receive() {
         .expect("Failed to create Bob's PigeonholeClient");
 
     println!("\n--- Step 1: Alice generates keypair, both sides load their channel ---");
-    let ChannelPair { mut writer, mut reader, .. } =
-        make_pair(&alice, &bob, &alice_thin, "alice-to-bob").await;
+    let ChannelPair {
+        mut writer,
+        mut reader,
+        ..
+    } = make_pair(&alice, &bob, &alice_thin, "alice-to-bob").await;
     println!("✓ Alice has a write channel; Bob has a read channel");
 
     println!("\n--- Step 2: Alice sends a message ---");
     let message = b"Hello Bob! This is a secret message from Alice.";
     writer.send(message).await.expect("Failed to send message");
-    println!("✓ Alice sent message: {:?}", String::from_utf8_lossy(message));
+    println!(
+        "✓ Alice sent message: {:?}",
+        String::from_utf8_lossy(message)
+    );
 
     // No propagation sleep: the retrying read below gates itself on BoxIDNotFound until the box propagates.
 
     println!("\n--- Step 3: Bob receives the message ---");
     let received = reader.receive().await.expect("Failed to receive message");
-    println!("✓ Bob received message: {:?}", String::from_utf8_lossy(&received));
+    println!(
+        "✓ Bob received message: {:?}",
+        String::from_utf8_lossy(&received)
+    );
 
-    assert_eq!(received, message, "Received message should match sent message");
+    assert_eq!(
+        received, message,
+        "Received message should match sent message"
+    );
     println!("\n✅ High-level send/receive test passed!");
 }
 
@@ -101,8 +118,11 @@ async fn test_high_level_multiple_messages() {
     let bob = PigeonholeClient::new_in_memory(bob_thin.clone())
         .expect("Failed to create Bob's PigeonholeClient");
 
-    let ChannelPair { mut writer, mut reader, .. } =
-        make_pair(&alice, &bob, &alice_thin, "multi-msg-channel").await;
+    let ChannelPair {
+        mut writer,
+        mut reader,
+        ..
+    } = make_pair(&alice, &bob, &alice_thin, "multi-msg-channel").await;
 
     let messages = vec![
         b"Message 1: Hello!".to_vec(),
@@ -113,7 +133,11 @@ async fn test_high_level_multiple_messages() {
     println!("\n--- Alice sends {} messages ---", messages.len());
     for (i, msg) in messages.iter().enumerate() {
         writer.send(msg).await.expect("Failed to send message");
-        println!("✓ Sent message {}: {:?}", i + 1, String::from_utf8_lossy(msg));
+        println!(
+            "✓ Sent message {}: {:?}",
+            i + 1,
+            String::from_utf8_lossy(msg)
+        );
     }
 
     // No propagation sleep: the retrying read below gates itself on BoxIDNotFound until the box propagates.
@@ -121,7 +145,11 @@ async fn test_high_level_multiple_messages() {
     println!("\n--- Bob receives messages ---");
     for (i, expected_msg) in messages.iter().enumerate() {
         let received = reader.receive().await.expect("Failed to receive message");
-        println!("✓ Received message {}: {:?}", i + 1, String::from_utf8_lossy(&received));
+        println!(
+            "✓ Received message {}: {:?}",
+            i + 1,
+            String::from_utf8_lossy(&received)
+        );
         assert_eq!(&received, expected_msg, "Message {} mismatch", i + 1);
     }
 
@@ -139,13 +167,17 @@ async fn test_low_level_box_operations() {
     let bob = PigeonholeClient::new_in_memory(bob_thin.clone())
         .expect("Failed to create Bob's PigeonholeClient");
 
-    let ChannelPair { writer, reader, start_index } =
-        make_pair(&alice, &bob, &alice_thin, "low-level-test").await;
+    let ChannelPair {
+        writer,
+        reader,
+        write_start,
+        read_start,
+    } = make_pair(&alice, &bob, &alice_thin, "low-level-test").await;
 
     println!("\n--- Alice writes to box using write_box ---");
     let message = b"Direct box write test";
     writer
-        .write_box(message, &start_index)
+        .write_box(message, &write_start)
         .await
         .expect("Failed to write box");
     println!("✓ Alice wrote to box at index");
@@ -154,10 +186,13 @@ async fn test_low_level_box_operations() {
 
     println!("\n--- Bob reads from box using read_box ---");
     let (received, _next_index) = reader
-        .read_box(&start_index)
+        .read_box(&read_start)
         .await
         .expect("Failed to read box");
-    println!("✓ Bob read from box: {:?}", String::from_utf8_lossy(&received));
+    println!(
+        "✓ Bob read from box: {:?}",
+        String::from_utf8_lossy(&received)
+    );
 
     assert_eq!(received, message, "Box content mismatch");
     println!("\n✅ Low-level box operations test passed!");
@@ -174,10 +209,16 @@ async fn test_copy_stream_multi_payload() {
     let bob = PigeonholeClient::new_in_memory(bob_thin.clone())
         .expect("Failed to create Bob's PigeonholeClient");
 
-    let ChannelPair { writer: channel1, reader: bob_channel1, start_index: dest1_index } =
-        make_pair(&alice, &bob, &alice_thin, "multi-dest-1").await;
-    let ChannelPair { writer: channel2, reader: bob_channel2, start_index: dest2_index } =
-        make_pair(&alice, &bob, &alice_thin, "multi-dest-2").await;
+    let ChannelPair {
+        writer: channel1,
+        reader: bob_channel1,
+        ..
+    } = make_pair(&alice, &bob, &alice_thin, "multi-dest-1").await;
+    let ChannelPair {
+        writer: channel2,
+        reader: bob_channel2,
+        ..
+    } = make_pair(&alice, &bob, &alice_thin, "multi-dest-2").await;
 
     let dest1_write_cap = channel1.write_cap().to_vec();
     let dest2_write_cap = channel2.write_cap().to_vec();
@@ -192,9 +233,9 @@ async fn test_copy_stream_multi_payload() {
         .await
         .expect("Failed to create copy stream builder");
 
-    let destinations: Vec<(&[u8], &[u8], &[u8])> = vec![
-        (payload1.as_slice(), &dest1_write_cap, &dest1_index),
-        (payload2.as_slice(), &dest2_write_cap, &dest2_index),
+    let destinations: Vec<(&[u8], &[u8])> = vec![
+        (payload1.as_slice(), &dest1_write_cap),
+        (payload2.as_slice(), &dest2_write_cap),
     ];
 
     builder
@@ -203,7 +244,10 @@ async fn test_copy_stream_multi_payload() {
         .expect("Failed to add multi payload");
     println!("✓ Added payloads for both destinations in single call");
 
-    let boxes_written = builder.finish().await.expect("Failed to finish copy stream");
+    let boxes_written = builder
+        .finish()
+        .await
+        .expect("Failed to finish copy stream");
     println!("✓ Copy stream finished, {} boxes written", boxes_written);
 
     // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
@@ -239,8 +283,12 @@ async fn test_tombstone_single_box() {
     let bob = PigeonholeClient::new_in_memory(bob_thin.clone())
         .expect("Failed to create Bob's PigeonholeClient");
 
-    let ChannelPair { mut writer, mut reader, start_index } =
-        make_pair(&alice, &bob, &alice_thin, "tombstone-test").await;
+    let ChannelPair {
+        mut writer,
+        mut reader,
+        write_start,
+        read_start,
+    } = make_pair(&alice, &bob, &alice_thin, "tombstone-test").await;
 
     println!("\n--- Step 1: Alice sends a message ---");
     let message = b"This message will be tombstoned";
@@ -256,7 +304,7 @@ async fn test_tombstone_single_box() {
 
     println!("\n--- Step 3: Alice tombstones the box ---");
     writer
-        .tombstone_at(&start_index)
+        .tombstone_at(&write_start)
         .await
         .expect("Failed to tombstone");
     println!("✓ Alice tombstoned the box");
@@ -268,10 +316,13 @@ async fn test_tombstone_single_box() {
     let mut tombstone_verified = false;
 
     for attempt in 1..=MAX_ATTEMPTS {
-        println!("Polling for tombstone (attempt {}/{})...", attempt, MAX_ATTEMPTS);
+        println!(
+            "Polling for tombstone (attempt {}/{})...",
+            attempt, MAX_ATTEMPTS
+        );
         tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
 
-        match reader.read_box(&start_index).await {
+        match reader.read_box(&read_start).await {
             Err(katzenpost_thin_client::persistent::PigeonholeDbError::ThinClient(
                 katzenpost_thin_client::ThinClientError::Tombstone,
             )) => {
@@ -286,7 +337,11 @@ async fn test_tombstone_single_box() {
         }
     }
 
-    assert!(tombstone_verified, "Tombstone not propagated after {} attempts", MAX_ATTEMPTS);
+    assert!(
+        tombstone_verified,
+        "Tombstone not propagated after {} attempts",
+        MAX_ATTEMPTS
+    );
 
     println!("\n✅ Tombstone single box test passed!");
 }
@@ -302,8 +357,12 @@ async fn test_tombstone_range() {
     let bob = PigeonholeClient::new_in_memory(bob_thin.clone())
         .expect("Failed to create Bob's PigeonholeClient");
 
-    let ChannelPair { mut writer, mut reader, start_index } =
-        make_pair(&alice, &bob, &alice_thin, "tombstone-range-test").await;
+    let ChannelPair {
+        mut writer,
+        mut reader,
+        write_start,
+        read_start,
+    } = make_pair(&alice, &bob, &alice_thin, "tombstone-range-test").await;
 
     let num_messages = 3u32;
     println!("\n--- Step 1: Alice sends {} messages ---", num_messages);
@@ -318,12 +377,16 @@ async fn test_tombstone_range() {
     println!("\n--- Step 2: Verify Bob can read messages ---");
     for i in 0..num_messages {
         let received = reader.receive().await.expect("Failed to receive");
-        println!("✓ Read message {}: {:?}", i + 1, String::from_utf8_lossy(&received));
+        println!(
+            "✓ Read message {}: {:?}",
+            i + 1,
+            String::from_utf8_lossy(&received)
+        );
     }
 
     println!("\n--- Step 3: Alice tombstones {} boxes ---", num_messages);
     writer
-        .tombstone_from(&start_index, num_messages)
+        .tombstone_from(&write_start, num_messages)
         .await
         .expect("Failed to tombstone range");
     println!("✓ Alice sent tombstone range");
@@ -334,10 +397,13 @@ async fn test_tombstone_range() {
     let mut tombstone_verified = false;
 
     for attempt in 1..=MAX_ATTEMPTS {
-        println!("Polling for tombstone (attempt {}/{})...", attempt, MAX_ATTEMPTS);
+        println!(
+            "Polling for tombstone (attempt {}/{})...",
+            attempt, MAX_ATTEMPTS
+        );
         tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
 
-        match reader.read_box(&start_index).await {
+        match reader.read_box(&read_start).await {
             Err(katzenpost_thin_client::persistent::PigeonholeDbError::ThinClient(
                 katzenpost_thin_client::ThinClientError::Tombstone,
             )) => {
@@ -352,9 +418,13 @@ async fn test_tombstone_range() {
         }
     }
 
-    assert!(tombstone_verified, "Tombstone not propagated after {} attempts", MAX_ATTEMPTS);
+    assert!(
+        tombstone_verified,
+        "Tombstone not propagated after {} attempts",
+        MAX_ATTEMPTS
+    );
 
-    let mut current_index = start_index;
+    let mut current_index = read_start;
     for i in 0..num_messages {
         match reader.read_box(&current_index).await {
             Err(katzenpost_thin_client::persistent::PigeonholeDbError::ThinClient(
@@ -395,7 +465,6 @@ async fn test_stream_buffer_returned_from_payload() {
         .create_courier_envelopes_from_payload(
             &payload,
             &kp.write_cap,
-            &kp.first_message_index,
             true,  // is_start
             false, // is_last
         )
@@ -403,8 +472,11 @@ async fn test_stream_buffer_returned_from_payload() {
         .expect("Failed to create envelopes");
 
     println!("✓ Got {} envelopes", result.envelopes.len());
-    assert!(result.next_dest_index.is_some(), "Should return next_dest_index");
-    println!("✓ next_dest_index returned");
+    assert!(
+        result.dest_write_cap.is_some(),
+        "Should return dest_write_cap"
+    );
+    println!("✓ dest_write_cap returned");
 
     println!("\n✅ Stateless payload test passed!");
 }
@@ -430,15 +502,17 @@ async fn test_stateless_payload_multi_call_next_index() {
         .create_courier_envelopes_from_payload(
             &first_payload,
             &kp.write_cap,
-            &kp.first_message_index,
             true,  // is_start
             false, // is_last
         )
         .await
         .expect("First call failed");
-    assert!(result1.next_dest_index.is_some(), "Should return next_dest_index");
+    assert!(
+        result1.dest_write_cap.is_some(),
+        "Should return dest_write_cap"
+    );
     println!(
-        "✓ First call: {} envelopes, next_dest_index returned",
+        "✓ First call: {} envelopes, dest_write_cap returned",
         result1.envelopes.len()
     );
 
@@ -447,20 +521,22 @@ async fn test_stateless_payload_multi_call_next_index() {
     let result2 = alice_thin
         .create_courier_envelopes_from_payload(
             &second_payload,
-            &kp.write_cap,
-            result1.next_dest_index.as_ref().unwrap(),
+            result1.dest_write_cap.as_ref().unwrap(),
             false, // is_start
             true,  // is_last
         )
         .await
         .expect("Second call failed");
-    assert!(result2.next_dest_index.is_some(), "Should return next_dest_index");
+    assert!(
+        result2.dest_write_cap.is_some(),
+        "Should return dest_write_cap"
+    );
     println!(
-        "✓ Second call: {} envelopes, next_dest_index returned",
+        "✓ Second call: {} envelopes, dest_write_cap returned",
         result2.envelopes.len()
     );
 
-    println!("\n✅ Stateless multi-call with next_dest_index chaining test passed!");
+    println!("\n✅ Stateless multi-call with dest_write_cap chaining test passed!");
 }
 
 #[tokio::test]
@@ -481,11 +557,11 @@ async fn test_read_box_no_retry() {
         .await
         .expect("Failed to generate keypair");
     let reader = alice
-        .load_read_channel("read-no-retry-test", &kp.read_cap, &kp.first_message_index)
+        .load_read_channel("read-no-retry-test", &kp.read_cap, &kp.read_cap)
         .expect("Failed to load read channel");
 
     println!("\n--- Attempting read_box_no_retry on empty box ---");
-    let result = reader.read_box_no_retry(&kp.first_message_index).await;
+    let result = reader.read_box_no_retry(&kp.read_cap).await;
 
     match result {
         Err(e) => {
@@ -519,7 +595,7 @@ async fn test_receive_no_retry() {
         .await
         .expect("Failed to generate keypair");
     let mut reader = alice
-        .load_read_channel("receive-no-retry-test", &kp.read_cap, &kp.first_message_index)
+        .load_read_channel("receive-no-retry-test", &kp.read_cap, &kp.read_cap)
         .expect("Failed to load read channel");
 
     println!("\n--- Attempting receive_no_retry on empty channel ---");
@@ -557,27 +633,30 @@ async fn test_write_box_return_box_exists() {
         .await
         .expect("Failed to generate keypair");
     let writer = alice
-        .load_write_channel("write-box-exists-test", &kp.write_cap, &kp.first_message_index)
+        .load_write_channel("write-box-exists-test", &kp.write_cap, &kp.write_cap)
         .expect("Failed to load write channel");
     let reader = alice
-        .load_read_channel("write-box-exists-test", &kp.read_cap, &kp.first_message_index)
+        .load_read_channel("write-box-exists-test", &kp.read_cap, &kp.read_cap)
         .expect("Failed to load read channel");
-    let start_index = kp.first_message_index.clone();
+    let write_start = kp.write_cap.clone();
+    let read_start = kp.read_cap.clone();
 
     println!("\n--- First write_box ---");
     let message1 = b"First message";
     writer
-        .write_box(message1, &start_index)
+        .write_box(message1, &write_start)
         .await
         .expect("First write should succeed");
     println!("✓ First write succeeded");
 
     // Deterministic propagation gate: a retrying read of the just-written box returns only once it has landed, replacing a blind sleep.
-    let _ = reader.read_box(&start_index).await;
+    let _ = reader.read_box(&read_start).await;
 
     println!("\n--- Second write_box_return_box_exists to same index ---");
     let message2 = b"Second message";
-    let result = writer.write_box_return_box_exists(message2, &start_index).await;
+    let result = writer
+        .write_box_return_box_exists(message2, &write_start)
+        .await;
 
     match result {
         Err(e) => {
@@ -606,12 +685,16 @@ async fn test_send_return_box_exists() {
     let bob = PigeonholeClient::new_in_memory(bob_thin.clone())
         .expect("Failed to create Bob's PigeonholeClient");
 
-    let ChannelPair { mut writer, reader, .. } =
-        make_pair(&alice, &bob, &alice_thin, "send-box-exists-test").await;
+    let ChannelPair {
+        mut writer, reader, ..
+    } = make_pair(&alice, &bob, &alice_thin, "send-box-exists-test").await;
 
     println!("\n--- First send ---");
     let message1 = b"First message";
-    writer.send(message1).await.expect("First send should succeed");
+    writer
+        .send(message1)
+        .await
+        .expect("First send should succeed");
     println!("✓ First send succeeded");
 
     // Deterministic propagation gate: a retrying read of the just-written box returns only once it has landed, replacing a blind sleep.

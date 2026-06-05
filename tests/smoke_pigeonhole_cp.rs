@@ -22,25 +22,21 @@ use rand::RngCore;
 
 const CONFIG: &str = "testdata/thinclient.toml";
 
-/// Parse `pigeonhole-cp genkey` stdout into `(read_cap, write_cap, first_index)`.
-fn parse_genkey(stdout: &str) -> (String, String, String) {
+/// Parse `pigeonhole-cp genkey` stdout into `(read_cap, write_cap)`.
+fn parse_genkey(stdout: &str) -> (String, String) {
     let mut read_cap: Option<String> = None;
     let mut write_cap: Option<String> = None;
-    let mut first_index: Option<String> = None;
     let mut lines = stdout.lines();
     while let Some(line) = lines.next() {
         if line.starts_with("Read Capability") {
             read_cap = lines.next().map(|s| s.trim().to_string());
         } else if line.starts_with("Write Capability") {
             write_cap = lines.next().map(|s| s.trim().to_string());
-        } else if line.starts_with("First Index") {
-            first_index = lines.next().map(|s| s.trim().to_string());
         }
     }
     (
         read_cap.expect("genkey output missing Read Capability"),
         write_cap.expect("genkey output missing Write Capability"),
-        first_index.expect("genkey output missing First Index"),
     )
 }
 
@@ -54,7 +50,10 @@ async fn round_trip(label: &str, no_copy: bool) {
     let mut input_data = vec![0u8; 4096];
     rand::thread_rng().fill_bytes(&mut input_data);
     fs::write(&input_path, &input_data).expect("write input file");
-    println!("==> [{label}] generated {} bytes of random input", input_data.len());
+    println!(
+        "==> [{label}] generated {} bytes of random input",
+        input_data.len()
+    );
 
     let genkey_out = Command::cargo_bin("pigeonhole-cp")
         .expect("locate pigeonhole-cp binary")
@@ -68,15 +67,21 @@ async fn round_trip(label: &str, no_copy: bool) {
         String::from_utf8_lossy(&genkey_out.stderr),
     );
     let genkey_stdout = String::from_utf8(genkey_out.stdout).expect("genkey utf-8 output");
-    let (read_cap, write_cap, first_index) = parse_genkey(&genkey_stdout);
+    let (read_cap, write_cap) = parse_genkey(&genkey_stdout);
     println!("==> [{label}] generated keypair");
 
+    // The caps carry their own first box position, so the position-cap
+    // CLI argument is the write_cap on send and the read_cap on receive.
     let mut send_args: Vec<&str> = vec![
         "send",
-        "-c", CONFIG,
-        "-w", &write_cap,
-        "-i", &first_index,
-        "-f", input_path.to_str().expect("utf-8 input path"),
+        "-c",
+        CONFIG,
+        "-w",
+        &write_cap,
+        "-i",
+        &write_cap,
+        "-f",
+        input_path.to_str().expect("utf-8 input path"),
     ];
     if no_copy {
         send_args.push("--no-copy");
@@ -105,10 +110,14 @@ async fn round_trip(label: &str, no_copy: bool) {
         .expect("locate pigeonhole-cp binary")
         .args([
             "receive",
-            "-c", CONFIG,
-            "-r", &read_cap,
-            "-i", &first_index,
-            "-d", dest_dir.to_str().expect("utf-8 dest path"),
+            "-c",
+            CONFIG,
+            "-r",
+            &read_cap,
+            "-i",
+            &read_cap,
+            "-d",
+            dest_dir.to_str().expect("utf-8 dest path"),
         ])
         .output()
         .expect("run receive");
@@ -144,7 +153,10 @@ async fn round_trip(label: &str, no_copy: bool) {
         received, input_data,
         "[{label}] round-tripped bytes differ from original",
     );
-    println!("==> [{label}] {} bytes round-tripped byte-for-byte", input_data.len());
+    println!(
+        "==> [{label}] {} bytes round-tripped byte-for-byte",
+        input_data.len()
+    );
 }
 
 #[tokio::test]
