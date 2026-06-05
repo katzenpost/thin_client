@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: © 2026 David Stainton
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Enforces rustfmt formatting on the katzenpost_thin_client crate. Run
+# `cargo fmt` locally before pushing; this gate fails the build on any
+# deviation so the tree stays uniformly formatted.
+
+name: rustfmt
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  push:
+    branches: [ main, master ]
+
+jobs:
+  rustfmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all --check
