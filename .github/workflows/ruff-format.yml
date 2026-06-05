@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: © 2026 David Stainton
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Enforces ruff formatting on the first-party Python. Run
+# `uvx ruff format katzenpost_thinclient tests katzenpost_reticulum`
+# locally before pushing; this gate fails the build on any deviation so
+# the tree stays uniformly formatted. The ruff version is pinned so the
+# gate and local runs agree.
+
+name: ruff-format
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  push:
+    branches: [ main, master ]
+
+jobs:
+  ruff-format:
+    name: ruff format --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Check formatting
+        run: uvx ruff@0.15.16 format --check katzenpost_thinclient tests katzenpost_reticulum
