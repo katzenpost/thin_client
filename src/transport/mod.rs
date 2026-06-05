@@ -37,7 +37,9 @@ pub trait Dialer: Send + Sync {
 /// that do not fit naturally in `io::Error`.
 #[derive(Debug, thiserror::Error)]
 pub enum DialConfigError {
-    #[error("transport: no dial transport configured (expected exactly one of [Dial.Unix] or [Dial.Tcp])")]
+    #[error(
+        "transport: no dial transport configured (expected exactly one of [Dial.Unix] or [Dial.Tcp])"
+    )]
     NoTransport,
     #[error("transport: exactly one dial transport must be configured, got {0}")]
     MultipleTransports(usize),
@@ -106,8 +108,13 @@ mod tests {
     #[test]
     fn validate_multiple_subtables_rejected() {
         let cfg = DialConfig {
-            unix: Some(UnixDialConfig { address: "/tmp/x.sock".into() }),
-            tcp: Some(TcpDialConfig { address: "localhost:0".into(), network: None }),
+            unix: Some(UnixDialConfig {
+                address: "/tmp/x.sock".into(),
+            }),
+            tcp: Some(TcpDialConfig {
+                address: "localhost:0".into(),
+                network: None,
+            }),
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(err, DialConfigError::MultipleTransports(2)));
@@ -116,7 +123,9 @@ mod tests {
     #[test]
     fn validate_single_unix_accepted() {
         let cfg = DialConfig {
-            unix: Some(UnixDialConfig { address: "/tmp/x.sock".into() }),
+            unix: Some(UnixDialConfig {
+                address: "/tmp/x.sock".into(),
+            }),
             tcp: None,
         };
         cfg.validate().unwrap();
@@ -126,7 +135,10 @@ mod tests {
     fn validate_single_tcp_accepted() {
         let cfg = DialConfig {
             unix: None,
-            tcp: Some(TcpDialConfig { address: "localhost:0".into(), network: None }),
+            tcp: Some(TcpDialConfig {
+                address: "localhost:0".into(),
+                network: None,
+            }),
         };
         cfg.validate().unwrap();
     }
@@ -135,7 +147,10 @@ mod tests {
     fn resolve_returns_correct_dialer_type() {
         let cfg = DialConfig {
             unix: None,
-            tcp: Some(TcpDialConfig { address: "localhost:0".into(), network: None }),
+            tcp: Some(TcpDialConfig {
+                address: "localhost:0".into(),
+                network: None,
+            }),
         };
         let dialer = cfg.resolve().unwrap();
         // We cannot downcast a &dyn Dialer, but we can check the Debug repr

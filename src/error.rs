@@ -155,9 +155,15 @@ impl fmt::Display for ThinClientError {
                 replica_error_code, failed_envelope_index
             ),
             ThinClientError::PayloadTooLarge => write!(f, "Payload too large"),
-            ThinClientError::VoucherHashMismatch => write!(f, "Voucher payload does not hash to the voucher"),
-            ThinClientError::VoucherSignatureInvalid => write!(f, "Voucher signed please-add did not verify"),
-            ThinClientError::VoucherSealOpenFailed => write!(f, "Voucher sealed reply could not be opened"),
+            ThinClientError::VoucherHashMismatch => {
+                write!(f, "Voucher payload does not hash to the voucher")
+            }
+            ThinClientError::VoucherSignatureInvalid => {
+                write!(f, "Voucher signed please-add did not verify")
+            }
+            ThinClientError::VoucherSealOpenFailed => {
+                write!(f, "Voucher sealed reply could not be opened")
+            }
             ThinClientError::Timeout(msg) => write!(f, "Timeout: {}", msg),
             ThinClientError::Other(msg) => write!(f, "Error: {}", msg),
         }
@@ -168,7 +174,12 @@ impl ThinClientError {
     /// Returns true for error codes that represent completed operations
     /// rather than failures. These errors should not trigger retries.
     pub fn is_expected_outcome(&self) -> bool {
-        matches!(self, ThinClientError::Tombstone | ThinClientError::BoxNotFound | ThinClientError::BoxAlreadyExists)
+        matches!(
+            self,
+            ThinClientError::Tombstone
+                | ThinClientError::BoxNotFound
+                | ThinClientError::BoxAlreadyExists
+        )
     }
 }
 

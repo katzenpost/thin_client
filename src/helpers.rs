@@ -3,9 +3,9 @@
 
 //! Helper functions for working with PKI documents and service discovery.
 
-use std::collections::BTreeMap;
-use serde_cbor::{from_slice, Value};
+use serde_cbor::{Value, from_slice};
 use serde_json::json;
+use std::collections::BTreeMap;
 
 use crate::ServiceDescriptor;
 
@@ -19,20 +19,30 @@ pub fn find_services(capability: &str, doc: &BTreeMap<Value, Value>) -> Vec<Serv
     };
 
     for node in nodes {
-        let Value::Bytes(node_bytes) = node else { continue };
-        let Ok(mynode) = from_slice::<BTreeMap<Value, Value>>(node_bytes) else { continue };
+        let Value::Bytes(node_bytes) = node else {
+            continue;
+        };
+        let Ok(mynode) = from_slice::<BTreeMap<Value, Value>>(node_bytes) else {
+            continue;
+        };
 
         // 🔍 Print available capabilities in each node
         if let Some(Value::Map(details)) = mynode.get(&Value::Text("Kaetzchen".to_string())) {
             println!("🔍 Available Capabilities: {:?}", details.keys());
         }
 
-        let Some(Value::Map(details)) = mynode.get(&Value::Text("Kaetzchen".to_string())) else { continue };
-        let Some(Value::Map(service)) = details.get(&Value::Text(capability.to_string())) else { continue };
-        let Some(Value::Text(endpoint)) = service.get(&Value::Text("endpoint".to_string())) else { continue };
+        let Some(Value::Map(details)) = mynode.get(&Value::Text("Kaetzchen".to_string())) else {
+            continue;
+        };
+        let Some(Value::Map(service)) = details.get(&Value::Text(capability.to_string())) else {
+            continue;
+        };
+        let Some(Value::Text(endpoint)) = service.get(&Value::Text("endpoint".to_string())) else {
+            continue;
+        };
 
-	println!("returning a service descriptor!");
-	    
+        println!("returning a service descriptor!");
+
         services.push(ServiceDescriptor {
             recipient_queue_id: endpoint.as_bytes().to_vec(),
             mix_descriptor: mynode,
@@ -47,7 +57,9 @@ fn convert_to_pretty_json(value: &Value) -> serde_json::Value {
         Value::Text(s) => serde_json::Value::String(s.clone()),
         Value::Integer(i) => json!(*i),
         Value::Bytes(b) => json!(hex::encode(b)), // Encode byte arrays as hex strings
-        Value::Array(arr) => serde_json::Value::Array(arr.iter().map(convert_to_pretty_json).collect()),
+        Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(convert_to_pretty_json).collect())
+        }
         Value::Map(map) => {
             let converted_map: serde_json::Map<String, serde_json::Value> = map
                 .iter()
@@ -84,12 +96,18 @@ pub fn pretty_print_pki_doc(doc: &BTreeMap<Value, Value>) {
 
     // Decode "GatewayNodes"
     if let Some(Value::Array(gateway_nodes)) = doc.get(&Value::Text("GatewayNodes".to_string())) {
-        new_doc.insert(Value::Text("GatewayNodes".to_string()), Value::Array(decode_cbor_nodes(gateway_nodes)));
+        new_doc.insert(
+            Value::Text("GatewayNodes".to_string()),
+            Value::Array(decode_cbor_nodes(gateway_nodes)),
+        );
     }
 
     // Decode "ServiceNodes"
     if let Some(Value::Array(service_nodes)) = doc.get(&Value::Text("ServiceNodes".to_string())) {
-        new_doc.insert(Value::Text("ServiceNodes".to_string()), Value::Array(decode_cbor_nodes(service_nodes)));
+        new_doc.insert(
+            Value::Text("ServiceNodes".to_string()),
+            Value::Array(decode_cbor_nodes(service_nodes)),
+        );
     }
 
     // Decode "Topology" (flatten nested arrays of CBOR blobs)
@@ -102,12 +120,16 @@ pub fn pretty_print_pki_doc(doc: &BTreeMap<Value, Value>) {
             })
             .collect();
 
-        new_doc.insert(Value::Text("Topology".to_string()), Value::Array(decoded_topology));
+        new_doc.insert(
+            Value::Text("Topology".to_string()),
+            Value::Array(decoded_topology),
+        );
     }
 
     // Copy and decode all other fields that might contain CBOR blobs
     for (key, value) in doc.iter() {
-        if !matches!(key, Value::Text(s) if ["GatewayNodes", "ServiceNodes", "Topology"].contains(&s.as_str())) {
+        if !matches!(key, Value::Text(s) if ["GatewayNodes", "ServiceNodes", "Topology"].contains(&s.as_str()))
+        {
             let key_str = key.clone();
             let decoded_value = match value {
                 Value::Bytes(blob) => serde_cbor::from_slice::<BTreeMap<Value, Value>>(blob)

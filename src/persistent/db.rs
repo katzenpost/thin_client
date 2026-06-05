@@ -22,7 +22,9 @@ impl Database {
     /// Open or create a database at the given path.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let db = Self { conn: Arc::new(Mutex::new(conn)) };
+        let db = Self {
+            conn: Arc::new(Mutex::new(conn)),
+        };
         db.init_schema()?;
         Ok(db)
     }
@@ -30,7 +32,9 @@ impl Database {
     /// Open an in-memory database (useful for testing).
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let db = Self { conn: Arc::new(Mutex::new(conn)) };
+        let db = Self {
+            conn: Arc::new(Mutex::new(conn)),
+        };
         db.init_schema()?;
         Ok(db)
     }
@@ -115,7 +119,8 @@ impl Database {
             r#"INSERT INTO write_channels (name, write_cap, next_index, created_at, updated_at)
                VALUES (?1, ?2, ?3, ?4, ?5)"#,
             params![name, write_cap, next_index, now, now],
-        ).map_err(|e| match e {
+        )
+        .map_err(|e| match e {
             rusqlite::Error::SqliteFailure(ref err, _)
                 if err.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
@@ -151,8 +156,11 @@ impl Database {
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
             })
-        }).map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => PigeonholeDbError::ChannelNotFound(name.to_string()),
+        })
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                PigeonholeDbError::ChannelNotFound(name.to_string())
+            }
             other => PigeonholeDbError::Database(other),
         })
     }
@@ -173,7 +181,8 @@ impl Database {
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
             })
-        }).map_err(|e| match e {
+        })
+        .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
                 PigeonholeDbError::ChannelNotFound(format!("id={}", id))
             }
@@ -240,7 +249,8 @@ impl Database {
             r#"INSERT INTO read_channels (name, read_cap, next_index, created_at, updated_at)
                VALUES (?1, ?2, ?3, ?4, ?5)"#,
             params![name, read_cap, next_index, now, now],
-        ).map_err(|e| match e {
+        )
+        .map_err(|e| match e {
             rusqlite::Error::SqliteFailure(ref err, _)
                 if err.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
@@ -276,8 +286,11 @@ impl Database {
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
             })
-        }).map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => PigeonholeDbError::ChannelNotFound(name.to_string()),
+        })
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                PigeonholeDbError::ChannelNotFound(name.to_string())
+            }
             other => PigeonholeDbError::Database(other),
         })
     }
@@ -298,7 +311,8 @@ impl Database {
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
             })
-        }).map_err(|e| match e {
+        })
+        .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
                 PigeonholeDbError::ChannelNotFound(format!("id={}", id))
             }

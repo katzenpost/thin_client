@@ -74,4 +74,3 @@ impl From<std::io::Error> for PigeonholeDbError {
 
 /// Result type for persistent pigeonhole operations.
 pub type Result<T> = std::result::Result<T, PigeonholeDbError>;
-

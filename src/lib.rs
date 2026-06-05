@@ -27,21 +27,21 @@
 // Module declarations
 // ========================================================================
 
-pub mod error;
 pub mod core;
-pub mod pigeonhole;
-pub mod persistent;
+pub mod error;
 pub mod helpers;
+pub mod persistent;
+pub mod pigeonhole;
 pub mod transport;
 
 // ========================================================================
 // Re-exports for public API
 // ========================================================================
 
-pub use crate::core::{ThinClient, EventSinkReceiver};
+pub use crate::core::{EventSinkReceiver, ThinClient};
 pub use crate::error::ThinClientError;
 pub use crate::helpers::{find_services, pretty_print_pki_doc};
-pub use crate::pigeonhole::{TombstoneRangeResult, StartResendingResult};
+pub use crate::pigeonhole::{StartResendingResult, TombstoneRangeResult};
 pub use crate::transport::{DialConfig, DialConfigError, Dialer, TcpDialConfig, UnixDialConfig};
 
 // ========================================================================
@@ -49,8 +49,8 @@ pub use crate::transport::{DialConfig, DialConfigError, Dialer, TcpDialConfig, U
 // ========================================================================
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::fs;
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_cbor::Value;
@@ -193,8 +193,12 @@ pub fn thin_client_error_to_string(error_code: u8) -> &'static str {
         THIN_CLIENT_PROPAGATION_ERROR => "Propagation error",
         THIN_CLIENT_ERROR_INVALID_WRITE_CAPABILITY => "Invalid write capability",
         THIN_CLIENT_ERROR_INVALID_READ_CAPABILITY => "Invalid read capability",
-        THIN_CLIENT_ERROR_INVALID_RESUME_WRITE_CHANNEL_REQUEST => "Invalid resume write channel request",
-        THIN_CLIENT_ERROR_INVALID_RESUME_READ_CHANNEL_REQUEST => "Invalid resume read channel request",
+        THIN_CLIENT_ERROR_INVALID_RESUME_WRITE_CHANNEL_REQUEST => {
+            "Invalid resume write channel request"
+        }
+        THIN_CLIENT_ERROR_INVALID_RESUME_READ_CHANNEL_REQUEST => {
+            "Invalid resume read channel request"
+        }
         THIN_CLIENT_IMPOSSIBLE_HASH_ERROR => "Impossible hash error",
         THIN_CLIENT_IMPOSSIBLE_NEW_WRITE_CAP_ERROR => "Failed to create new write capability",
         THIN_CLIENT_IMPOSSIBLE_NEW_STATEFUL_WRITER_ERROR => "Failed to create new stateful writer",
@@ -361,8 +365,6 @@ impl PigeonholeGeometry {
     }
 }
 
-
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigFile {
@@ -381,7 +383,6 @@ impl ConfigFile {
         Ok(config)
     }
 }
-
 
 /// Our configuration defines some callbacks which the thin client will envoke
 /// when it receives the corresponding event from the client daemon.
@@ -412,8 +413,3 @@ impl Config {
         })
     }
 }
-
-
-
-
-
