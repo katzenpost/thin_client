@@ -3,8 +3,8 @@
 
 //! End-to-end smoke tests for the `pigeonhole-cp` binary.
 //!
-//! Two cases: the default COPY-command path, and the per-box direct
-//! write path under `--no-copy`. Each generates a fresh keypair, sends
+//! Two cases: the default courier COPY-command path, and the per-box
+//! direct write path under `--no-copy`. Each generates a fresh keypair, sends
 //! a multi-box random file, reads it back, and verifies the round-tripped
 //! bytes match the original. Requires the docker mixnet up and reachable
 //! per `testdata/thinclient.toml`.

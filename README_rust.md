@@ -70,15 +70,19 @@ cargo build --release --features cli --bin pigeonhole-cp
 
 It has three subcommands:
 
-- `genkey -c <config>` prints a fresh write and read capability pair.
+- `genkey -c <config>` prints a fresh write capability, read capability,
+  and first message box index.
 - `send -c <config> -w <write-cap> -i <index> -f <file>` reads a file
   and writes it to a channel. The transfer mode is chosen by these
   flags:
-  - (default, no flag) uses the courier COPY command, which is atomic
-    but caps the payload near 9 MiB.
-  - `--no-copy` writes each Box directly with the per-box ARQ.
-  - `--sack` uses the windowed SACK ARQ, keeping many Boxes in flight
-    at once; it takes precedence over `--no-copy`.
+  - (default, no flag) uses the courier COPY command, which is atomic but
+    buffers the whole file in memory and caps the payload near 9 MiB.
+  - `--no-copy` writes each Box directly with the per-box ARQ, reading the
+    file one Box at a time. It never loads the whole file into memory and
+    has no payload size limit.
+  - `--sack` uses the windowed SACK ARQ, keeping a block of Boxes in
+    flight at once. It streams the file a block at a time, so it too
+    never loads the whole file into memory.
 - `receive -c <config> -r <read-cap> -i <index> -d <dest-dir>` reads a
   channel and writes the file to disk. `--sack` reads it with the same
   windowed SACK ARQ instead of one Box per round trip.
