@@ -3,8 +3,8 @@
 
 //! End-to-end smoke tests for the `pigeonhole-cp` binary.
 //!
-//! Two cases: the default COPY-command path, and the per-box direct
-//! write path under `--no-copy`. Each generates a fresh keypair, sends
+//! Two cases: the default per-box direct write path, and the courier
+//! COPY-command path under `--copy`. Each generates a fresh keypair, sends
 //! a multi-box random file, reads it back, and verifies the round-tripped
 //! bytes match the original. Requires the docker mixnet up and reachable
 //! per `testdata/thinclient.toml`.
@@ -48,7 +48,7 @@ fn parse_genkey(stdout: &str) -> (String, String, String) {
 /// the bytes match. Spans 3 boxes given MaxPlaintextPayloadLength=1553
 /// and a ~25-byte CBOR FileMetaData header — exercises both the
 /// first-box header carve-out and at least one pure file-bytes box.
-async fn round_trip(label: &str, no_copy: bool) {
+async fn round_trip(label: &str, copy: bool) {
     let work = tempfile::tempdir().expect("tempdir");
     let input_path = work.path().join(format!("{label}-input.bin"));
     let mut input_data = vec![0u8; 4096];
@@ -78,8 +78,8 @@ async fn round_trip(label: &str, no_copy: bool) {
         "-i", &first_index,
         "-f", input_path.to_str().expect("utf-8 input path"),
     ];
-    if no_copy {
-        send_args.push("--no-copy");
+    if copy {
+        send_args.push("--copy");
     }
     let send_out = Command::cargo_bin("pigeonhole-cp")
         .expect("locate pigeonhole-cp binary")
@@ -149,10 +149,10 @@ async fn round_trip(label: &str, no_copy: bool) {
 
 #[tokio::test]
 async fn smoke_round_trip_copy() {
-    round_trip("copy", false).await;
+    round_trip("copy", true).await;
 }
 
 #[tokio::test]
 async fn smoke_round_trip_direct() {
-    round_trip("direct", true).await;
+    round_trip("direct", false).await;
 }
