@@ -134,13 +134,13 @@ enum Commands {
         #[arg(short, long)]
         file: PathBuf,
 
-        /// Use the courier COPY command instead of the default per-box
-        /// streaming write. COPY is atomic all-or-nothing on the
-        /// destination, but it loads the whole file into memory and caps
-        /// the payload at roughly 9 MiB per transfer. The default streams
-        /// the file one box at a time and has no such limit.
+        /// Opt out of the default courier COPY command and stream the file
+        /// one box at a time via per-box ARQ instead. COPY is atomic
+        /// all-or-nothing on the destination but loads the whole file into
+        /// memory and caps the payload at roughly 9 MiB per transfer;
+        /// --no-copy streams the file a box at a time and has no such limit.
         #[arg(long)]
-        copy: bool,
+        no_copy: bool,
 
         /// Use the windowed SACK ARQ to write, keeping a block of boxes in
         /// flight at once instead of the default per-box stop-and-wait. The
@@ -185,8 +185,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Genkey { config } => run_genkey(config).await,
-        Commands::Send { config, write_cap, index, file, copy, sack } => {
-            run_send(config, write_cap, index, file, copy, sack).await
+        Commands::Send { config, write_cap, index, file, no_copy, sack } => {
+            run_send(config, write_cap, index, file, !no_copy, sack).await
         }
         Commands::Receive { config, read_cap, index, dest_dir, sack } => {
             run_receive(config, read_cap, index, dest_dir, sack).await
@@ -278,13 +278,13 @@ async fn run_genkey(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 /// - Subsequent plaintext is pure file bytes. The receiver stops after
 ///   consuming exactly `FileMetaData.size` file bytes.
 ///
-/// The default writes each box to the destination directly via per-box
-/// ARQ, reading the file one box at a time so it never holds the whole
-/// file in memory. `--copy` opts into the courier Copy command, which
-/// populates a temporary channel and dispatches its contents to the
-/// destination atomically (but buffers the whole file). `--sack` opts
-/// into the windowed ARQ, which streams the file a block of boxes at a
-/// time and so also avoids loading it whole.
+/// The default uses the courier Copy command, which populates a temporary
+/// channel and dispatches its contents to the destination atomically (but
+/// buffers the whole file). `--no-copy` opts out, writing each box to the
+/// destination directly via per-box ARQ, reading the file one box at a
+/// time so it never holds the whole file in memory. `--sack` opts into the
+/// windowed ARQ, which streams the file a block of boxes at a time and so
+/// also avoids loading it whole.
 async fn run_send(
     config: PathBuf,
     write_cap_b64: String,
@@ -307,10 +307,10 @@ async fn run_send(
     let client = init_client(config).await?;
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
 
-    // The default (neither flag) streams each box directly and never loads
-    // the whole file. --copy chooses the atomic courier Copy command (which
-    // does buffer the whole file); --sack chooses the windowed ARQ, which
-    // streams the file a block of boxes at a time.
+    // The default uses the atomic courier Copy command (which buffers the
+    // whole file). --no-copy streams each box directly and never loads the
+    // whole file; --sack chooses the windowed ARQ, which streams the file a
+    // block of boxes at a time.
     match (copy, sack) {
         (false, false) => send_direct(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
         (false, true) => send_sack(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
@@ -498,7 +498,7 @@ async fn send_copy(
     let total_payload_len = header.len() as u64 + total_len;
     if total_payload_len > COPY_PAYLOAD_LIMIT {
         return Err(format!(
-            "payload of {} bytes exceeds COPY mode limit of {} bytes; rerun without --copy to stream it",
+            "payload of {} bytes exceeds COPY mode limit of {} bytes; rerun with --no-copy to stream it",
             total_payload_len, COPY_PAYLOAD_LIMIT
         )
         .into());

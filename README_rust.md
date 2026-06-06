@@ -75,11 +75,11 @@ It has three subcommands:
 - `send -c <config> -w <write-cap> -i <index> -f <file>` reads a file
   and writes it to a channel. The transfer mode is chosen by these
   flags:
-  - (default, no flag) writes each Box directly with the per-box ARQ,
-    reading the file one Box at a time. It never loads the whole file
-    into memory and has no payload size limit.
-  - `--copy` uses the courier COPY command, which is atomic but buffers
-    the whole file in memory and caps the payload near 9 MiB.
+  - (default, no flag) uses the courier COPY command, which is atomic but
+    buffers the whole file in memory and caps the payload near 9 MiB.
+  - `--no-copy` writes each Box directly with the per-box ARQ, reading the
+    file one Box at a time. It never loads the whole file into memory and
+    has no payload size limit.
   - `--sack` uses the windowed SACK ARQ, keeping a block of Boxes in
     flight at once. It streams the file a block at a time, so it too
     never loads the whole file into memory.
