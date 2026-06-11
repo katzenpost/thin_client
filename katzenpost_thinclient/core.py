@@ -1312,6 +1312,48 @@ class ThinClient:
 
         return reply.get("payload"), returned_epoch
 
+    async def get_directory_authorities(self) -> "List[Dict[str,Any]]":
+        """
+        Return the directory authority descriptors the client daemon is
+        configured with.
+
+        A thin client holds only its dial transport configuration and
+        never sees the daemon's voting authority peer list. This surfaces
+        it, so a caller may, for instance, map a PKI document's signature
+        fingerprints (the keys of its signature map) to authority
+        identifiers via each descriptor's ``identity_key_hash``.
+
+        Returns:
+            List[Dict[str, Any]]: one dict per directory authority, with
+            keys ``identifier`` (str), ``pki_signature_scheme`` (str),
+            ``wire_kem_scheme`` (str), ``addresses`` (list of str),
+            ``identity_public_key_pem`` (str), ``link_public_key_pem``
+            (str), and ``identity_key_hash`` (32 raw bytes, the value by
+            which PKI document signatures are indexed).
+
+        Raises:
+            Exception: If the daemon has no voting authority peers
+                configured, or any other error code is returned.
+        """
+        query_id = self.new_query_id()
+
+        request = {
+            "get_directory_authorities": {
+                "query_id": query_id,
+            }
+        }
+
+        reply = await self._send_and_wait(query_id=query_id, request=request)
+
+        error_code = reply.get("error_code", 0)
+        if error_code != THIN_CLIENT_SUCCESS:
+            error_msg = thin_client_error_to_string(error_code)
+            raise Exception(
+                f"get_directory_authorities failed: {error_msg}"
+            )
+
+        return reply.get("authorities", [])
+
     def parse_pki_doc(self, event: "Dict[str,Any]") -> None:
         """
         Parse and store a new PKI document received from the daemon.

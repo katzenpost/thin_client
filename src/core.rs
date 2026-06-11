@@ -53,6 +53,43 @@ struct GetPKIDocumentReply {
     error_code: u8,
 }
 
+/// A directory authority descriptor as held in the client daemon's
+/// configuration. The keys are conveyed in PEM so a consumer need not
+/// link a key type to read them; `identity_key_hash` is the 32-byte
+/// BLAKE2b-256 hash of the identity public key, the value by which a PKI
+/// document's signatures are indexed.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DirectoryAuthority {
+    pub identifier: String,
+    pub pki_signature_scheme: String,
+    pub wire_kem_scheme: String,
+    pub addresses: Vec<String>,
+    pub identity_public_key_pem: String,
+    pub link_public_key_pem: String,
+    #[serde(with = "serde_bytes")]
+    pub identity_key_hash: Vec<u8>,
+}
+
+/// Request the directory authority descriptors the daemon is configured
+/// with. Carries only a correlation id; the daemon needs no parameters.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct GetDirectoryAuthoritiesRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+}
+
+/// Reply to a `GetDirectoryAuthorities` request. `authorities` carries the
+/// descriptors; `error_code` is zero on success.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct GetDirectoryAuthoritiesReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default)]
+    authorities: Vec<DirectoryAuthority>,
+    #[serde(default)]
+    error_code: u8,
+}
+
 /// The size in bytes of a SURB (Single-Use Reply Block) identifier.
 const SURB_ID_SIZE: usize = 16;
 
@@ -393,6 +430,53 @@ impl ThinClient {
         }
 
         Ok((reply.payload, reply.epoch))
+    }
+
+    /// Return the directory authority descriptors the client daemon is
+    /// configured with.
+    ///
+    /// A thin client holds only its dial transport configuration and never
+    /// sees the daemon's voting authority peer list. This surfaces it, so a
+    /// caller may, for instance, map a PKI document's signature fingerprints
+    /// (the keys of its signature map) to authority identifiers via each
+    /// descriptor's `identity_key_hash`.
+    ///
+    /// # Errors
+    ///
+    /// * `ThinClientError::Other` — the daemon has no voting authority peers
+    ///   configured, or any other non-zero error code is returned.
+    pub async fn get_directory_authorities(
+        &self,
+    ) -> Result<Vec<DirectoryAuthority>, ThinClientError> {
+        let query_id = Self::new_query_id();
+
+        let request_inner = GetDirectoryAuthoritiesRequest {
+            query_id: query_id.clone(),
+        };
+
+        let request_value = serde_cbor::value::to_value(&request_inner)
+            .map_err(ThinClientError::CborError)?;
+
+        let mut request = BTreeMap::new();
+        request.insert(
+            Value::Text("get_directory_authorities".to_string()),
+            request_value,
+        );
+
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
+
+        let reply: GetDirectoryAuthoritiesReply =
+            serde_cbor::value::from_value(Value::Map(reply_map))
+                .map_err(ThinClientError::CborError)?;
+
+        if reply.error_code != 0 {
+            return Err(ThinClientError::Other(format!(
+                "get_directory_authorities failed: error code {}",
+                reply.error_code
+            )));
+        }
+
+        Ok(reply.authorities)
     }
 
     /// Returns the pigeonhole geometry the daemon supplied during the

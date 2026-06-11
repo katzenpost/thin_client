@@ -71,6 +71,41 @@ async def test_thin_client_send_receive_integration_test():
 
 
 @pytest.mark.asyncio
+async def test_get_directory_authorities_integration_test():
+    """Test that get_directory_authorities returns the daemon's configured peers."""
+    from .conftest import is_daemon_available
+
+    if not is_daemon_available():
+        pytest.skip("Katzenpost client daemon not available")
+    from .conftest import get_config_path
+
+    config_path = get_config_path()
+    assert os.path.exists(config_path), f"Missing config file: {config_path}"
+
+    cfg = Config(config_path)
+    client = ThinClient(cfg)
+    loop = asyncio.get_event_loop()
+
+    try:
+        await client.start(loop)
+
+        authorities = await client.get_directory_authorities()
+        assert len(authorities) > 0, "daemon should report its configured directory authorities"
+
+        for authority in authorities:
+            assert authority.get("identifier"), "every authority must have an identifier"
+            key_hash = authority.get("identity_key_hash")
+            assert isinstance(key_hash, bytes) and len(key_hash) == 32, \
+                f"identity_key_hash must be a 32-byte fingerprint for {authority.get('identifier')}"
+            assert authority.get("identity_public_key_pem"), \
+                "every authority must carry its identity public key in PEM"
+            print(f"authority {authority['identifier']} fingerprint {key_hash.hex()}")
+
+    finally:
+        client.stop()
+
+
+@pytest.mark.asyncio
 async def test_config_validation():
     """Test configuration validation and error handling."""
     from .conftest import get_config_path

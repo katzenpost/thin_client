@@ -38,7 +38,7 @@ pub mod transport;
 // Re-exports for public API
 // ========================================================================
 
-pub use crate::core::{ThinClient, EventSinkReceiver};
+pub use crate::core::{ThinClient, EventSinkReceiver, DirectoryAuthority};
 pub use crate::error::ThinClientError;
 pub use crate::helpers::{find_services, pretty_print_pki_doc};
 pub use crate::pigeonhole::{TombstoneRangeResult, StartResendingResult};
