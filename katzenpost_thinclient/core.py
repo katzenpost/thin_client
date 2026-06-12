@@ -931,15 +931,6 @@ class ThinClient:
                 raise
         self.task.add_done_callback(handle_loop_err)
 
-    def get_config(self) -> Config:
-        """
-        Returns the current configuration object.
-
-        Returns:
-            Config: The client configuration in use.
-        """
-        return self.config
-
     def is_connected(self) -> bool:
         """
         Returns True if the daemon is currently connected to the mixnet.

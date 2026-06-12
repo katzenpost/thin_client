@@ -16,6 +16,8 @@ use tokio::net::tcp::{OwnedReadHalf as TcpReadHalf, OwnedWriteHalf as TcpWriteHa
 use tokio::net::unix::{OwnedReadHalf as UnixReadHalf, OwnedWriteHalf as UnixWriteHalf};
 
 use rand::RngCore;
+use rand::Rng;
+use rand::seq::SliceRandom;
 use log::{debug, error};
 
 use crate::error::ThinClientError;
@@ -143,6 +145,35 @@ impl Drop for EventSinkReceiver {
     }
 }
 
+/// The number of recent epochs for which PKI documents are retained in
+/// `pki_doc_cache`. Matches the bound used by the Go and Python clients.
+const MAX_CACHED_EPOCHS: u64 = 5;
+
+/// Reads the `Epoch` field from a forwarded PKI document. The daemon
+/// serialises the Go struct field in PascalCase, so the CBOR key is
+/// `Epoch` and the value is a non-negative integer.
+fn doc_epoch(doc: &BTreeMap<Value, Value>) -> Option<u64> {
+    match doc.get(&Value::Text("Epoch".to_string())) {
+        Some(Value::Integer(i)) => u64::try_from(*i).ok(),
+        _ => None,
+    }
+}
+
+/// Inserts a document into the epoch-keyed cache, then evicts every entry
+/// older than the last `MAX_CACHED_EPOCHS` epochs so that a long-running
+/// client cannot accumulate documents without bound.
+fn cache_pki_doc(
+    cache: &mut BTreeMap<u64, BTreeMap<Value, Value>>,
+    epoch: u64,
+    doc: BTreeMap<Value, Value>,
+) {
+    cache.insert(epoch, doc);
+    if cache.len() as u64 > MAX_CACHED_EPOCHS {
+        let oldest = epoch.saturating_sub(MAX_CACHED_EPOCHS);
+        cache.retain(|&e, _| e >= oldest);
+    }
+}
+
 /// This is our ThinClient type which encapsulates our thin client
 /// connection management and message processing.
 pub struct ThinClient {
@@ -150,6 +181,10 @@ pub struct ThinClient {
     write_half: Mutex<WriteHalf>,
     config: Config,
     pki_doc: Arc<RwLock<Option<BTreeMap<Value, Value>>>>,
+    // PKI documents cached by epoch, so a caller may retrieve a document
+    // for a specific past epoch during epoch transitions. Bounded to the
+    // last few epochs by `cache_pki_doc` so it cannot grow without limit.
+    pki_doc_cache: Arc<RwLock<BTreeMap<u64, BTreeMap<Value, Value>>>>,
     worker_task: Mutex<Option<JoinHandle<()>>>,
     event_sink_task: Mutex<Option<JoinHandle<()>>>,
     shutdown: Arc<AtomicBool>,
@@ -194,6 +229,7 @@ impl ThinClient {
             write_half: Mutex::new(write_half),
             config,
             pki_doc: Arc::new(RwLock::new(None)),
+            pki_doc_cache: Arc::new(RwLock::new(BTreeMap::new())),
             worker_task: Mutex::new(None),
             event_sink_task: Mutex::new(None),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -350,9 +386,34 @@ impl ThinClient {
     }
 
     async fn update_pki_document(&self, new_pki_doc: BTreeMap<Value, Value>) {
+        if let Some(epoch) = doc_epoch(&new_pki_doc) {
+            let mut cache = self.pki_doc_cache.write().await;
+            cache_pki_doc(&mut cache, epoch, new_pki_doc.clone());
+            debug!("Cached PKI document for epoch {}.", epoch);
+        }
         let mut pki_doc_lock = self.pki_doc.write().await;
         *pki_doc_lock = Some(new_pki_doc);
         debug!("PKI document updated.");
+    }
+
+    /// Returns the PKI document for a specific epoch.
+    ///
+    /// The thin client retains the documents for the last few epochs (see
+    /// `cache_pki_doc`), which lets a caller resolve a document for a
+    /// recently-elapsed epoch during an epoch transition. When the
+    /// requested epoch is not in the cache the current document is
+    /// returned instead, matching the Go and Python clients.
+    ///
+    /// # Errors
+    ///
+    /// * `ThinClientError::MissingPkiDocument` — no PKI document is
+    ///   available at all (neither cached nor current), most commonly on a
+    ///   freshly-connected client.
+    pub async fn pki_document_for_epoch(&self, epoch: u64) -> Result<BTreeMap<Value, Value>, ThinClientError> {
+        if let Some(doc) = self.pki_doc_cache.read().await.get(&epoch) {
+            return Ok(doc.clone());
+        }
+        self.pki_doc.read().await.clone().ok_or(ThinClientError::MissingPkiDocument)
     }
 
     /// Returns the most recent PKI consensus document the daemon has
@@ -505,13 +566,41 @@ impl ThinClient {
             .expect("sphinx geometry not yet received from daemon (incompatible daemon, or called before connect)")
     }
 
-    /// Returns a random instance of the named service from the current PKI
-    /// document.
+    /// Returns every instance of the named service advertised in the
+    /// current PKI document.
     ///
     /// Multiple mix nodes may advertise the same service name; this method
-    /// returns the first match from `find_services`, which effectively picks
-    /// one arbitrarily. To see every advertised instance, use
-    /// `find_services` directly.
+    /// returns all of them, in the order `find_services` discovers them.
+    /// For the common case where any one instance will do, prefer
+    /// `get_service`, which picks one at random for load balancing.
+    ///
+    /// # Arguments
+    ///
+    /// * `capability` — the service capability to look up (e.g. `"echo"`,
+    ///   `"courier"`).
+    ///
+    /// # Errors
+    ///
+    /// * `ThinClientError::MissingPkiDocument` — no PKI document is yet
+    ///   available; see `pki_document`.
+    /// * `ThinClientError::ServiceNotFound` — no node in the current
+    ///   consensus advertises `capability`.
+    pub async fn get_services(&self, capability: &str) -> Result<Vec<ServiceDescriptor>, ThinClientError> {
+        let doc = self.pki_doc.read().await.clone().ok_or(ThinClientError::MissingPkiDocument)?;
+        let services = find_services(capability, &doc);
+        if services.is_empty() {
+            return Err(ThinClientError::ServiceNotFound);
+        }
+        Ok(services)
+    }
+
+    /// Returns a randomly selected instance of the named service from the
+    /// current PKI document.
+    ///
+    /// This is a convenience wrapper around `get_services` that draws one
+    /// instance uniformly at random, providing automatic load balancing
+    /// across the available instances. To see every advertised instance,
+    /// use `get_services`.
     ///
     /// # Arguments
     ///
@@ -525,9 +614,61 @@ impl ThinClient {
     /// * `ThinClientError::ServiceNotFound` — no node in the current
     ///   consensus advertises `service_name`.
     pub async fn get_service(&self, service_name: &str) -> Result<ServiceDescriptor, ThinClientError> {
-        let doc = self.pki_doc.read().await.clone().ok_or(ThinClientError::MissingPkiDocument)?;
-        let services = find_services(service_name, &doc);
-        services.into_iter().next().ok_or(ThinClientError::ServiceNotFound)
+        let mut services = self.get_services(service_name).await?;
+        let idx = rand::thread_rng().gen_range(0..services.len());
+        Ok(services.swap_remove(idx))
+    }
+
+    /// Returns every courier service advertised in the current PKI
+    /// document, each as the `(identity_hash, queue_id)` pair the rest of
+    /// the API expects.
+    ///
+    /// The principal caller is the nested-copy-command machinery, which
+    /// must choose particular couriers rather than accept the random draw
+    /// made on its behalf by `start_resending_copy_command`; for simple
+    /// cases where any courier will do, the default routing path is
+    /// usually preferable.
+    ///
+    /// # Errors
+    ///
+    /// * `ThinClientError::MissingPkiDocument` — no PKI document is yet
+    ///   available; see `pki_document`.
+    /// * `ThinClientError::ServiceNotFound` — the current consensus
+    ///   advertises no courier.
+    pub async fn get_all_couriers(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ThinClientError> {
+        let services = self.get_services("courier").await?;
+        Ok(services.iter().map(|svc| svc.to_destination()).collect())
+    }
+
+    /// Draws `n` couriers uniformly at random from `get_all_couriers`,
+    /// without replacement, so that no two entries in the returned list
+    /// refer to the same courier. This is the usual building block for a
+    /// nested copy command, every layer of which must be carried by a
+    /// different courier.
+    ///
+    /// # Arguments
+    ///
+    /// * `n` — the number of distinct couriers to return.
+    ///
+    /// # Errors
+    ///
+    /// * `ThinClientError::MissingPkiDocument` / `ServiceNotFound` — as
+    ///   for `get_all_couriers`.
+    /// * `ThinClientError::Other` — the current consensus advertises fewer
+    ///   than `n` couriers.
+    pub async fn get_distinct_couriers(&self, n: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ThinClientError> {
+        let couriers = self.get_all_couriers().await?;
+        if couriers.len() < n {
+            return Err(ThinClientError::Other(format!(
+                "not enough couriers available: requested {}, have {}",
+                n,
+                couriers.len()
+            )));
+        }
+        Ok(couriers
+            .choose_multiple(&mut rand::thread_rng(), n)
+            .cloned()
+            .collect())
     }
 
     /// Returns one courier destination, drawn uniformly at random from
@@ -535,15 +676,12 @@ impl ThinClient {
     /// `(identity_hash, queue_id)` pair the rest of the API expects. This
     /// spares the caller from handling a list when one courier will do.
     ///
-    /// The principal use is the routine "pick a courier, send a copy
-    /// command to it" pattern; for the nested-copy-command case where two
-    /// distinct couriers are required, draw them with a single call to
-    /// the underlying service helpers in `helpers.rs` rather than calling
-    /// this method twice and risking the same draw.
+    /// For the nested-copy-command case where two distinct couriers are
+    /// required, use `get_distinct_couriers` rather than calling this
+    /// method twice and risking the same draw.
     pub async fn get_courier_destination(&self) -> Result<(Vec<u8>, Vec<u8>), ThinClientError> {
-        let courier_service = self.get_service("courier").await?;
-        let (dest_node, dest_queue) = courier_service.to_destination();
-        Ok((dest_node, dest_queue))
+        let mut couriers = self.get_distinct_couriers(1).await?;
+        Ok(couriers.swap_remove(0))
     }
 
 
@@ -1212,6 +1350,52 @@ mod tests {
         } else {
             panic!("missing session_token_reply");
         }
+    }
+
+    /// doc_epoch reads the PascalCase `Epoch` field the daemon serialises.
+    #[test]
+    fn test_doc_epoch_reads_epoch_field() {
+        let mut doc = BTreeMap::new();
+        doc.insert(Value::Text("Epoch".to_string()), Value::Integer(42));
+        assert_eq!(doc_epoch(&doc), Some(42));
+
+        let empty: BTreeMap<Value, Value> = BTreeMap::new();
+        assert_eq!(doc_epoch(&empty), None);
+    }
+
+    /// cache_pki_doc retains only the most recent epochs and evicts the
+    /// rest, so the cache cannot grow without bound.
+    #[test]
+    fn test_cache_pki_doc_evicts_old_epochs() {
+        let mut cache: BTreeMap<u64, BTreeMap<Value, Value>> = BTreeMap::new();
+        let newest = 19u64;
+        for epoch in 0..=newest {
+            let mut doc = BTreeMap::new();
+            doc.insert(Value::Text("Epoch".to_string()), Value::Integer(epoch as i128));
+            cache_pki_doc(&mut cache, epoch, doc);
+        }
+
+        // Mirrors Go/Python: every entry with epoch >= newest - MAX_CACHED_EPOCHS
+        // is kept, so the cache never exceeds MAX_CACHED_EPOCHS + 1 entries.
+        assert!(cache.len() as u64 <= MAX_CACHED_EPOCHS + 1);
+        assert!(cache.contains_key(&newest));
+        assert!(cache.contains_key(&(newest - MAX_CACHED_EPOCHS)));
+        assert!(!cache.contains_key(&(newest - MAX_CACHED_EPOCHS - 1)));
+        assert!(!cache.contains_key(&0));
+    }
+
+    /// Early epochs (below MAX_CACHED_EPOCHS) must not underflow the
+    /// eviction boundary; the cache simply retains everything seen so far.
+    #[test]
+    fn test_cache_pki_doc_no_underflow_for_early_epochs() {
+        let mut cache: BTreeMap<u64, BTreeMap<Value, Value>> = BTreeMap::new();
+        for epoch in 0..3u64 {
+            let mut doc = BTreeMap::new();
+            doc.insert(Value::Text("Epoch".to_string()), Value::Integer(epoch as i128));
+            cache_pki_doc(&mut cache, epoch, doc);
+        }
+        assert_eq!(cache.len(), 3);
+        assert!(cache.contains_key(&0));
     }
 
     /// handle_response should not panic on session_token_reply.
