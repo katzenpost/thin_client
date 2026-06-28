@@ -210,6 +210,42 @@ def test_error_codes_completeness():
     print("✅ All error codes 0-24 are defined with proper error strings")
 
 
+def test_courier_errors_distinct_from_replica():
+    """Courier envelope errors must map to their own CourierError subclasses,
+    above the replica code range, so a courier rejection is never mistaken for
+    a replica error. Guards the collision where courier InvalidEpoch and replica
+    DatabaseFailure share source value 4."""
+    from katzenpost_thinclient import (
+        CourierError, CourierCacheCorruptionError, CourierPropagationError,
+        CourierInvalidEnvelopeError, CourierInvalidEpochError,
+        ReplicaError, DatabaseFailureError,
+        THIN_CLIENT_ERROR_COURIER_INVALID_ENVELOPE,
+        THIN_CLIENT_ERROR_COURIER_INVALID_EPOCH,
+    )
+    from katzenpost_thinclient.core import error_code_to_exception, is_expected_outcome
+
+    assert THIN_CLIENT_ERROR_COURIER_INVALID_ENVELOPE == 31
+    assert THIN_CLIENT_ERROR_COURIER_INVALID_EPOCH == 32
+
+    expected = {
+        12: CourierCacheCorruptionError,
+        13: CourierPropagationError,
+        31: CourierInvalidEnvelopeError,
+        32: CourierInvalidEpochError,
+    }
+    for code, cls in expected.items():
+        exc = error_code_to_exception(code)
+        assert isinstance(exc, cls), (code, type(exc))
+        assert isinstance(exc, CourierError)
+        assert not isinstance(exc, ReplicaError), code
+        assert not is_expected_outcome(exc), code
+
+    # The collision guard: code 4 stays a replica database failure; the courier
+    # epoch rejection is a separate code and a separate exception.
+    assert isinstance(error_code_to_exception(4), DatabaseFailureError)
+    assert not isinstance(error_code_to_exception(32), DatabaseFailureError)
+
+
 class TestGracefulShutdown:
     """
     Unit tests for graceful shutdown behavior.

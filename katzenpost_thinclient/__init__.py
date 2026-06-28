@@ -92,6 +92,8 @@ from .core import (
     THIN_CLIENT_ERROR_VOUCHER_HASH_MISMATCH,
     THIN_CLIENT_ERROR_VOUCHER_SIGNATURE_INVALID,
     THIN_CLIENT_ERROR_VOUCHER_SEAL_OPEN_FAILED,
+    THIN_CLIENT_ERROR_COURIER_INVALID_ENVELOPE,
+    THIN_CLIENT_ERROR_COURIER_INVALID_EPOCH,
     thin_client_error_to_string,
     error_code_to_exception,
     copy_reply_to_exception,
@@ -116,6 +118,12 @@ from .core import (
     StartResendingCancelledError,
     CopyCommandFailedError,
     PayloadTooLargeError,
+    # Courier exceptions (distinct from replica errors)
+    CourierError,
+    CourierInvalidEnvelopeError,
+    CourierCacheCorruptionError,
+    CourierPropagationError,
+    CourierInvalidEpochError,
     ThinClientOfflineError,
     ConfigError,
     # Constants
@@ -273,7 +281,15 @@ __all__ = [
     'THIN_CLIENT_ERROR_VOUCHER_HASH_MISMATCH',
     'THIN_CLIENT_ERROR_VOUCHER_SIGNATURE_INVALID',
     'THIN_CLIENT_ERROR_VOUCHER_SEAL_OPEN_FAILED',
+    'THIN_CLIENT_ERROR_COURIER_INVALID_ENVELOPE',
+    'THIN_CLIENT_ERROR_COURIER_INVALID_EPOCH',
     'PayloadTooLargeError',
+    # Courier exceptions (distinct from replica errors)
+    'CourierError',
+    'CourierInvalidEnvelopeError',
+    'CourierCacheCorruptionError',
+    'CourierPropagationError',
+    'CourierInvalidEpochError',
     # Replica exceptions (matching Go sentinel errors)
     'ReplicaError',
     'BoxIDNotFoundError',
