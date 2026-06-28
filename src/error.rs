@@ -85,6 +85,23 @@ pub enum ThinClientError {
     /// voucher secret key (error code 30).
     VoucherSealOpenFailed,
 
+    // Courier envelope errors. The courier and the replicas are distinct
+    // components: these mean the courier itself rejected or could not dispatch
+    // the request, NOT that a replica failed. The daemon remaps the courier's
+    // own EnvelopeError codes (1-4) into this range (>= 12) so they never
+    // collide with the replica error codes 1-4 above.
+    /// The courier detected corruption in its reply cache (error code 12).
+    CourierCacheCorruption,
+    /// The courier could not propagate the request to the replicas (error code 13).
+    CourierPropagationError,
+    /// The courier rejected the envelope as malformed (error code 31).
+    CourierInvalidEnvelope,
+    /// The courier rejected the envelope because its declared replica epoch was
+    /// outside the courier's tolerance window (error code 32). A staleness
+    /// signal from the courier, NOT a replica database failure, even though the
+    /// two share value 4 in their respective source namespaces.
+    CourierInvalidEpoch,
+
     /// `blocking_send_message` did not receive a reply within the caller's
     /// supplied timeout. The message may still have been sent and may still
     /// elicit a reply that is later dropped.
@@ -118,6 +135,10 @@ pub fn error_code_to_error(error_code: u8) -> ThinClientError {
         28 => ThinClientError::VoucherHashMismatch,
         29 => ThinClientError::VoucherSignatureInvalid,
         30 => ThinClientError::VoucherSealOpenFailed,
+        12 => ThinClientError::CourierCacheCorruption,
+        13 => ThinClientError::CourierPropagationError,
+        31 => ThinClientError::CourierInvalidEnvelope,
+        32 => ThinClientError::CourierInvalidEpoch,
         code => ThinClientError::Other(format!("unknown error code: {}", code)),
     }
 }
@@ -158,6 +179,10 @@ impl fmt::Display for ThinClientError {
             ThinClientError::VoucherHashMismatch => write!(f, "Voucher payload does not hash to the voucher"),
             ThinClientError::VoucherSignatureInvalid => write!(f, "Voucher signed please-add did not verify"),
             ThinClientError::VoucherSealOpenFailed => write!(f, "Voucher sealed reply could not be opened"),
+            ThinClientError::CourierCacheCorruption => write!(f, "Courier cache corruption"),
+            ThinClientError::CourierPropagationError => write!(f, "Courier propagation error"),
+            ThinClientError::CourierInvalidEnvelope => write!(f, "Courier rejected the envelope as malformed"),
+            ThinClientError::CourierInvalidEpoch => write!(f, "Courier rejected the envelope: replica epoch outside tolerance window"),
             ThinClientError::Timeout(msg) => write!(f, "Timeout: {}", msg),
             ThinClientError::Other(msg) => write!(f, "Error: {}", msg),
         }
@@ -183,5 +208,31 @@ impl From<std::io::Error> for ThinClientError {
 impl From<serde_cbor::Error> for ThinClientError {
     fn from(err: serde_cbor::Error) -> Self {
         ThinClientError::CborError(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn courier_errors_distinct_from_replica() {
+        // Courier envelope errors map to their own variants, clear of the
+        // replica codes 1-4. Guards the collision where a courier stale-epoch
+        // rejection (source value 4) must not read as a replica DatabaseFailure.
+        assert!(matches!(error_code_to_error(12), ThinClientError::CourierCacheCorruption));
+        assert!(matches!(error_code_to_error(13), ThinClientError::CourierPropagationError));
+        assert!(matches!(error_code_to_error(31), ThinClientError::CourierInvalidEnvelope));
+        assert!(matches!(error_code_to_error(32), ThinClientError::CourierInvalidEpoch));
+
+        // Code 4 stays a replica database failure; the courier epoch error is
+        // a distinct code and a distinct variant.
+        assert!(matches!(error_code_to_error(4), ThinClientError::DatabaseFailure));
+        assert!(!matches!(error_code_to_error(32), ThinClientError::DatabaseFailure));
+
+        // None of the courier errors are benign "expected outcomes".
+        for code in [12u8, 13, 31, 32] {
+            assert!(!error_code_to_error(code).is_expected_outcome(), "code {}", code);
+        }
     }
 }

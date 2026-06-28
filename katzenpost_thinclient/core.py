@@ -85,6 +85,12 @@ THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE = 27
 THIN_CLIENT_ERROR_VOUCHER_HASH_MISMATCH = 28
 THIN_CLIENT_ERROR_VOUCHER_SIGNATURE_INVALID = 29
 THIN_CLIENT_ERROR_VOUCHER_SEAL_OPEN_FAILED = 30
+# Courier envelope errors. The daemon remaps the courier's own EnvelopeError
+# codes (1-4) into this thin-client namespace (>= 12) so they never collide
+# with replica error codes 1-4 in the shared reply field; without this a stale
+# epoch (courier code 4) would read as a replica database failure (also 4).
+THIN_CLIENT_ERROR_COURIER_INVALID_ENVELOPE = 31
+THIN_CLIENT_ERROR_COURIER_INVALID_EPOCH = 32
 
 def thin_client_error_to_string(error_code: int) -> str:
     """Convert a thin client error code to a human-readable string."""
@@ -120,6 +126,10 @@ def thin_client_error_to_string(error_code: int) -> str:
         THIN_CLIENT_ERROR_VOUCHER_HASH_MISMATCH: "Voucher payload does not hash to the voucher",
         THIN_CLIENT_ERROR_VOUCHER_SIGNATURE_INVALID: "Voucher signed please-add did not verify",
         THIN_CLIENT_ERROR_VOUCHER_SEAL_OPEN_FAILED: "Voucher sealed reply could not be opened",
+        THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION: "Courier cache corruption",
+        THIN_CLIENT_PROPAGATION_ERROR: "Courier propagation error",
+        THIN_CLIENT_ERROR_COURIER_INVALID_ENVELOPE: "Courier rejected the envelope as malformed",
+        THIN_CLIENT_ERROR_COURIER_INVALID_EPOCH: "Courier rejected the envelope: replica epoch outside tolerance window",
     }
     return error_messages.get(error_code, f"Unknown thin client error code: {error_code}")
 
@@ -235,6 +245,37 @@ class PayloadTooLargeError(Exception):
     pass
 
 
+class CourierError(Exception):
+    """Base class for errors raised by the courier (as opposed to a storage
+    replica). The courier and the replicas are distinct components: a courier
+    error means the courier itself rejected or could not dispatch the request,
+    and must not be confused with a replica error such as a database failure."""
+    pass
+
+
+class CourierInvalidEnvelopeError(CourierError):
+    """The courier rejected the CourierEnvelope as malformed."""
+    pass
+
+
+class CourierCacheCorruptionError(CourierError):
+    """The courier detected corruption in its reply cache."""
+    pass
+
+
+class CourierPropagationError(CourierError):
+    """The courier could not propagate the request to the replicas."""
+    pass
+
+
+class CourierInvalidEpochError(CourierError):
+    """The courier rejected the CourierEnvelope because its declared replica
+    epoch was outside the courier's tolerance window. This is a staleness
+    signal from the courier, NOT a replica database failure, even though the
+    two share value 4 in their respective source namespaces."""
+    pass
+
+
 def error_code_to_exception(error_code: int) -> Exception:
     """
     Maps error codes to exception instances for StartResendingEncryptedMessage.
@@ -283,6 +324,17 @@ def error_code_to_exception(error_code: int) -> Exception:
         return InvalidTombstoneSignatureError("invalid tombstone signature")
     elif error_code == THIN_CLIENT_ERROR_PAYLOAD_TOO_LARGE:  # 27
         return PayloadTooLargeError("payload too large")
+
+    # Courier envelope error codes (remapped by the daemon out of the replica
+    # range so a courier rejection is never read as a replica error).
+    elif error_code == THIN_CLIENT_ERROR_COURIER_CACHE_CORRUPTION:  # 12
+        return CourierCacheCorruptionError("courier cache corruption")
+    elif error_code == THIN_CLIENT_PROPAGATION_ERROR:  # 13
+        return CourierPropagationError("courier propagation error")
+    elif error_code == THIN_CLIENT_ERROR_COURIER_INVALID_ENVELOPE:  # 31
+        return CourierInvalidEnvelopeError("courier rejected envelope as malformed")
+    elif error_code == THIN_CLIENT_ERROR_COURIER_INVALID_EPOCH:  # 32
+        return CourierInvalidEpochError("courier rejected envelope: replica epoch outside tolerance window")
 
     # Note: THIN_CLIENT_ERROR_COPY_COMMAND_FAILED (26) is not handled here because
     # constructing CopyCommandFailedError requires the reply's diagnostic fields
