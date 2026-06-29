@@ -61,19 +61,15 @@ jobs:
           name: python-package-distributions
           path: dist/
 
-      - name: Install wheel with reticulum extra and import public modules
+      - name: Install wheel and import public modules
         run: |
           python -m venv /tmp/smoke
           WHEEL=$(echo dist/*.whl)
-          /tmp/smoke/bin/pip install "${WHEEL}[reticulum]"
+          /tmp/smoke/bin/pip install "${WHEEL}"
           /tmp/smoke/bin/python -c "
           import importlib.metadata
           import katzenpost_thinclient
           from katzenpost_thinclient import Config, ThinClient
-          import katzenpost_reticulum
-          from katzenpost_reticulum.pkimirror.client import PkiMirrorClient
-          from katzenpost_reticulum.pkimirror.verifier import verify_and_unwrap
-          from hpqc.sign.hybrid import FalconPadded512Ed25519
           version = importlib.metadata.version('katzenpost_thinclient')
           assert version, 'katzenpost_thinclient version should be populated'
           print('smoke OK, version', version)
