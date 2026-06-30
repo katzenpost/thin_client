@@ -54,7 +54,7 @@ jobs:
         run: |
           cd thinclient
           python -m pip install --upgrade pip
-          pip install -e '.[test,reticulum]'
+          pip install -e '.[test]'
 
       - name: Log in to GitHub Container Registry
         run: |
@@ -89,12 +89,8 @@ jobs:
         run: |
           cd thinclient
 
-          # Run Python tests in background. tests/integration is
-          # excluded here and run serially in its own step afterwards:
-          # its client-side Reticulum link handshake is starved when
-          # the runner is saturated by this parallel mixnet + Rust +
-          # xdist workload.
-          python -m pytest tests/ --ignore=tests/integration \
+          # Run Python tests in background.
+          python -m pytest tests/ \
             -vvv -s --tb=short --timeout=1200 -n 3 \
             --durations=25 \
             > /tmp/python-test-output.txt 2>&1 &
@@ -128,21 +124,6 @@ jobs:
             exit 1
           fi
 
-      - name: Run pkimirror e2e tests serially
-        if: always()
-        timeout-minutes: 15
-        run: |
-          cd thinclient
-          # Proven by the captured pkimirror server log: the server
-          # announces healthily throughout while the client cannot
-          # establish a Reticulum link within 150s, because the
-          # client RNS stack is CPU/scheduling-starved by the
-          # concurrent mixnet + Rust + xdist load. Running this here,
-          # after the parallel step has finished, gives it a quiet
-          # runner and a single process (no xdist co-tenancy).
-          python -m pytest tests/integration -vvv -s --tb=short \
-            --timeout=1200
-
       - name: Run pigeonhole-cp smoke test
         if: steps.smoke_filter.outputs.smoke == 'true'
         timeout-minutes: 10
@@ -162,18 +143,6 @@ jobs:
             podman compose logs --no-color --no-log-prefix kpclientd \
               > kpclientd.log 2>&1 || true
 
-      - name: Collect pkimirror server logs
-        if: always()
-        run: |
-          mkdir -p thinclient/pkimirror-logs
-          i=0
-          for f in $(find /tmp -name pkimirror.log -path '*pkimirror-srv*' 2>/dev/null); do
-            cp "$f" "thinclient/pkimirror-logs/pkimirror-$i.log" 2>/dev/null || true
-            i=$((i + 1))
-          done
-          echo "collected $i pkimirror server log(s)"
-          ls -la thinclient/pkimirror-logs/ || true
-
       - name: Stop the mixnet
         if: always()
         run: |
@@ -188,4 +157,3 @@ jobs:
             katzenpost/docker/voting_mixnet/*/*.log
             katzenpost/docker/voting_mixnet/kpclientd.log
             katzenpost/docker/voting_mixnet/servicenode*/courier/*.log
-            thinclient/pkimirror-logs/*.log

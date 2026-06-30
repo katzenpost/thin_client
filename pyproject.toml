@@ -31,11 +31,7 @@ files = ["requirements.txt"]
 exclude = ["venv_test"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["katzenpost_thinclient", "katzenpost_reticulum"]
-
-[project.scripts]
-pkimirror = "katzenpost_reticulum.pkimirror.__main__:main"
-pkimirror-fetch = "katzenpost_reticulum.pkimirror.fetch:main"
+packages = ["katzenpost_thinclient"]
 
 [project.optional-dependencies]
 dev = [
@@ -48,13 +44,5 @@ test = [
     "pytest-asyncio",
     "pytest-timeout",
     "pytest-xdist",
-]
-reticulum = [
-    "rns>=0.9",
-    "tomli; python_version<'3.11'",
-    # pkimirror verifies cert.Certificate signatures against the
-    # configured dirauth identities; 0.0.2 added the
-    # hpqc.sign.hybrid.FalconPadded512Ed25519 verifier required here.
-    "hpqc>=0.0.2",
 ]
 
