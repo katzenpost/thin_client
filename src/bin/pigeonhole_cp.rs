@@ -19,12 +19,6 @@ use katzenpost_thin_client::{Config, ThinClient};
 
 const MAX_NAME_LEN: usize = 255;
 
-/// Number of boxes the SACK paths read or write per `read_stream` /
-/// `write_stream` call. The windowed ARQ keeps this many boxes in flight at
-/// once, and it bounds the memory either SACK direction holds: a block, not
-/// the whole file.
-const SACK_BLOCK_BOXES: usize = 10;
-
 #[derive(Debug, thiserror::Error)]
 pub enum FileNameError {
     #[error("path has no file name component")]
@@ -141,14 +135,6 @@ enum Commands {
         /// --no-copy streams the file a box at a time and has no such limit.
         #[arg(long)]
         no_copy: bool,
-
-        /// Use the windowed SACK ARQ to write, keeping a block of boxes in
-        /// flight at once instead of the default per-box stop-and-wait. The
-        /// window is computed automatically by the daemon from the PKI
-        /// document (routing layers and Mu). It streams the file a block at
-        /// a time, so it does not load the whole file into memory.
-        #[arg(long)]
-        sack: bool,
     },
 
     /// Read from a Pigeonhole channel and write to a file
@@ -168,13 +154,6 @@ enum Commands {
         /// Output directory (file name comes from the FileMetaData header)
         #[arg(short, long)]
         dest_dir: PathBuf,
-
-        /// Use the windowed SACK ARQ to read the payload, keeping many
-        /// boxes in flight at once instead of reading one box per round
-        /// trip. The window is computed automatically by the daemon from
-        /// the PKI document (routing layers and Mu).
-        #[arg(long)]
-        sack: bool,
     },
 }
 
@@ -185,11 +164,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Genkey { config } => run_genkey(config).await,
-        Commands::Send { config, write_cap, index, file, no_copy, sack } => {
-            run_send(config, write_cap, index, file, !no_copy, sack).await
+        Commands::Send { config, write_cap, index, file, no_copy } => {
+            run_send(config, write_cap, index, file, !no_copy).await
         }
-        Commands::Receive { config, read_cap, index, dest_dir, sack } => {
-            run_receive(config, read_cap, index, dest_dir, sack).await
+        Commands::Receive { config, read_cap, index, dest_dir } => {
+            run_receive(config, read_cap, index, dest_dir).await
         }
     }
 }
@@ -282,16 +261,13 @@ async fn run_genkey(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 /// channel and dispatches its contents to the destination atomically (but
 /// buffers the whole file). `--no-copy` opts out, writing each box to the
 /// destination directly via per-box ARQ, reading the file one box at a
-/// time so it never holds the whole file in memory. `--sack` opts into the
-/// windowed ARQ, which streams the file a block of boxes at a time and so
-/// also avoids loading it whole.
+/// time so it never holds the whole file in memory.
 async fn run_send(
     config: PathBuf,
     write_cap_b64: String,
     next_index_b64: String,
     input_file: PathBuf,
     copy: bool,
-    sack: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let write_cap = BASE64.decode(&write_cap_b64)?;
     let next_index = BASE64.decode(&next_index_b64)?;
@@ -309,117 +285,12 @@ async fn run_send(
 
     // The default uses the atomic courier Copy command (which buffers the
     // whole file). --no-copy streams each box directly and never loads the
-    // whole file; --sack chooses the windowed ARQ, which streams the file a
-    // block of boxes at a time.
-    match (copy, sack) {
-        (false, false) => send_direct(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
-        (false, true) => send_sack(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
-        (true, false) => send_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
-        (true, true) => send_sack_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await,
+    // whole file.
+    if copy {
+        send_copy(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await
+    } else {
+        send_direct(&pigeonhole, &write_cap, &next_index, &input_file, total_len, &header).await
     }
-}
-
-/// SACK + COPY path: stage the payload into a temporary channel using the
-/// windowed SACK ARQ, then issue the courier Copy command to dispatch it to
-/// the destination atomically. The temporary channel is just a BACAP byte
-/// stream of copy-stream elements, so filling it with `write_stream` produces
-/// the same stream the per-box `send_copy` builds, only windowed.
-async fn send_sack_copy(
-    pigeonhole: &PigeonholeClient,
-    dest_write_cap: &[u8],
-    dest_index: &[u8],
-    input_file: &Path,
-    total_len: u64,
-    header: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut payload = Vec::with_capacity(header.len() + total_len as usize);
-    payload.extend_from_slice(header);
-    File::open(input_file)?.read_to_end(&mut payload)?;
-
-    let client = pigeonhole.thin_client();
-
-    // A fresh temporary channel to stage the copy stream.
-    let mut seed = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut seed);
-    let kp = client.new_keypair(&seed).await?;
-
-    // Encode the payload into copy-stream elements addressed at the
-    // destination, then concatenate them into the byte stream the temp
-    // channel must carry.
-    let result = client
-        .create_courier_envelopes_from_payload(&payload, dest_write_cap, dest_index, true, true)
-        .await?;
-    let element_count = result.envelopes.len();
-    let mut stream = Vec::new();
-    for chunk in &result.envelopes {
-        stream.extend_from_slice(chunk);
-    }
-
-    let box_payload_size = client.pigeonhole_geometry().max_plaintext_payload_length;
-    let boxes = stream.len().div_ceil(box_payload_size - 4);
-
-    let start = std::time::Instant::now();
-    client
-        .write_stream(&kp.write_cap, &kp.first_message_index, &stream, 0)
-        .await?;
-    client
-        .start_resending_copy_command(&kp.write_cap, None, None)
-        .await?;
-    print_throughput("sack-copy", total_len, boxes, start.elapsed());
-    println!("(staged {} copy-stream elements via temp channel, then COPY)", element_count);
-    Ok(())
-}
-
-/// SACK path: write the file with the daemon's windowed selective-ack ARQ,
-/// a block of `SACK_BLOCK_BOXES` boxes at a time. Each `write_stream` call
-/// keeps that block's boxes in flight at once, and reading the file block by
-/// block means we never hold more than a block in memory. Every block but
-/// the last is an exact multiple of `per_box`, so the box boundaries match
-/// what a single whole-file `write_stream` would have produced, and the
-/// `receive` side reads back the same stream either way.
-async fn send_sack(
-    pigeonhole: &PigeonholeClient,
-    write_cap: &[u8],
-    next_index: &[u8],
-    input_file: &Path,
-    total_len: u64,
-    header: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let per_box = pigeonhole
-        .thin_client()
-        .pigeonhole_geometry()
-        .max_plaintext_payload_length
-        - 4;
-    let block_len = per_box * SACK_BLOCK_BOXES;
-
-    let mut input_reader = BufReader::new(File::open(input_file)?);
-    let mut index = next_index.to_vec();
-    let mut block: Vec<u8> = Vec::with_capacity(block_len);
-    block.extend_from_slice(header);
-    let mut boxes = 0usize;
-
-    let start = std::time::Instant::now();
-    loop {
-        let want = block_len - block.len();
-        let mut buf = vec![0u8; want];
-        let n = read_fill(&mut input_reader, &mut buf)?;
-        block.extend_from_slice(&buf[..n]);
-        let eof = n < want;
-        if block.is_empty() {
-            break;
-        }
-        index = pigeonhole
-            .thin_client()
-            .write_stream(write_cap, &index, &block, 0)
-            .await?;
-        boxes += block.len().div_ceil(per_box);
-        block.clear();
-        if eof {
-            break;
-        }
-    }
-    print_throughput("sack", total_len, boxes, start.elapsed());
-    Ok(())
 }
 
 /// Direct path: write each box to the destination via per-box ARQ.
@@ -519,7 +390,7 @@ async fn send_copy(
 
 /// Print a transfer's throughput: total bytes and boxes, the wall time
 /// spent in the send, and the derived boxes/sec and bytes/sec. Used to
-/// compare ARQ strategies (per-box, copy, SACK) on equal footing.
+/// compare ARQ strategies (per-box, copy) on equal footing.
 fn print_throughput(mode: &str, bytes: u64, boxes: usize, elapsed: std::time::Duration) {
     let secs = elapsed.as_secs_f64();
     let boxes_per_sec = if secs > 0.0 { boxes as f64 / secs } else { 0.0 };
@@ -559,16 +430,11 @@ async fn run_receive(
     read_cap_b64: String,
     next_index_b64: String,
     dest_dir: PathBuf,
-    sack: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let read_cap = BASE64.decode(&read_cap_b64)?;
     let next_index = BASE64.decode(&next_index_b64)?;
 
     let client = init_client(config).await?;
-
-    if sack {
-        return run_receive_sack(client, &read_cap, &next_index, dest_dir).await;
-    }
 
     let pigeonhole = PigeonholeClient::new_in_memory(client.clone())?;
     let mut reader =
@@ -612,66 +478,6 @@ async fn run_receive(
         "received {} bytes in {} box(es) -> {}",
         metadata.size,
         box_count,
-        final_path.display()
-    );
-    Ok(())
-}
-
-/// SACK receive: the windowed counterpart to `run_receive`. It first reads
-/// box zero to recover the file size from its `FileMetaData` header and
-/// compute how many boxes the payload spans (the daemon chunks a write at
-/// `MaxPlaintextPayloadLength - 4` per box), then reads the remainder a
-/// block of `SACK_BLOCK_BOXES` boxes at a time, writing each block straight
-/// to the temp file so we never hold more than a block in memory. The daemon
-/// computes the window itself from the PKI document.
-async fn run_receive_sack(
-    client: Arc<ThinClient>,
-    read_cap: &[u8],
-    start_index: &[u8],
-    dest_dir: PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let start = std::time::Instant::now();
-
-    let (first, mut index) = client.read_stream(read_cap, start_index, 1, 0).await?;
-    let mut deserializer = serde_cbor::Deserializer::from_slice(&first);
-    let metadata = FileMetaData::deserialize(&mut deserializer)?;
-    let header_end = deserializer.byte_offset();
-
-    let per_box = client.pigeonhole_geometry().max_plaintext_payload_length - 4;
-    let total_payload_len = header_end + metadata.size as usize;
-    let total_boxes = total_payload_len.div_ceil(per_box);
-
-    let final_path = sanitize_for_receive(&metadata.name, &dest_dir)?;
-    let parent = final_path
-        .parent()
-        .expect("sanitize_for_receive guarantees a parent");
-    let mut tmp = NamedTempFile::new_in(parent)?;
-
-    let mut remaining = metadata.size;
-    let first_file = &first[header_end..];
-    let take = (first_file.len() as u64).min(remaining) as usize;
-    tmp.write_all(&first_file[..take])?;
-    remaining -= take as u64;
-
-    let mut boxes_read = 1usize;
-    while boxes_read < total_boxes {
-        let want = (total_boxes - boxes_read).min(SACK_BLOCK_BOXES);
-        let (chunk, next) = client.read_stream(read_cap, &index, want as u32, 0).await?;
-        index = next;
-        let take = (chunk.len() as u64).min(remaining) as usize;
-        tmp.write_all(&chunk[..take])?;
-        remaining -= take as u64;
-        boxes_read += want;
-    }
-
-    tmp.as_file().sync_all()?;
-    tmp.persist_noclobber(&final_path).map_err(|e| e.error)?;
-
-    println!(
-        "received {} bytes in {} box(es) (sack) in {:.3}s -> {}",
-        metadata.size,
-        total_boxes,
-        start.elapsed().as_secs_f64(),
         final_path.display()
     );
     Ok(())

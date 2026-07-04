@@ -71,8 +71,8 @@ pub enum ThinClientError {
         failed_envelope_index: u64,
     },
 
-    /// A WriteStream plaintext or a ReadStream result exceeded the daemon's
-    /// configured maximum stream payload size (error code 27).
+    /// A request's payload exceeded the daemon's configured maximum payload
+    /// size (error code 27).
     PayloadTooLarge,
 
     /// A Contact Voucher payload did not hash to the Voucher token handed
