@@ -20,6 +20,11 @@
 #
 # A dry run (build + cargo publish --dry-run, no upload) is available
 # via the "Run workflow" button in the Actions tab (workflow_dispatch).
+#
+# The build job also runs on every pull request so that a stale
+# Cargo.lock (forgotten "cargo update --workspace" after a version
+# bump) is caught at PR time, before anything is tagged. The publish
+# job itself remains gated on the rust/v* tag ref.
 
 name: Publish katzenpost_thin_client to crates.io
 
@@ -27,6 +32,7 @@ on:
   push:
     tags:
       - 'rust/v*'
+  pull_request:
   workflow_dispatch:
 
 jobs:
