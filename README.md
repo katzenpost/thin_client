@@ -131,7 +131,8 @@ thin_client/
 ├── pydoc-markdown.yml              Pydoc generation config for the Python API reference.
 ├── README.md                       This file (rendered on GitHub).
 ├── README_python.md                Bundled with the PyPI package.
-└── README_rust.md                  Bundled with the crates.io package.
+├── README_rust.md                  Bundled with the crates.io package.
+└── RELEASING.md                    Release and publish procedure.
 ```
 
 
@@ -153,6 +154,9 @@ Pull requests are welcome at
 the integration suite against a docker mixnet pinned to a specific
 commit of the [katzenpost monorepo](https://github.com/katzenpost/katzenpost);
 protocol-level changes should be coordinated with that pin in mind.
+
+Maintainers: see [RELEASING.md](RELEASING.md) for the release and
+publish procedure.
 
 
 ## License
