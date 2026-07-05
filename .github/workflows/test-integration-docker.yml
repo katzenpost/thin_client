@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: katzenpost/katzenpost
-          ref: 86d4dbc5f11d9162d52b371708f41c937566cf7f # courier/replica error-code disambiguation
+          ref: cdb88125ec6d3c54cc9f5413af39967edb9a51b4 # PR #1053: Poisson-gate ARQ follow-ups + remove SACK
           path: katzenpost
 
       - name: Set up Docker Buildx

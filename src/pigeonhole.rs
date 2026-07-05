@@ -180,57 +180,6 @@ pub struct StartResendingResult {
     pub courier_queue_id: Option<Vec<u8>>,
 }
 
-/// Request to write a whole multi-box payload via the windowed SACK ARQ.
-#[derive(Debug, Clone, serde::Serialize)]
-struct WriteStreamRequest {
-    #[serde(with = "serde_bytes")]
-    query_id: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    write_cap: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    start_index: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    payload: Vec<u8>,
-    window: i64,
-}
-
-/// Reply to a WriteStream request.
-#[derive(Debug, Clone, serde::Deserialize)]
-struct WriteStreamReply {
-    #[serde(default, with = "optional_bytes")]
-    next_message_box_index: Option<Vec<u8>>,
-    #[serde(default)]
-    error_code: u8,
-    #[serde(default)]
-    box_count: u32,
-}
-
-/// Request to read many sequential boxes via the windowed SACK ARQ.
-#[derive(Debug, Clone, serde::Serialize)]
-struct ReadStreamRequest {
-    #[serde(with = "serde_bytes")]
-    query_id: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    read_cap: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    start_index: Vec<u8>,
-    box_count: u32,
-    window: i64,
-}
-
-/// Reply to a ReadStream request.
-#[derive(Debug, Clone, serde::Deserialize)]
-struct ReadStreamReply {
-    #[serde(default, with = "optional_bytes")]
-    payload: Option<Vec<u8>>,
-    #[serde(default, with = "optional_bytes")]
-    next_message_box_index: Option<Vec<u8>>,
-    #[serde(default)]
-    error_code: u8,
-    #[serde(default)]
-    box_count: u32,
-}
-
 /// Request to cancel resending an encrypted message.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CancelResendingEncryptedMessageRequest {
@@ -1051,87 +1000,6 @@ impl ThinClient {
         })
     }
 
-    /// Writes a whole payload, of any size, to a channel using the daemon's
-    /// windowed selective-ack (SACK) ARQ. The daemon splits the payload into
-    /// as many BACAP boxes as it spans and keeps up to `window` boxes in
-    /// flight at once, retransmitting only those whose acknowledgements time
-    /// out, so a multi-box payload is no longer serialised one round trip per
-    /// box. A `window` of zero asks the daemon to choose a default.
-    ///
-    /// The daemon does all chunking and encryption; the caller supplies only
-    /// the cleartext payload, the write capability, and the start index.
-    /// Returns the message box index immediately after the last box written.
-    pub async fn write_stream(
-        &self,
-        write_cap: &[u8],
-        start_index: &[u8],
-        payload: &[u8],
-        window: i64,
-    ) -> Result<Vec<u8>, ThinClientError> {
-        let query_id = Self::new_query_id();
-        let request_inner = WriteStreamRequest {
-            query_id: query_id.clone(),
-            write_cap: write_cap.to_vec(),
-            start_index: start_index.to_vec(),
-            payload: payload.to_vec(),
-            window,
-        };
-        let request_value =
-            serde_cbor::value::to_value(&request_inner).map_err(|e| ThinClientError::CborError(e))?;
-        let mut request = BTreeMap::new();
-        request.insert(Value::Text("write_stream".to_string()), request_value);
-
-        let reply_map = self.send_and_wait_direct(query_id, request).await?;
-        let reply: WriteStreamReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
-
-        debug!("write_stream: received reply, error_code={}, boxes={}", reply.error_code, reply.box_count);
-        if reply.error_code != 0 {
-            return Err(error_code_to_error(reply.error_code));
-        }
-        Ok(reply.next_message_box_index.unwrap_or_default())
-    }
-
-    /// Reads `box_count` sequential boxes from a channel using the daemon's
-    /// windowed selective-ack (SACK) ARQ, the read counterpart of
-    /// `write_stream`. The daemon keeps up to `window` boxes in flight,
-    /// decrypts each, and reassembles them in order. A `window` of zero asks
-    /// the daemon to choose a default. Returns the concatenated payload and the
-    /// message box index immediately after the last box read.
-    pub async fn read_stream(
-        &self,
-        read_cap: &[u8],
-        start_index: &[u8],
-        box_count: u32,
-        window: i64,
-    ) -> Result<(Vec<u8>, Vec<u8>), ThinClientError> {
-        let query_id = Self::new_query_id();
-        let request_inner = ReadStreamRequest {
-            query_id: query_id.clone(),
-            read_cap: read_cap.to_vec(),
-            start_index: start_index.to_vec(),
-            box_count,
-            window,
-        };
-        let request_value =
-            serde_cbor::value::to_value(&request_inner).map_err(|e| ThinClientError::CborError(e))?;
-        let mut request = BTreeMap::new();
-        request.insert(Value::Text("read_stream".to_string()), request_value);
-
-        let reply_map = self.send_and_wait_direct(query_id, request).await?;
-        let reply: ReadStreamReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
-
-        debug!("read_stream: received reply, error_code={}, boxes={}", reply.error_code, reply.box_count);
-        if reply.error_code != 0 {
-            return Err(error_code_to_error(reply.error_code));
-        }
-        Ok((
-            reply.payload.unwrap_or_default(),
-            reply.next_message_box_index.unwrap_or_default(),
-        ))
-    }
-
     /// Cancels ARQ resending for an encrypted message.
     ///
     /// This method stops the automatic repeat request for a previously started
@@ -1844,36 +1712,6 @@ mod sack_request_tests {
     // The daemon decodes these requests by CBOR field name; a rename here that
     // drifts from the Go `cbor:"..."` tags would silently break interop, so we
     // pin the wire field names.
-    #[test]
-    fn write_stream_request_field_names() {
-        let req = WriteStreamRequest {
-            query_id: vec![1, 2, 3],
-            write_cap: vec![4, 5],
-            start_index: vec![6, 7],
-            payload: vec![8, 9],
-            window: 16,
-        };
-        let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
-        for expected in ["query_id", "write_cap", "start_index", "payload", "window"] {
-            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
-        }
-    }
-
-    #[test]
-    fn read_stream_request_field_names() {
-        let req = ReadStreamRequest {
-            query_id: vec![1],
-            read_cap: vec![2],
-            start_index: vec![3],
-            box_count: 4,
-            window: 0,
-        };
-        let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
-        for expected in ["query_id", "read_cap", "start_index", "box_count", "window"] {
-            assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
-        }
-    }
-
     #[test]
     fn voucher_mint_request_field_names() {
         let req = VoucherMintRequest {

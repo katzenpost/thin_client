@@ -240,8 +240,8 @@ class CopyCommandFailedError(Exception):
 
 
 class PayloadTooLargeError(Exception):
-    """A WriteStream plaintext or a ReadStream result exceeded the daemon's
-    configured maximum stream payload size."""
+    """A request's payload exceeded the daemon's configured maximum payload
+    size."""
     pass
 
 
