@@ -1464,55 +1464,6 @@ class ThinClient:
         service_descriptors = self.get_services(service_name)
         return random.choice(service_descriptors)
 
-    def get_all_couriers(self) -> "List[Tuple[bytes, bytes]]":
-        """
-        Return every courier service advertised in the current PKI
-        document, each described by an ``(identity_hash, queue_id)``
-        tuple. The list reflects only the couriers that the current
-        consensus regards as serving.
-
-        The principal caller is the nested-copy-command machinery, which
-        needs to choose particular couriers rather than accept the random
-        draw made on the caller's behalf by
-        ``start_resending_copy_command``; for simple cases where any
-        courier will do, the default routing path is usually preferable.
-
-        Returns:
-            list[tuple[bytes, bytes]]: List of (identity_hash, queue_id) tuples.
-
-        Raises:
-            Exception: If no couriers are available.
-        """
-        services = self.get_services("courier")
-        couriers = []
-        for svc in services:
-            identity_hash = blake2_256_sum(svc.mix_descriptor['IdentityKey'])
-            couriers.append((identity_hash, svc.recipient_queue_id))
-        return couriers
-
-    def get_distinct_couriers(self, n:int) -> "List[Tuple[bytes, bytes]]":
-        """
-        Draw ``n`` couriers uniformly at random from the list returned by
-        ``get_all_couriers``, without replacement, so that no two entries
-        in the returned list refer to the same courier. This is the usual
-        building block for a nested copy command, every layer of which
-        must be carried by a different courier.
-
-        Args:
-            n (int): Number of distinct couriers to return.
-
-        Returns:
-            list[tuple[bytes, bytes]]: List of (identity_hash, queue_id) tuples.
-
-        Raises:
-            Exception: If the current PKI document advertises fewer than
-                ``n`` couriers.
-        """
-        couriers = self.get_all_couriers()
-        if len(couriers) < n:
-            raise Exception("not enough couriers available")
-        return random.sample(couriers, n)
-
     async def blocking_send_message(self, payload:bytes|str, dest_node:bytes, dest_queue:bytes, timeout_seconds:float=30.0) -> bytes:
         """
         Send a message and block until a reply is received or timeout.
