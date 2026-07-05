@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: katzenpost/katzenpost
-          ref: cdb88125ec6d3c54cc9f5413af39967edb9a51b4 # PR #1053: Poisson-gate ARQ follow-ups + remove SACK
+          ref: 04b0ef718d454fbb1570eaab4e809658d34b06ab # PR #1054: remove StartResendingCopyCommandWithCourier and other superfluous methods
           path: katzenpost
 
       - name: Set up Docker Buildx
