@@ -17,7 +17,6 @@ use tokio::net::unix::{OwnedReadHalf as UnixReadHalf, OwnedWriteHalf as UnixWrit
 
 use rand::RngCore;
 use rand::Rng;
-use rand::seq::SliceRandom;
 use log::{debug, error};
 
 use crate::error::ThinClientError;
@@ -618,72 +617,6 @@ impl ThinClient {
         let idx = rand::thread_rng().gen_range(0..services.len());
         Ok(services.swap_remove(idx))
     }
-
-    /// Returns every courier service advertised in the current PKI
-    /// document, each as the `(identity_hash, queue_id)` pair the rest of
-    /// the API expects.
-    ///
-    /// The principal caller is the nested-copy-command machinery, which
-    /// must choose particular couriers rather than accept the random draw
-    /// made on its behalf by `start_resending_copy_command`; for simple
-    /// cases where any courier will do, the default routing path is
-    /// usually preferable.
-    ///
-    /// # Errors
-    ///
-    /// * `ThinClientError::MissingPkiDocument` — no PKI document is yet
-    ///   available; see `pki_document`.
-    /// * `ThinClientError::ServiceNotFound` — the current consensus
-    ///   advertises no courier.
-    pub async fn get_all_couriers(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ThinClientError> {
-        let services = self.get_services("courier").await?;
-        Ok(services.iter().map(|svc| svc.to_destination()).collect())
-    }
-
-    /// Draws `n` couriers uniformly at random from `get_all_couriers`,
-    /// without replacement, so that no two entries in the returned list
-    /// refer to the same courier. This is the usual building block for a
-    /// nested copy command, every layer of which must be carried by a
-    /// different courier.
-    ///
-    /// # Arguments
-    ///
-    /// * `n` — the number of distinct couriers to return.
-    ///
-    /// # Errors
-    ///
-    /// * `ThinClientError::MissingPkiDocument` / `ServiceNotFound` — as
-    ///   for `get_all_couriers`.
-    /// * `ThinClientError::Other` — the current consensus advertises fewer
-    ///   than `n` couriers.
-    pub async fn get_distinct_couriers(&self, n: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ThinClientError> {
-        let couriers = self.get_all_couriers().await?;
-        if couriers.len() < n {
-            return Err(ThinClientError::Other(format!(
-                "not enough couriers available: requested {}, have {}",
-                n,
-                couriers.len()
-            )));
-        }
-        Ok(couriers
-            .choose_multiple(&mut rand::thread_rng(), n)
-            .cloned()
-            .collect())
-    }
-
-    /// Returns one courier destination, drawn uniformly at random from
-    /// the couriers advertised in the current PKI document, as the
-    /// `(identity_hash, queue_id)` pair the rest of the API expects. This
-    /// spares the caller from handling a list when one courier will do.
-    ///
-    /// For the nested-copy-command case where two distinct couriers are
-    /// required, use `get_distinct_couriers` rather than calling this
-    /// method twice and risking the same draw.
-    pub async fn get_courier_destination(&self) -> Result<(Vec<u8>, Vec<u8>), ThinClientError> {
-        let mut couriers = self.get_distinct_couriers(1).await?;
-        Ok(couriers.swap_remove(0))
-    }
-
 
     pub(crate) async fn recv(&self) -> Result<BTreeMap<Value, Value>, ThinClientError> {
         let mut length_prefix = [0; 4];
