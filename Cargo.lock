@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "katzenpost_thin_client"
-version = "0.0.19"
+version = "0.0.21"
 dependencies = [
  "assert_cmd",
  "async-trait",
