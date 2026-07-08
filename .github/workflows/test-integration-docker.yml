@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: katzenpost/katzenpost
-          ref: 04b0ef718d454fbb1570eaab4e809658d34b06ab # PR #1054: remove StartResendingCopyCommandWithCourier and other superfluous methods
+          ref: d5a6349a34c4a2d4bca587f4be86ce92f2873b12 # v0.0.90: Pigeonhole docstring rewrites
           path: katzenpost
 
       - name: Set up Docker Buildx
