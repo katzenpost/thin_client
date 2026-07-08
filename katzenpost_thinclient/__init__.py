@@ -148,8 +148,6 @@ from .pigeonhole import (
     encrypt_read,
     encrypt_write,
     start_resending_encrypted_message,
-    start_resending_encrypted_message_return_box_exists,
-    start_resending_encrypted_message_no_retry,
     cancel_resending_encrypted_message,
     next_message_box_index,
     get_message_box_index_counter,
@@ -183,8 +181,6 @@ ThinClient.new_keypair = new_keypair
 ThinClient.encrypt_read = encrypt_read
 ThinClient.encrypt_write = encrypt_write
 ThinClient.start_resending_encrypted_message = start_resending_encrypted_message
-ThinClient.start_resending_encrypted_message_return_box_exists = start_resending_encrypted_message_return_box_exists
-ThinClient.start_resending_encrypted_message_no_retry = start_resending_encrypted_message_no_retry
 ThinClient.cancel_resending_encrypted_message = cancel_resending_encrypted_message
 ThinClient.next_message_box_index = next_message_box_index
 ThinClient.get_message_box_index_counter = get_message_box_index_counter
