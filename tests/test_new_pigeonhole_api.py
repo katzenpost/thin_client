@@ -1126,17 +1126,18 @@ async def test_box_id_not_found_error():
         print("✓ Encrypted read request for non-existent box")
 
         # Attempt to read - this should raise BoxIDNotFoundError
-        # Use start_resending_encrypted_message_no_retry to get immediate error without retries
+        # Pass no_retry_on_box_id_not_found=True to get immediate error without retries
         print("--- Attempting to read from non-existent box ---")
         try:
-            await client.start_resending_encrypted_message_no_retry(
+            await client.start_resending_encrypted_message(
                 read_cap=keypair.read_cap,
                 write_cap=None,
                 message_box_index=keypair.first_message_index,
                 reply_index=0,
                 envelope_descriptor=read_result.envelope_descriptor,
                 message_ciphertext=read_result.message_ciphertext,
-                envelope_hash=read_result.envelope_hash
+                envelope_hash=read_result.envelope_hash,
+                no_retry_on_box_id_not_found=True
             )
             # If we get here, the test failed - we expected an error
             raise AssertionError("Expected BoxIDNotFoundError but no exception was raised")
@@ -1206,17 +1207,18 @@ async def test_box_already_exists_error():
         print("✓ Encrypted second message")
 
         # Send the second write - should fail with BoxAlreadyExists
-        # Use start_resending_encrypted_message_return_box_exists to get the error instead of
+        # Pass no_idempotent_box_already_exists=True to get the error instead of
         # treating it as idempotent success
         try:
-            await client.start_resending_encrypted_message_return_box_exists(
+            await client.start_resending_encrypted_message(
                 read_cap=None,
                 write_cap=keypair.write_cap,
                 message_box_index=None,
                 reply_index=None,
                 envelope_descriptor=write_result2.envelope_descriptor,
                 message_ciphertext=write_result2.message_ciphertext,
-                envelope_hash=write_result2.envelope_hash
+                envelope_hash=write_result2.envelope_hash,
+                no_idempotent_box_already_exists=True
             )
             # If we get here, the test failed - we expected an error
             raise AssertionError("Expected BoxAlreadyExistsError but no exception was raised")
