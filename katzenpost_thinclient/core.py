@@ -1223,11 +1223,19 @@ class ThinClient:
             if self._stopping:
                 return
 
+            # Replay in-flight requests after every reconnect, not just
+            # when the daemon instance changed. A request written into a
+            # socket that dropped before the daemon read it would otherwise
+            # never be delivered again: the daemon never answers it and the
+            # caller's _send_and_wait blocks forever. Replaying is safe
+            # because these requests are keyed by envelope hash and the
+            # daemon handles re-issues idempotently (BoxAlreadyExists on
+            # writes, re-read of the same box on reads).
             if self._daemon_instance_token != previous_token:
                 self.logger.info("New daemon instance detected, replaying in-flight requests")
-                await self._replay_in_flight_resends()
             else:
-                self.logger.info("Same daemon instance, skipping replay")
+                self.logger.info("Same daemon instance detected, replaying in-flight requests")
+            await self._replay_in_flight_resends()
 
     def parse_status(self, event: "Dict[str,Any]") -> None:
         """
