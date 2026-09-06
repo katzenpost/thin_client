@@ -36,4 +36,16 @@ class TcpDialConfig:
         server_addr = (host, int(port_str))
 
         sock.setblocking(False)
+
+        # TCP keepalive + user timeout: a peer that silently dies (no FIN,
+        # no RST) would otherwise leave recv() blocked forever, so the worker
+        # loop never notices the dead link and never replays in-flight
+        # requests. With these options the kernel probes an idle link and
+        # aborts it once a probe goes unacknowledged.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+        if hasattr(socket, 'TCP_USER_TIMEOUT'):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 30_000)
         return sock, server_addr
