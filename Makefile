@@ -5,6 +5,16 @@ katzenpost_dir?=.katzenpost
 live_dir?=.live
 connect_deadline?=480
 
+include ci.mk
+
+.PHONY: test check
+test:
+	python3 -m pytest tests/ -q
+	cargo test --lib
+
+check:
+	cargo clippy --all-targets -- -D warnings
+
 .PHONY: check-live clean-live
 
 check-live:
