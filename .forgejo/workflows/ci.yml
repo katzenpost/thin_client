@@ -4,17 +4,31 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 jobs:
-  unit:
+  test-python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@stable
-      - run: pip install -e . && pip install pytest pytest-timeout
-      - run: make ci-unit
+      - uses: astral-sh/setup-uv@v10.1.0
+      - run: make test-python
+
+  test-rust:
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/rust:1-trixie
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-rust
+
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/rust:1-trixie
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add clippy
+      - run: make check

@@ -1,8 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+when:
+  event: [push, pull_request, manual]
+
 steps:
-  - name: test
-    image: docker.io/python:3.12
+  - name: test-python
+    image: ghcr.io/astral-sh/uv:python3.12-trixie
     commands:
-      - pip install -e . && pip install pytest pytest-timeout
-      - make test
+      - make test-python
+
+  - name: test-rust
+    image: docker.io/library/rust:1-trixie
+    commands:
+      - make test-rust
+
+  - name: check
+    image: docker.io/library/rust:1-trixie
+    commands:
+      - rustup component add clippy
+      - make check
