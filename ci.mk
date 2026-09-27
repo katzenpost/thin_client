@@ -8,6 +8,8 @@ CI_RUNNERS?=act forgejo-runner woodpecker-cli
 WOODPECKER?=woodpecker-cli
 ci_make=$(MAKE) -f $(firstword $(MAKEFILE_LIST))
 CI_WORKFLOWS_WOODPECKER?=.woodpecker
+CI_WOODPECKER_BACKEND?=docker
+CI_WOODPECKER_ARGS?=--local --backend-engine $(CI_WOODPECKER_BACKEND)
 
 CI_IMAGE_NAME?=thinclient-ci
 CI_IMAGE_TAG?=latest
@@ -65,7 +67,8 @@ ci-local: ci-local-image
 	    $(if $(CI_WORKFLOW),-W $(CI_WORKFLOWS_ACT)/$(CI_WORKFLOW),-W $(CI_WORKFLOWS_ACT)) $(if $(CI_JOB),-j $(CI_JOB),);; \
 	  forgejo|forgejo-runner) DOCKER_HOST="unix://$(CI_SOCKET)" $(FORGEJO_RUNNER) exec $(CI_FORGEJO_ARGS) -i $(CI_IMAGE) --var CI_IMAGE=$(CI_IMAGE) --container-daemon-socket "$(CI_DAEMON_SOCKET)" --container-opts "$(CI_RUN_OPTIONS)" \
 	    $(if $(CI_WORKFLOW),-W $(CI_WORKFLOWS_FORGEJO)/$(CI_WORKFLOW),-W $(CI_WORKFLOWS_FORGEJO)) $(if $(CI_JOB),-j $(CI_JOB),);; \
-	  woodpecker|woodpecker-cli) $(WOODPECKER) exec $(CI_WORKFLOWS_WOODPECKER)/$(or $(CI_WORKFLOW),ci.yaml);; \
+	  woodpecker|woodpecker-cli) set -e; for pipeline in $(if $(CI_WORKFLOW),$(CI_WORKFLOWS_WOODPECKER)/$(CI_WORKFLOW),$(CI_WORKFLOWS_WOODPECKER)/*.yaml); do \
+	    DOCKER_HOST="unix://$(CI_SOCKET)" $(WOODPECKER) exec $(CI_WOODPECKER_ARGS) --repo-path "$(CURDIR)" "$$pipeline"; done;; \
 	  "") echo "no local ci runner found; install one of: $(CI_RUNNERS)" >&2; exit 1;; \
 	  *) echo "RUNNER must be act, forgejo or woodpecker" >&2; exit 1;; \
 	esac
