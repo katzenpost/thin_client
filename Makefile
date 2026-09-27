@@ -5,7 +5,7 @@ katzenpost_dir?=.katzenpost
 live_dir?=.live
 connect_deadline?=480
 
-include ci.mk
+include $(dir $(lastword $(MAKEFILE_LIST)))ci.mk
 
 .PHONY: test check
 test:
