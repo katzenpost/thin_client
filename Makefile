@@ -11,7 +11,7 @@ include $(dir $(lastword $(MAKEFILE_LIST)))ci.mk
 test: test-python test-rust
 
 test-python:
-	uv run --with pytest --with pytest-timeout pytest tests/ -q
+	uv run --with pytest --with pytest-timeout --with pytest-asyncio pytest tests/ -q
 
 test-rust:
 	@command -v cargo >/dev/null || { echo "cargo is required for the rust tests" >&2; exit 1; }

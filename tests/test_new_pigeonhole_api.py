@@ -25,6 +25,11 @@ from katzenpost_thinclient import (
     REPLICA_ERROR_BOX_ALREADY_EXISTS,
 )
 
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.usefixtures("daemon_available"),
+]
+
 
 async def setup_thin_client():
     """Test helper to setup a thin client for integration tests."""
