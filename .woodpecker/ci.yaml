@@ -5,17 +5,16 @@ when:
 
 steps:
   - name: test-python
-    image: ghcr.io/astral-sh/uv:python3.12-trixie
+    image: localhost/thinclient-ci:latest
     commands:
       - make test-python
 
   - name: test-rust
-    image: docker.io/library/rust:1-trixie
+    image: localhost/thinclient-ci:latest
     commands:
       - make test-rust
 
   - name: check
-    image: docker.io/library/rust:1-trixie
+    image: localhost/thinclient-ci:latest
     commands:
-      - rustup component add clippy
       - make check
