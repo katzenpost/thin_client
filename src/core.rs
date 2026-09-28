@@ -854,11 +854,11 @@ impl ThinClient {
     async fn recv_until(&self, key: &str) -> Result<BTreeMap<Value, Value>, String> {
         for _ in 0..MAX_HANDSHAKE_MESSAGES {
             let response = self.recv().await.map_err(|e| format!("{}", e))?;
+            let _ = self.event_sink.send(response.clone());
+            self.handle_response(response.clone()).await;
             if response.contains_key(&Value::Text(key.to_string())) {
                 return Ok(response);
             }
-            let _ = self.event_sink.send(response.clone());
-            self.handle_response(response).await;
         }
         Err(format!(
             "daemon sent no {} in the first {} handshake messages",
