@@ -866,14 +866,6 @@ impl ThinClient {
         ))
     }
 
-    /// Read and dispatch a single handshake message from the daemon.
-    async fn recv_and_dispatch(&self) -> Result<(), String> {
-        let response = self.recv().await.map_err(|e| format!("{}", e))?;
-        let _ = self.event_sink.send(response.clone());
-        self.handle_response(response).await;
-        Ok(())
-    }
-
     /// Attempt to reconnect to the daemon with exponential backoff.
     /// Returns true on success, false if shutdown was requested.
     async fn reconnect(&self) -> bool {
@@ -898,12 +890,12 @@ impl ThinClient {
             }
 
             // Handshake: ConnectionStatusEvent then NewPKIDocumentEvent
-            if let Err(e) = self.recv_and_dispatch().await {
+            if let Err(e) = self.recv_until("connection_status_event").await {
                 error!("Reconnect handshake failed (ConnectionStatusEvent): {}", e);
                 delay = std::cmp::min(delay * 2, max_delay);
                 continue;
             }
-            if let Err(e) = self.recv_and_dispatch().await {
+            if let Err(e) = self.recv_until("new_pki_document_event").await {
                 error!("Reconnect handshake failed (NewPKIDocumentEvent): {}", e);
                 delay = std::cmp::min(delay * 2, max_delay);
                 continue;
@@ -935,11 +927,11 @@ impl ThinClient {
 
         // Initial handshake: read ConnectionStatusEvent, NewPKIDocumentEvent,
         // then send SessionToken and read SessionTokenReply.
-        if let Err(e) = self.recv_and_dispatch().await {
+        if let Err(e) = self.recv_until("connection_status_event").await {
             error!("Initial handshake failed (ConnectionStatusEvent): {}", e);
             return;
         }
-        if let Err(e) = self.recv_and_dispatch().await {
+        if let Err(e) = self.recv_until("new_pki_document_event").await {
             error!("Initial handshake failed (NewPKIDocumentEvent): {}", e);
             return;
         }
