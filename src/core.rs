@@ -148,6 +148,9 @@ impl Drop for EventSinkReceiver {
 /// `pki_doc_cache`. Matches the bound used by the Go and Python clients.
 const MAX_CACHED_EPOCHS: u64 = 5;
 
+/// How many messages to read while waiting for one leg of the handshake.
+const MAX_HANDSHAKE_MESSAGES: usize = 16;
+
 /// Reads the `Epoch` field from a forwarded PKI document. The daemon
 /// serialises the Go struct field in PascalCase, so the CBOR key is
 /// `Epoch` and the value is a non-negative integer.
@@ -834,10 +837,7 @@ impl ThinClient {
         );
         self.send_cbor_request(request).await.map_err(|e| format!("{}", e))?;
 
-        let response = self.recv().await.map_err(|e| format!("{}", e))?;
-        if !response.contains_key(&Value::Text("session_token_reply".to_string())) {
-            return Err("expected session_token_reply".to_string());
-        }
+        let response = self.recv_until("session_token_reply").await?;
         if let Some(Value::Map(reply)) = response.get(&Value::Text("session_token_reply".to_string())) {
             let resumed = reply.get(&Value::Text("resumed".to_string()))
                 .and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
@@ -845,6 +845,25 @@ impl ThinClient {
             debug!("Session token reply: resumed={}", resumed);
         }
         Ok(())
+    }
+
+    /// Read until the daemon sends the message named by key. The daemon
+    /// pushes events, a new PKI document above all, whenever it has them, so
+    /// a message that is not the one being waited for is dispatched and
+    /// skipped rather than failing the handshake.
+    async fn recv_until(&self, key: &str) -> Result<BTreeMap<Value, Value>, String> {
+        for _ in 0..MAX_HANDSHAKE_MESSAGES {
+            let response = self.recv().await.map_err(|e| format!("{}", e))?;
+            if response.contains_key(&Value::Text(key.to_string())) {
+                return Ok(response);
+            }
+            let _ = self.event_sink.send(response.clone());
+            self.handle_response(response).await;
+        }
+        Err(format!(
+            "daemon sent no {} in the first {} handshake messages",
+            key, MAX_HANDSHAKE_MESSAGES
+        ))
     }
 
     /// Read and dispatch a single handshake message from the daemon.
