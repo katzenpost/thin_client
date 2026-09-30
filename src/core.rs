@@ -20,6 +20,8 @@ use rand::Rng;
 use log::{debug, error};
 
 use crate::error::ThinClientError;
+
+type ResponseChannels = Arc<Mutex<HashMap<Vec<u8>, oneshot::Sender<BTreeMap<Value, Value>>>>>;
 use crate::{Config, ServiceDescriptor, Geometry, PigeonholeGeometry};
 use crate::helpers::find_services;
 
@@ -138,7 +140,7 @@ impl EventSinkReceiver {
 impl Drop for EventSinkReceiver {
     fn drop(&mut self) {
         // Remove the drain when the receiver is dropped
-        if let Err(_) = self.drain_remove.send(self.sender.clone()) {
+        if self.drain_remove.send(self.sender.clone()).is_err() {
             debug!("Failed to remove drain channel - event sink worker may be stopped");
         }
     }
@@ -196,7 +198,7 @@ pub struct ThinClient {
     drain_add: mpsc::UnboundedSender<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
     drain_remove: mpsc::UnboundedSender<mpsc::UnboundedSender<BTreeMap<Value, Value>>>,
     // Response routing like Python implementation - keyed by query_id
-    response_channels: Arc<Mutex<HashMap<Vec<u8>, oneshot::Sender<BTreeMap<Value, Value>>>>>,
+    response_channels: ResponseChannels,
     // Instance token from the daemon for reconnect detection
     daemon_instance_token: RwLock<Vec<u8>>,
     // Geometry the daemon supplies in its ConnectionStatusEvent during
@@ -333,7 +335,7 @@ impl ThinClient {
     /// This mirrors the Go implementation's EventSink method
     pub fn event_sink(&self) -> EventSinkReceiver {
         let (tx, rx) = mpsc::unbounded_channel();
-        if let Err(_) = self.drain_add.send(tx.clone()) {
+        if self.drain_add.send(tx.clone()).is_err() {
             debug!("Failed to add drain channel - event sink worker may be stopped");
         }
         EventSinkReceiver {
@@ -764,10 +766,10 @@ impl ThinClient {
         // Route replies to response_channels based on query_id (like Python implementation)
         // This handles *_reply messages with query_id fields
         for (key, value) in response.iter() {
-            if let Value::Text(reply_type) = key {
-                if reply_type.ends_with("_reply") {
-                    if let Value::Map(reply_map) = value {
-                        if let Some(Value::Bytes(query_id)) = reply_map.get(&Value::Text("query_id".to_string())) {
+            if let Value::Text(reply_type) = key
+                && reply_type.ends_with("_reply") {
+                    if let Value::Map(reply_map) = value
+                        && let Some(Value::Bytes(query_id)) = reply_map.get(&Value::Text("query_id".to_string())) {
                             let mut channels = self.response_channels.lock().await;
                             if let Some(sender) = channels.remove(query_id) {
                                 debug!("Routing {} to waiting caller", reply_type);
@@ -775,10 +777,8 @@ impl ThinClient {
                                 return;
                             }
                         }
-                    }
                     debug!("Unrouted reply: {}", reply_type);
                 }
-            }
         }
 
         debug!("Unhandled response (no matching query_id listener): {:?}", response.keys().collect::<Vec<_>>());
@@ -792,7 +792,7 @@ impl ThinClient {
             match self.recv().await {
                 Ok(response) => {
                     // Send all responses to event sink for distribution
-                    if let Err(_) = self.event_sink.send(response.clone()) {
+                    if self.event_sink.send(response.clone()).is_err() {
                         debug!("Event sink channel closed, stopping read loop");
                         return (None, false);
                     }
@@ -915,7 +915,7 @@ impl ThinClient {
     /// Replay in-flight resend requests after reconnecting to a new daemon instance.
     async fn replay_in_flight_resends(&self) {
         let resends = self.in_flight_resends.lock().await;
-        for (_key, request) in resends.iter() {
+        for request in resends.values() {
             if let Err(e) = self.send_cbor_request(request.clone()).await {
                 error!("Failed to replay in-flight request: {}", e);
             }
@@ -1018,7 +1018,7 @@ impl ThinClient {
                     let mut bad_drains = Vec::new();
 
                     for (id, drain) in &drains {
-                        if let Err(_) = drain.send(event.clone()) {
+                        if drain.send(event.clone()).is_err() {
                             // Channel is closed, mark for removal
                             bad_drains.push(*id);
                         }
@@ -1182,15 +1182,12 @@ impl ThinClient {
             loop {
                 match event_sink.recv().await {
                     Some(event) => {
-                        if let Some(Value::Map(reply)) = event.get(&Value::Text("message_reply_event".to_string())) {
-                            if let Some(Value::Bytes(reply_surb_id)) = reply.get(&Value::Text("surbid".to_string())) {
-                                if *reply_surb_id == surb_id {
-                                    if let Some(Value::Bytes(payload)) = reply.get(&Value::Text("payload".to_string())) {
+                        if let Some(Value::Map(reply)) = event.get(&Value::Text("message_reply_event".to_string()))
+                            && let Some(Value::Bytes(reply_surb_id)) = reply.get(&Value::Text("surbid".to_string()))
+                                && *reply_surb_id == surb_id
+                                    && let Some(Value::Bytes(payload)) = reply.get(&Value::Text("payload".to_string())) {
                                         return Ok(payload.clone());
                                     }
-                                }
-                            }
-                        }
                         // Not our reply, keep waiting
                     }
                     None => {
@@ -1230,7 +1227,7 @@ mod tests {
     fn test_disconnect_method_exists() {
         // Compile-time check: if this compiles, disconnect() exists as an async method.
         fn _assert_method(tc: &ThinClient) {
-            let _ = tc.disconnect();
+            let _fut = tc.disconnect();
         }
     }
 

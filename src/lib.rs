@@ -385,15 +385,18 @@ impl ConfigFile {
 
 /// Our configuration defines some callbacks which the thin client will envoke
 /// when it receives the corresponding event from the client daemon.
+pub type EventCallback = Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>;
+pub type DisconnectCallback = Arc<dyn Fn(bool, Option<String>) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Config {
     pub dial: DialConfig,
 
-    pub on_connection_status: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
-    pub on_new_pki_document: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
-    pub on_message_sent: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
-    pub on_message_reply: Option<Arc<dyn Fn(&BTreeMap<Value, Value>) + Send + Sync>>,
-    pub on_daemon_disconnected: Option<Arc<dyn Fn(bool, Option<String>) + Send + Sync>>,
+    pub on_connection_status: Option<EventCallback>,
+    pub on_new_pki_document: Option<EventCallback>,
+    pub on_message_sent: Option<EventCallback>,
+    pub on_message_reply: Option<EventCallback>,
+    pub on_daemon_disconnected: Option<DisconnectCallback>,
 }
 
 impl Config {

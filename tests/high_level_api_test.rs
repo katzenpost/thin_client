@@ -104,11 +104,9 @@ async fn test_high_level_multiple_messages() {
     let ChannelPair { mut writer, mut reader, .. } =
         make_pair(&alice, &bob, &alice_thin, "multi-msg-channel").await;
 
-    let messages = vec![
-        b"Message 1: Hello!".to_vec(),
+    let messages = [b"Message 1: Hello!".to_vec(),
         b"Message 2: How are you?".to_vec(),
-        b"Message 3: Goodbye!".to_vec(),
-    ];
+        b"Message 3: Goodbye!".to_vec()];
 
     println!("\n--- Alice sends {} messages ---", messages.len());
     for (i, msg) in messages.iter().enumerate() {
