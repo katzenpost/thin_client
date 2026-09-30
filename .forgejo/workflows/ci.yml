@@ -26,7 +26,6 @@ jobs:
       - run: make test-rust
 
   check:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container:
       image: ${{ vars.CI_IMAGE }}

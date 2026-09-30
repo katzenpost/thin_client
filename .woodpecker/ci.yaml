@@ -16,6 +16,5 @@ steps:
 
   - name: check
     image: localhost/thinclient-ci:latest
-    failure: ignore
     commands:
       - make check
