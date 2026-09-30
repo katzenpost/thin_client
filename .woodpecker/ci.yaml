@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+when:
+  event: [push, pull_request, manual]
+
+steps:
+  - name: test-python
+    image: localhost/thinclient-ci:latest
+    commands:
+      - make test-python
+
+  - name: test-rust
+    image: localhost/thinclient-ci:latest
+    commands:
+      - make test-rust
+
+  - name: check
+    image: localhost/thinclient-ci:latest
+    failure: ignore
+    commands:
+      - make check

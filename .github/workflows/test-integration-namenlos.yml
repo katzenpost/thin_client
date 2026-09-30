@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: namenlos integration
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 */6 * * *'
+
+concurrency:
+  group: namenlos-integration
+  cancel-in-progress: false
+
+jobs:
+  namenlos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.26'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install -e . && pip install pytest pytest-timeout
+      - run: make check-live
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: namenlos-logs
+          path: .live/kpclientd.log

@@ -1,6 +1,7 @@
 name: Integration Tests with Docker Mixnet
 
 on:
+  merge_group:
   pull_request:
     branches: [ main, master, update_python_pigeonhole ]
 
