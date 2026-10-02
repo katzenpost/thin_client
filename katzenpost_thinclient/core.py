@@ -921,6 +921,33 @@ class ThinClient:
         self.socket, self.server_addr = dialer.setup_socket()
 
 
+    async def _recv_until(self, loop, key, limit=16):
+        """Read until the daemon sends the message named by key.
+
+        The daemon may push an event, a new PKI document above all, between
+        the messages of the handshake, so a message that is not the one being
+        waited for is handled and skipped rather than treated as a protocol
+        violation.
+
+        Args:
+            loop (asyncio.AbstractEventLoop): The running asyncio event loop.
+            key (str): The name of the message being waited for.
+            limit (int): How many messages to read before giving up.
+
+        Exceptions:
+            ConnectionError
+        """
+        for _ in range(limit):
+            response = await self.recv(loop)
+            if response is None:
+                raise ConnectionError(
+                    "daemon closed the connection during the handshake")
+            await self.handle_response(response)
+            if response.get(key) is not None:
+                return response
+        raise ConnectionError(
+            f"daemon sent no {key} in the first {limit} handshake messages")
+
     async def start(self, loop:asyncio.AbstractEventLoop) -> None:
         """
         Start the thin client: establish connection to the daemon, read initial events,
@@ -935,17 +962,8 @@ class ThinClient:
         self.logger.debug("connecting to daemon")
         await loop.sock_connect(self.socket, self.server_addr)
 
-        # 1st message is always a status event
-        response = await self.recv(loop)
-        assert response is not None
-        assert response["connection_status_event"] is not None
-        await self.handle_response(response)
-
-        # 2nd message is always a new pki doc event
-        response = await self.recv(loop)
-        assert response is not None
-        assert response["new_pki_document_event"] is not None, response
-        await self.handle_response(response)
+        await self._recv_until(loop, "connection_status_event")
+        await self._recv_until(loop, "new_pki_document_event")
 
         # 3rd: send SessionToken and read SessionTokenReply
         session_token_req = cbor2.dumps({
@@ -956,8 +974,7 @@ class ThinClient:
         length_prefix = struct.pack('>I', len(session_token_req))
         await self._send_all(length_prefix + session_token_req)
 
-        session_reply = await self.recv(loop)
-        assert session_reply.get("session_token_reply") is not None, f"expected session_token_reply, got {session_reply}"
+        session_reply = await self._recv_until(loop, "session_token_reply")
         self.logger.debug(f"Session token reply: resumed={session_reply['session_token_reply'].get('resumed')}")
 
         # Start the read loop as a background task
@@ -1112,23 +1129,9 @@ class ThinClient:
                 self.socket = self._create_socket()
                 await loop.sock_connect(self.socket, self.server_addr)
 
-                # Handshake: read ConnectionStatusEvent
-                response1 = await self.recv(loop)
-                if response1.get("connection_status_event") is None:
-                    self.logger.error("Reconnect handshake failed: expected connection_status_event")
-                    self.socket.close()
-                    continue
-                self.parse_status(response1["connection_status_event"])
-                await self.config.handle_connection_status_event(response1["connection_status_event"])
+                await self._recv_until(loop, "connection_status_event")
+                await self._recv_until(loop, "new_pki_document_event")
 
-                # Handshake: read NewPKIDocumentEvent (may have empty payload)
-                response2 = await self.recv(loop)
-                if response2.get("new_pki_document_event") is not None:
-                    if response2["new_pki_document_event"].get("payload"):
-                        self.parse_pki_doc(response2["new_pki_document_event"])
-                        await self.config.handle_new_pki_document_event(response2["new_pki_document_event"])
-
-                # Handshake: send SessionToken and read SessionTokenReply
                 session_token_req = cbor2.dumps({
                     "session_token": {
                         "client_instance_token": self.instance_token,
@@ -1137,11 +1140,7 @@ class ThinClient:
                 length_prefix = struct.pack('>I', len(session_token_req))
                 await self._send_all(length_prefix + session_token_req)
 
-                response3 = await self.recv(loop)
-                if response3.get("session_token_reply") is None:
-                    self.logger.error("Reconnect handshake failed: expected session_token_reply")
-                    self.socket.close()
-                    continue
+                response3 = await self._recv_until(loop, "session_token_reply")
                 resumed = response3["session_token_reply"].get("resumed", False)
                 self.logger.info(f"Reconnected to daemon (connected={self._is_connected}, resumed={resumed})")
                 return
