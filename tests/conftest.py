@@ -9,11 +9,10 @@ import os
 import asyncio
 import pytest
 import pytest_asyncio
-import socket
 import time
 from pathlib import Path
 
-from katzenpost_thinclient import ThinClient, Config
+from katzenpost_thinclient import ThinClient, Config, ConfigFile
 
 
 def get_config_path():
@@ -32,16 +31,18 @@ def get_config_path():
 
 
 def check_daemon_available():
-    """Check if the Katzenpost client daemon is available."""
+    """Check if the client daemon accepts connections on the configured Dial address."""
     try:
-        # Try to connect to the daemon socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1.0)
-        result = sock.connect_ex(('127.0.0.1', 64331))
-        sock.close()
-        return result == 0
+        sock, addr = ConfigFile.load(get_config_path()).dial.resolve().setup_socket()
     except Exception:
         return False
+    try:
+        sock.settimeout(1.0)
+        return sock.connect_ex(addr) == 0
+    except Exception:
+        return False
+    finally:
+        sock.close()
 
 
 def is_daemon_available():
