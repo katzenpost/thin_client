@@ -28,14 +28,24 @@ trap 'kill $daemon 2>/dev/null || true' EXIT INT TERM
 
 deadline=$(( $(date +%s) + connect_deadline ))
 connected=no
+daemon_died=no
 while [ "$(date +%s)" -lt "$deadline" ]; do
 	if grep -q 'Connected to gateway' "$live/kpclientd.log" 2>/dev/null; then
 		connected=yes
 		break
 	fi
-	kill -0 "$daemon" 2>/dev/null || break
+	if ! kill -0 "$daemon" 2>/dev/null; then
+		daemon_died=yes
+		break
+	fi
 	sleep 5
 done
+
+if [ "$daemon_died" = yes ]; then
+	echo "the client daemon exited before it connected; this is a failure, not an unreachable network"
+	tail -40 "$live/kpclientd.log" 2>/dev/null || true
+	exit 1
+fi
 
 if [ "$connected" = no ]; then
 	echo "namenlos is unreachable, treating this run as inconclusive"
