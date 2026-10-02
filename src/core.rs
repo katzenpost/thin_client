@@ -21,9 +21,10 @@ use log::{debug, error};
 
 use crate::error::ThinClientError;
 
-type ResponseChannels = Arc<Mutex<HashMap<Vec<u8>, oneshot::Sender<BTreeMap<Value, Value>>>>>;
 use crate::{Config, ServiceDescriptor, Geometry, PigeonholeGeometry};
 use crate::helpers::find_services;
+
+type ResponseChannels = Arc<Mutex<HashMap<Vec<u8>, oneshot::Sender<BTreeMap<Value, Value>>>>>;
 
 /// Request to close the thin client connection.
 /// Tells the daemon to clean up ARQ state for this connection.
