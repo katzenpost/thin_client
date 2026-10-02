@@ -638,7 +638,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("new_keypair".to_string()), request_value);
@@ -646,7 +646,7 @@ impl ThinClient {
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: NewKeypairReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("new_keypair failed with error code: {}", reply.error_code)));
@@ -685,7 +685,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("encrypt_read".to_string()), request_value);
@@ -693,7 +693,7 @@ impl ThinClient {
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: EncryptReadReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("encrypt_read failed with error code: {}", reply.error_code)));
@@ -754,7 +754,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("encrypt_write".to_string()), request_value);
@@ -762,7 +762,7 @@ impl ThinClient {
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: EncryptWriteReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("encrypt_write failed with error code: {}", reply.error_code)));
@@ -813,6 +813,7 @@ impl ThinClient {
     ///   (at most `PigeonholeGeometry.max_plaintext_payload_length` bytes).
     ///   For write operations, returns an empty vector on success.
     /// * `Err(ThinClientError)` on failure
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_resending_encrypted_message(
         &self,
         read_cap: Option<&[u8]>,
@@ -856,6 +857,7 @@ impl ThinClient {
     /// * `Ok(plaintext)` on success
     /// * `Err(ThinClientError::BoxAlreadyExists)` if the box already contains data
     /// * `Err(ThinClientError)` on other failures
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_resending_encrypted_message_return_box_exists(
         &self,
         read_cap: Option<&[u8]>,
@@ -895,6 +897,7 @@ impl ThinClient {
     /// * `Ok(plaintext)` on success
     /// * `Err(ThinClientError::BoxIdNotFound)` if the box does not exist (no automatic retries)
     /// * `Err(ThinClientError)` on other failures
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_resending_encrypted_message_no_retry(
         &self,
         read_cap: Option<&[u8]>,
@@ -919,6 +922,7 @@ impl ThinClient {
     }
 
     /// Internal method with all options for start_resending_encrypted_message.
+    #[allow(clippy::too_many_arguments)]
     async fn start_resending_encrypted_message_with_options(
         &self,
         read_cap: Option<&[u8]>,
@@ -947,7 +951,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("start_resending_encrypted_message".to_string()), request_value);
@@ -971,7 +975,7 @@ impl ThinClient {
 
         // Parse the reply
         let reply: StartResendingEncryptedMessageReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         debug!("start_resending_encrypted_message: received reply, error_code={}, plaintext_len={}",
                reply.error_code, reply.plaintext.as_ref().map(|p| p.len()).unwrap_or(0));
@@ -1017,7 +1021,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("cancel_resending_encrypted_message".to_string()), request_value);
@@ -1025,7 +1029,7 @@ impl ThinClient {
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: CancelResendingEncryptedMessageReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("cancel_resending_encrypted_message failed with error code: {}", reply.error_code)));
@@ -1057,7 +1061,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("next_message_box_index".to_string()), request_value);
@@ -1065,7 +1069,7 @@ impl ThinClient {
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: NextMessageBoxIndexReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("next_message_box_index failed with error code: {}", reply.error_code)));
@@ -1099,7 +1103,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("get_message_box_index_counter".to_string()), request_value);
@@ -1107,7 +1111,7 @@ impl ThinClient {
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: GetMessageBoxIndexCounterReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("get_message_box_index_counter failed with error code: {}", reply.error_code)));
@@ -1159,7 +1163,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("start_resending_copy_command".to_string()), request_value);
@@ -1179,7 +1183,7 @@ impl ThinClient {
         };
 
         let reply: StartResendingCopyCommandReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if let Some(err) = copy_reply_to_error(&reply) {
             return Err(err);
@@ -1218,7 +1222,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("cancel_resending_copy_command".to_string()), request_value);
@@ -1226,7 +1230,7 @@ impl ThinClient {
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: CancelResendingCopyCommandReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("cancel_resending_copy_command failed with error code: {}", reply.error_code)));
@@ -1280,7 +1284,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("create_courier_envelopes_from_payload".to_string()), request_value);
@@ -1288,7 +1292,7 @@ impl ThinClient {
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: CreateCourierEnvelopesFromPayloadReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("create_courier_envelopes_from_payload failed with error code: {}", reply.error_code)));
@@ -1349,7 +1353,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("create_courier_envelopes_from_multi_payload".to_string()), request_value);
@@ -1357,7 +1361,7 @@ impl ThinClient {
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: CreateCourierEnvelopesFromPayloadsReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("create_courier_envelopes_from_multi_payload failed with error code: {}", reply.error_code)));
@@ -1413,7 +1417,7 @@ impl ThinClient {
         };
 
         let request_value = serde_cbor::value::to_value(&request_inner)
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         let mut request = BTreeMap::new();
         request.insert(Value::Text("create_courier_envelopes_from_tombstone_range".to_string()), request_value);
@@ -1421,7 +1425,7 @@ impl ThinClient {
         let reply_map = self.send_and_wait_direct(query_id, request).await?;
 
         let reply: CreateCourierEnvelopesFromTombstoneRangeReply = serde_cbor::value::from_value(Value::Map(reply_map))
-            .map_err(|e| ThinClientError::CborError(e))?;
+            .map_err(ThinClientError::CborError)?;
 
         if reply.error_code != 0 {
             return Err(ThinClientError::Other(format!("create_courier_envelopes_from_tombstone_range failed with error code: {}", reply.error_code)));

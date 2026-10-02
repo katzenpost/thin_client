@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-python:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ vars.CI_IMAGE }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-python
+
+  test-rust:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ vars.CI_IMAGE }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-rust
+
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ vars.CI_IMAGE }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: make check

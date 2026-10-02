@@ -33,6 +33,7 @@ on:
     tags:
       - 'rust/v*'
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 jobs:
@@ -50,10 +51,15 @@ jobs:
       - name: Package (dry run)
         run: cargo publish --locked --dry-run
 
+  namenlos:
+    name: Check the clients against namenlos
+    if: startsWith(github.ref, 'refs/tags/rust/v')
+    uses: ./.github/workflows/test-integration-namenlos.yml
+
   publish-crate:
     name: Publish to crates.io
     if: startsWith(github.ref, 'refs/tags/rust/v')
-    needs: build
+    needs: [build, namenlos]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
