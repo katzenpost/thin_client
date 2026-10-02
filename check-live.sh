@@ -45,7 +45,7 @@ fi
 
 cp "$live/thinclient.toml" testdata/thinclient.toml
 status=0
-uv run --with pytest --with pytest-timeout pytest tests/ -q --timeout=900 || status=$?
+uv run --with pytest --with pytest-asyncio --with pytest-timeout pytest tests/ -q --timeout=900 || status=$?
 cargo test --test directory_authorities_test -- --nocapture || status=$?
 if [ "$status" != 0 ]; then
 	echo "the clients reached namenlos and then failed their tests"
