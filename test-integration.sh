@@ -14,7 +14,7 @@ git -C "$katzenpost_dir" checkout --quiet "$katzenpost_ref"
 
 mkdir -p "$live_dir"
 make -C "$katzenpost_dir/docker" start wait
-trap 'make -C "$katzenpost_dir/docker" stop || true' EXIT INT TERM
+trap 'make -C "$katzenpost_dir/docker" stop || true; git checkout -- testdata/thinclient.toml 2>/dev/null || true' EXIT INT TERM
 
 cp "$katzenpost_dir/docker/mixnet-alpine/client/thinclient.toml" testdata/thinclient.toml
 uv run --with pytest --with pytest-asyncio --with pytest-timeout pytest tests/ -q --timeout=1200

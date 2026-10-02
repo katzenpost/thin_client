@@ -24,7 +24,7 @@ sed "s#@katzenpost#$live/kpclientd.sock#" \
 
 "$live/kpclientd" -c "$live/client.toml" > "$live/kpclientd.log" 2>&1 &
 daemon=$!
-trap 'kill $daemon 2>/dev/null || true' EXIT INT TERM
+trap 'kill $daemon 2>/dev/null || true; git checkout -- testdata/thinclient.toml 2>/dev/null || true' EXIT INT TERM
 
 deadline=$(( $(date +%s) + connect_deadline ))
 connected=no
