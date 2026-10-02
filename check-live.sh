@@ -17,7 +17,8 @@ mkdir -p "$live_dir"
 live=$(cd "$live_dir" && pwd)
 ( cd "$katzenpost_dir/cmd/kpclientd" && go build -trimpath -o "$live/kpclientd" . )
 
-sed "s#\$XDG_RUNTIME_DIR/katzenpost/kpclientd.sock#$live/kpclientd.sock#" \
+sed -e "s#^\( *Address = \)\"@katzenpost\"#\1\"$live/kpclientd.sock\"#" \
+	-e '/^ *Addresses = \["\$XDG_RUNTIME_DIR/d' \
 	"$katzenpost_dir/docker/client-configs/namenlos.toml" > "$live/client.toml"
 sed "s#@katzenpost#$live/kpclientd.sock#" \
 	"$katzenpost_dir/docker/client-configs/namenlos-thin.toml" > "$live/thinclient.toml"
