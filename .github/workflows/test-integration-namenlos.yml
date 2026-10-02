@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
-      - run: pip install -e . && pip install pytest pytest-timeout
+      - uses: astral-sh/setup-uv@v10.1.0
       - run: make check-live
       - uses: actions/upload-artifact@v4
         if: always()
