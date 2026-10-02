@@ -4,9 +4,12 @@ on:
   merge_group:
   pull_request:
     branches: [ main, master, update_python_pigeonhole ]
+  workflow_dispatch:
 
 jobs:
   test-integration-docker:
+    if: ${{ github.event_name == 'merge_group'
+      || github.event_name == 'workflow_dispatch' }}
     permissions:
       contents: read
       packages: write
@@ -19,11 +22,19 @@ jobs:
         with:
           path: thinclient
 
+      - name: Read the katzenpost pin from the Makefile
+        id: pin
+        run: |
+          ref=$(sed -n 's/^katzenpost_ref?=\(.*\)$/\1/p' thinclient/Makefile)
+          test -n "$ref" || { echo "::error::katzenpost_ref not found in Makefile"; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "katzenpost pinned at $ref"
+
       - name: Checkout katzenpost repository
         uses: actions/checkout@v4
         with:
           repository: katzenpost/katzenpost
-          ref: d5a6349a34c4a2d4bca587f4be86ce92f2873b12 # v0.0.90: Pigeonhole docstring rewrites
+          ref: ${{ steps.pin.outputs.ref }}
           path: katzenpost
 
       - name: Set up Docker Buildx
@@ -158,3 +169,23 @@ jobs:
             katzenpost/docker/voting_mixnet/*/*.log
             katzenpost/docker/voting_mixnet/kpclientd.log
             katzenpost/docker/voting_mixnet/servicenode*/courier/*.log
+
+  integration-result:
+    needs: test-integration-docker
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the docker suite verdict
+        run: |
+          result='${{ needs.test-integration-docker.result }}'
+          echo "test-integration-docker: $result"
+          case "$result" in
+            success)
+              exit 0 ;;
+            skipped)
+              echo "::notice::the docker mixnet suite does not run on a pull request; its verdict is taken in the merge queue"
+              exit 0 ;;
+            *)
+              echo "::error::the docker mixnet suite did not pass"
+              exit 1 ;;
+          esac
