@@ -49,7 +49,7 @@ if [ "$daemon_died" = yes ]; then
 fi
 
 if [ "$connected" = no ]; then
-	echo "namenlos is unreachable, treating this run as inconclusive"
+	echo "::warning::namenlos is unreachable, treating this run as inconclusive"
 	tail -40 "$live/kpclientd.log" 2>/dev/null || true
 	exit 0
 fi
