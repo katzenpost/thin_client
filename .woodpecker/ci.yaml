@@ -5,16 +5,16 @@ when:
 
 steps:
   - name: test-python
-    image: localhost/thinclient-ci:latest
+    image: ${CI_IMAGE:-localhost/thinclient-ci:latest}
     commands:
       - make test-python
 
   - name: test-rust
-    image: localhost/thinclient-ci:latest
+    image: ${CI_IMAGE:-localhost/thinclient-ci:latest}
     commands:
       - make test-rust
 
   - name: check
-    image: localhost/thinclient-ci:latest
+    image: ${CI_IMAGE:-localhost/thinclient-ci:latest}
     commands:
       - make check

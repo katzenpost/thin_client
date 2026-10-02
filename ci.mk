@@ -73,7 +73,7 @@ ci-local-run:
 	  forgejo|forgejo-runner) DOCKER_HOST="unix://$(CI_SOCKET)" $(FORGEJO_RUNNER) exec $(CI_FORGEJO_ARGS) -i $(CI_IMAGE) --var CI_IMAGE=$(CI_IMAGE) --container-daemon-socket "$(CI_DAEMON_SOCKET)" --container-opts "$(CI_RUN_OPTIONS)" \
 	    -W $(CI_WORKFLOWS_FORGEJO)/$(if $(CI_WORKFLOW),$(CI_WORKFLOW),$(CI_WORKFLOW_FORGEJO)) $(if $(CI_JOB),-j $(CI_JOB),);; \
 	  woodpecker|woodpecker-cli) set -e; for pipeline in $(if $(CI_WORKFLOW),$(CI_WORKFLOWS_WOODPECKER)/$(CI_WORKFLOW),$(addprefix $(CI_WORKFLOWS_WOODPECKER)/,$(CI_WORKFLOWS_WOODPECKER_DEFAULT))); do \
-	    DOCKER_HOST="unix://$(CI_SOCKET)" $(WOODPECKER) exec $(CI_WOODPECKER_ARGS) --repo-path "$(CURDIR)" "$$pipeline"; done;; \
+	    DOCKER_HOST="unix://$(CI_SOCKET)" $(WOODPECKER) exec $(CI_WOODPECKER_ARGS) --env CI_IMAGE=$(CI_IMAGE) --repo-path "$(CURDIR)" "$$pipeline"; done;; \
 	  "") echo "no ci runner found; install one of: $(CI_RUNNERS)" >&2; exit 1;; \
 	  *) echo "RUNNER must be act, forgejo or woodpecker" >&2; exit 1;; \
 	esac

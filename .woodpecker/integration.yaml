@@ -7,6 +7,6 @@ when:
 
 steps:
   - name: integration
-    image: localhost/thinclient-ci:latest
+    image: ${CI_IMAGE:-localhost/thinclient-ci:latest}
     commands:
       - make test-integration
