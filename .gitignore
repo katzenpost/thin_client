@@ -3,3 +3,17 @@ __pycache__/
 
 .live/
 .katzenpost/
+
+.pybuild/
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/python3-katzenpost-thinclient/
+debian/python3-katzenpost-thinclient.*.debhelper
+debian/python3-katzenpost-thinclient.debhelper.log
+debian/python3-katzenpost-thinclient.substvars
+debian/librust-katzenpost-thin-client-dev/
+debian/librust-katzenpost-thin-client-dev.*.debhelper
+debian/librust-katzenpost-thin-client-dev.debhelper.log
+debian/librust-katzenpost-thin-client-dev.substvars
+dist/
