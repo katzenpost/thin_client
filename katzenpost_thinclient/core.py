@@ -19,7 +19,7 @@ import io
 import os
 import asyncio
 import cbor2
-import pprintpp
+import pprint
 import toml
 import hashlib
 
@@ -665,7 +665,7 @@ def pretty_print_obj(obj: "Any") -> str:
     """
     Pretty-print a Python object using indentation and return the formatted string.
 
-    This function uses `pprintpp` to format complex data structures
+    This function uses `pprint` to format complex data structures
     (e.g., dictionaries, lists) in a readable, indented format.
 
     Args:
@@ -674,7 +674,7 @@ def pretty_print_obj(obj: "Any") -> str:
     Returns:
         str: The pretty-printed representation of the object.
     """
-    pp = pprintpp.PrettyPrinter(indent=4)
+    pp = pprint.PrettyPrinter(indent=4)
     return pp.pformat(obj)
 
 def blake2_256_sum(data:bytes) -> bytes:
@@ -1746,6 +1746,5 @@ class ThinClient:
         new_doc['GatewayNodes'] = gateway_nodes
         new_doc['ServiceNodes'] = service_nodes
         new_doc['Topology'] = topology
-        pretty_print_obj(new_doc)
 
 

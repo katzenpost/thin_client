@@ -1,7 +1,11 @@
 [project]
 name = "katzenpost_thinclient"
 version = "0.0.24"
-dynamic = ["dependencies"]
+dependencies = [
+    "cbor2>=5.6.5,<7",
+    "coloredlogs~=15.0.1",
+    "toml~=0.10.2",
+]
 authors = [
   { name="David Stainton", email="dstainton415@gmail.com" },
 ]
@@ -21,17 +25,11 @@ Homepage = "https://katzenpost.network/"
 Issues = "https://github.com/katzenpost/thin_client/issues"
 
 [build-system]
-requires = ["hatchling", "hatch-requirements-txt"]
-build-backend = "hatchling.build"
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
 
-[tool.hatch.metadata.hooks.requirements_txt]
-files = ["requirements.txt"]
-
-[tool.hatch.build]
-exclude = ["venv_test"]
-
-[tool.hatch.build.targets.wheel]
-packages = ["katzenpost_thinclient"]
+[tool.flit.module]
+name = "katzenpost_thinclient"
 
 [project.optional-dependencies]
 dev = [
