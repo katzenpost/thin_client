@@ -33,3 +33,5 @@ check-live:
 
 clean-live:
 	rm -rf $(live_dir)
+
+include $(dir $(lastword $(MAKEFILE_LIST)))packaging/debian/targets.mk

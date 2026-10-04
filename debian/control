@@ -1,0 +1,33 @@
+Source: katzenpost-thinclient
+Section: python
+Priority: optional
+Maintainer: Katzenpost <packages@katzenpost.network>
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               rust-all,
+               pybuild-plugin-pyproject,
+               python3-all,
+               flit
+Standards-Version: 4.7.2
+Homepage: https://github.com/katzenpost/thin_client
+Rules-Requires-Root: no
+
+Package: python3-katzenpost-thinclient
+Architecture: all
+Depends: ${python3:Depends},
+         ${misc:Depends}
+Description: thin client for the Katzenpost client daemon
+ Talks to a running kpclientd over its unix socket so an application does
+ not carry a mixnet client of its own. Provides the pigeonhole channel
+ API, the transport layer and the CBOR wire codec.
+
+Package: librust-katzenpost-thin-client-dev
+Architecture: all
+Depends: ${misc:Depends}
+Description: async thin client for Katzenpost (Rust source)
+ Talks to a running kpclientd over its unix socket so an application does
+ not carry a mixnet client of its own.
+ .
+ This package ships the crate source under /usr/share/cargo/registry for
+ use as a build dependency. The crates it depends on are not in Debian
+ yet, so cargo resolves them from elsewhere.
