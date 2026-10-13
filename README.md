@@ -117,6 +117,8 @@ thin_client/
 │   ├── core.py                     ThinClient and Config; replica error types.
 │   ├── pigeonhole.py               Capability-based Pigeonhole API.
 │   └── transport/                  Daemon transports (TCP and Unix).
+├── lean/                           Lean thin client.
+│   └── PLAN.md                     Engineering plan for the Lean port.
 ├── tests/                          Integration tests (Rust and Python).
 │   ├── conftest.py                 Pytest fixtures; expects the daemon on 127.0.0.1:64331.
 │   ├── high_level_api_test.rs      Persistent Pigeonhole API tests.
