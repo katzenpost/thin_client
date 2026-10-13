@@ -11,6 +11,7 @@ repository = "https://github.com/katzenpost/thin_client"
 license = "AGPL-3.0-only"
 readme = "README_rust.md"
 keywords = ["katzenpost", "cryptography", "sphinx", "mixnet"]
+include = ["/src/**", "/tests/*.rs", "/testdata/thinclient.toml", "/README_rust.md", "/LICENSE"]
 
 [dependencies]
 libc = "0.2.152"
