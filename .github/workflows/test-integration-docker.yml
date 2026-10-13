@@ -15,6 +15,9 @@ jobs:
       packages: write
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      ELAN_VERSION: 4.2.4
+      ELAN_SHA256: 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
 
     steps:
       - name: Checkout thinclient repository
@@ -62,6 +65,25 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Install elan
+        run: |
+          curl -fsSLO "https://github.com/leanprover/elan/releases/download/v${ELAN_VERSION}/elan-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ELAN_SHA256}  elan-x86_64-unknown-linux-gnu.tar.gz" | sha256sum -c -
+          tar -xzf elan-x86_64-unknown-linux-gnu.tar.gz
+          ./elan-init -y --default-toolchain none --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/cache@v4
+        with:
+          path: thinclient/lean/.lake
+          key: lean-${{ hashFiles('thinclient/lean/lean-toolchain', 'thinclient/lean/lake-manifest.json') }}
+
+      - name: Build the Lean integration tests
+        run: |
+          cd thinclient/lean
+          lake exe cache get
+          lake build thinclient-integration
+
       - name: Install thinclient dependencies
         run: |
           cd thinclient
@@ -101,7 +123,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
 
-      - name: Run Python and Rust integration tests in parallel
+      - name: Run Python, Rust and Lean integration tests in parallel
         id: parallel-tests
         timeout-minutes: 60
         run: |
@@ -119,11 +141,17 @@ jobs:
             > /tmp/rust-test-output.txt 2>&1 &
           RUST_PID=$!
 
-          # Wait for both and capture exit codes
+          # Run Lean tests in background
+          make test-lean-integration > /tmp/lean-test-output.txt 2>&1 &
+          LEAN_PID=$!
+
+          # Wait for all three and capture exit codes
           PYTHON_RC=0
           RUST_RC=0
+          LEAN_RC=0
           wait $PYTHON_PID || PYTHON_RC=$?
           wait $RUST_PID || RUST_RC=$?
+          wait $LEAN_PID || LEAN_RC=$?
 
           # Print outputs
           echo "=== Python test output ==="
@@ -132,13 +160,17 @@ jobs:
           echo "=== Rust test output ==="
           cat /tmp/rust-test-output.txt
           echo ""
+          echo "=== Lean test output ==="
+          cat /tmp/lean-test-output.txt
+          echo ""
 
           # Report results
           echo "Python tests exit code: $PYTHON_RC"
           echo "Rust tests exit code: $RUST_RC"
+          echo "Lean tests exit code: $LEAN_RC"
 
-          # Fail if either failed
-          if [ $PYTHON_RC -ne 0 ] || [ $RUST_RC -ne 0 ]; then
+          # Fail if any failed
+          if [ $PYTHON_RC -ne 0 ] || [ $RUST_RC -ne 0 ] || [ $LEAN_RC -ne 0 ]; then
             exit 1
           fi
 

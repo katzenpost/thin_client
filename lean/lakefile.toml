@@ -21,3 +21,7 @@ name = "ThinClient"
 [[lean_exe]]
 name = "thinclient-test"
 root = "ThinClient.Tests.Main"
+
+[[lean_exe]]
+name = "thinclient-integration"
+root = "ThinClient.Tests.Integration"

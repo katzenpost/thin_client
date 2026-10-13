@@ -19,3 +19,4 @@ make -C "$katzenpost_dir/docker" start wait
 cp "$katzenpost_dir/docker/mixnet-alpine/client/thinclient.toml" testdata/thinclient.toml
 uv run --with pytest --with pytest-asyncio --with pytest-timeout pytest tests/ -q --timeout=1200
 cargo test --test '*' -- --nocapture --test-threads=3
+make test-lean-integration
