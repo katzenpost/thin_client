@@ -1,0 +1,23 @@
+name = "thinclient"
+defaultTargets = ["ThinClient"]
+
+[leanOptions]
+autoImplicit = false
+relaxedAutoImplicit = false
+
+[[require]]
+name = "cborg"
+git = "https://github.com/katzenpost/cborg.git"
+rev = "6aa918341adc7ae21b31dd6d3a75d856a2c61842"
+
+[[require]]
+name = "CryptWalker"
+git = "https://github.com/katzenpost/CryptWalker.git"
+rev = "16cf28b595cebd53b75d1a2ae0f5fe6bc3ee9e80"
+
+[[lean_lib]]
+name = "ThinClient"
+
+[[lean_exe]]
+name = "thinclient-test"
+root = "ThinClient.Tests.Main"
