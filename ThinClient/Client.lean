@@ -5,6 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 import Std.Async
 import Std.Sync
+import UnixSocket
 import ThinClient.Frame
 import ThinClient.Protocol
 
@@ -17,7 +18,7 @@ carries the connection and fails with a `ThinClientError`:
       let kp ← newKeypair seed
       ...
 
-A reader task feeds each frame from the daemon through `Protocol.onResponse` and carries out the
+`withClientUnix path` does the same over a unix socket, `@name` for an abstract one. A reader task feeds each frame from the daemon through `Protocol.onResponse` and carries out the
 effects it returns. When the connection drops, the reader task reconnects, backing off from one
 second up to a minute, and the protocol replays what was in flight. -/
 
@@ -38,6 +39,17 @@ def Transport.tcp (addr : IPAddr) (port : UInt16) : Async Transport := do
     | .v4 a => .v4 ⟨a, port⟩
     | .v6 a => .v6 ⟨a, port⟩
   return { send := sock.send, recv := sock.recv? 65536, close := sock.shutdown }
+
+/-- A transport over a connected unix socket. Each read blocks a dedicated thread; closing shuts
+the socket down, which wakes it. -/
+def Transport.ofSocket (s : UnixSocket.Socket) : Transport where
+  send := fun bytes => s.send bytes
+  recv := do Async.ofAsyncTask (← IO.asTask (prio := .dedicated) (s.recv? 65536))
+  close := s.shutdown
+
+/-- Connect to the unix socket at `path`, or to the abstract name after a leading `@`. -/
+def Transport.unix (path : String) : Async Transport :=
+  Transport.ofSocket <$> UnixSocket.Socket.connect path
 
 abbrev Waiter := IO.Promise (Except ThinClientError Response)
 
@@ -185,6 +197,10 @@ def connectWith (dial : Async Transport) : ExceptT ThinClientError Async Client 
 def connect (addr : IPAddr) (port : UInt16) : ExceptT ThinClientError Async Client :=
   connectWith (Transport.tcp addr port)
 
+/-- Connect to the daemon's unix socket at `path`, or its abstract name after a leading `@`. -/
+def connectUnix (path : String) : ExceptT ThinClientError Async Client :=
+  connectWith (Transport.unix path)
+
 /-- Close the connection. With `goodbye`, tell the daemon first so it drops this client's state;
 without, the daemon keeps the session for a later reconnect. -/
 def close (c : Client) (goodbye : Bool) : Async Unit := do
@@ -256,12 +272,20 @@ def tracking {α : Type} (f : Protocol.InFlight) (k : ClientM α) : ClientM α :
 
 def untrack (key : Hash32) : ClientM Unit := do (← read).state.modify (·.untrack key)
 
-/-- Connect, run `k`, and close the connection however `k` ends. -/
-def withClient {α : Type} (addr : IPAddr) (port : UInt16) (k : ClientM α) :
+/-- Connect through `dial`, run `k`, and close the connection however `k` ends. -/
+def withClientVia {α : Type} (dial : Async Transport) (k : ClientM α) :
     Async (Except ThinClientError α) := do
-  match ← (Client.connect addr port).run with
+  match ← (Client.connectWith dial).run with
   | .error e => pure (.error e)
   | .ok c => run c (try k finally stop)
+
+def withClient {α : Type} (addr : IPAddr) (port : UInt16) (k : ClientM α) :
+    Async (Except ThinClientError α) :=
+  withClientVia (Transport.tcp addr port) k
+
+def withClientUnix {α : Type} (path : String) (k : ClientM α) :
+    Async (Except ThinClientError α) :=
+  withClientVia (Transport.unix path) k
 
 /-! ## Events -/
 

@@ -12,6 +12,7 @@ import ThinClient.Tests.Frame
 Against a running daemon connected to a mixnet, such as the docker mixnet:
 
     lake exe thinclient-integration 127.0.0.1 33399
+    lake exe thinclient-integration @kpclientd       # or a socket path
 -/
 
 namespace ThinClient.Tests.Integration
@@ -163,10 +164,10 @@ def scenarios : List (String × ClientM Unit) := [
   ("copy onto an existing box", copyOntoExistingBox),
   ("echo", echo)]
 
-def runAll (addr : IPAddr) (port : UInt16) : IO Bool := do
+def runAll (dial : Async Transport) : IO Bool := do
   let mut ok := true
   for (name, scenario) in scenarios do
-    let r ← (withClient addr port scenario).block
+    let r ← (withClientVia dial scenario).block
     match r with
     | .ok () => IO.println s!"ok   {name}"
     | .error e => IO.println s!"FAIL {name}: {e}"; ok := false
@@ -175,10 +176,14 @@ def runAll (addr : IPAddr) (port : UInt16) : IO Bool := do
 end ThinClient.Tests.Integration
 
 def main (args : List String) : IO UInt32 := do
-  let (host, port) := match args with
-    | [h, p] => (h, p.toNat!)
-    | _ => ("127.0.0.1", 33399)
-  let some addr := Std.Net.IPv4Addr.ofString host
-    | IO.eprintln s!"not an IPv4 address: {host}"; return 2
-  let ok ← ThinClient.Tests.Integration.runAll (.v4 addr) port.toUInt16
+  let dial ← match args with
+    | [path] => pure (ThinClient.Transport.unix path)
+    | _ =>
+      let (host, port) := match args with
+        | [h, p] => (h, p.toNat!)
+        | _ => ("127.0.0.1", 33399)
+      let some addr := Std.Net.IPv4Addr.ofString host
+        | IO.eprintln s!"not an IPv4 address: {host}"; return 2
+      pure (ThinClient.Transport.tcp (.v4 addr) port.toUInt16)
+  let ok ← ThinClient.Tests.Integration.runAll dial
   return if ok then 0 else 1

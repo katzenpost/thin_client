@@ -29,6 +29,11 @@ def pipe : IO (Transport × Transport) := do
     close := closeBoth }
   return (side toDaemon toClient, side toClient toDaemon)
 
+/-- Two transports over a connected pair of unix sockets. -/
+def unixPipe : IO (Transport × Transport) := do
+  let (a, b) ← UnixSocket.Socket.pair
+  return (.ofSocket a, .ofSocket b)
+
 /-- The daemon end of a pipe. -/
 structure Daemon where
   transport : Transport
@@ -95,17 +100,20 @@ def expectOk {α : Type} (name : String) (r : Except ThinClientError α) : Async
   | .ok a => pure a
   | .error e => throw (IO.userError s!"{name}: {e}")
 
-/-- Connect to a fresh daemon running `script`. -/
-def withDaemon (script : Daemon → Async Unit) (k : Client → Async Unit) : Async Unit := do
+/-- Connect over `pipe` to a fresh daemon running `script`. -/
+def withDaemon (script : Daemon → Async Unit) (k : Client → Async Unit)
+    (pipe : IO (Transport × Transport) := pipe) : Async Unit := do
   let (ct, dt) ← pipe
   let d ← Daemon.new dt
   let daemon ← async (script d)
   let c ← expectOk "connect" (← (Client.connectWith (pure ct)).run)
   k c
   await daemon
+  -- A socket closes once freed; hold the daemon end open until the client is done.
+  d.transport.close
 
-def handshakeAndCall : Async Unit :=
-  withDaemon (fun d => do
+def handshakeAndCall (pipe : IO (Transport × Transport) := pipe) : Async Unit :=
+  withDaemon (pipe := pipe) (fun d => do
     d.handshake
     let (req, _) ← d.expect GetMessageBoxIndexCounter
     d.send (counterReply req.queryId 7))
@@ -190,7 +198,7 @@ def handshakeFailure : Async Unit := do
 
 /-- The daemon drops the connection with a resend and a plain call in flight; the client
 reconnects to a new daemon instance, resends the first and abandons the second. -/
-def reconnectReplays : Async Unit := do
+def reconnectReplays (pipe : IO (Transport × Transport) := pipe) : Async Unit := do
   let (ct1, dt1) ← pipe
   let (ct2, dt2) ← pipe
   let dials ← IO.mkRef [ct1, ct2]
@@ -231,6 +239,7 @@ def reconnectReplays : Async Unit := do
 def suite : TestM Unit := do
   for (name, scenario) in [
       ("handshake and call", handshakeAndCall),
+      ("handshake and call over a unix socket", handshakeAndCall unixPipe),
       ("error reply is thrown", errorReply),
       ("replies out of order", outOfOrder),
       ("stop fails waiting calls", stopFailsWaiters),
@@ -238,7 +247,8 @@ def suite : TestM Unit := do
       ("awaitEvent times out", eventTimeout),
       ("try/finally stop on error", closeOnError),
       ("failed handshake", handshakeFailure),
-      ("reconnect replays in-flight requests", reconnectReplays)] do
+      ("reconnect replays in-flight requests", reconnectReplays),
+      ("reconnect over a unix socket", reconnectReplays unixPipe)] do
     match ← within 30 scenario with
     | .ok () => check name true
     | .error e => check name false (fun _ => e)
