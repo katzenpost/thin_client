@@ -229,6 +229,8 @@ inductive ProtocolViolation where
   | handshake (expected : String)
   | missingGeometry
   | badGeometry (reason : String)
+  | unexpectedReply (key : String)
+  | missingField (name : String)
   deriving DecidableEq, Repr
 
 def ProtocolViolation.message : ProtocolViolation → String
@@ -238,6 +240,8 @@ def ProtocolViolation.message : ProtocolViolation → String
   | handshake expected => s!"handshake: expected {expected}"
   | missingGeometry => "daemon did not supply both geometries"
   | badGeometry reason => s!"bad geometry: {reason}"
+  | unexpectedReply key => s!"unexpected reply {key}"
+  | missingField name => s!"reply is missing {name}"
 
 inductive ThinClientError where
   | transport (e : IO.Error)
@@ -253,8 +257,12 @@ inductive ThinClientError where
   | offline
   | timeout
   | closed
+  | missingPkiDocument
+  | serviceNotFound (name : String)
 
 namespace ThinClientError
+
+instance : Inhabited ThinClientError := ⟨closed⟩
 
 instance : ToString ThinClientError where
   toString
@@ -271,6 +279,8 @@ instance : ToString ThinClientError where
     | offline => "daemon is not connected to the mixnet"
     | timeout => "timed out"
     | closed => "thin client is closed"
+    | missingPkiDocument => "no PKI document for that epoch"
+    | serviceNotFound name => s!"no service {name} in the PKI document"
 
 /-- Outcomes a caller usually handles as normal results rather than failures. -/
 def isExpectedOutcome : ThinClientError → Bool
