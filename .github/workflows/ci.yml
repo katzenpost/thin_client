@@ -23,6 +23,29 @@ jobs:
       - uses: actions/checkout@v4
       - run: make test-rust
 
+  test-lean:
+    runs-on: ubuntu-latest
+    env:
+      ELAN_VERSION: 4.2.4
+      ELAN_SHA256: 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: lean/scripts/gen-vectors/go.mod
+      - name: install elan
+        run: |
+          curl -fsSLO "https://github.com/leanprover/elan/releases/download/v${ELAN_VERSION}/elan-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ELAN_SHA256}  elan-x86_64-unknown-linux-gnu.tar.gz" | sha256sum -c -
+          tar -xzf elan-x86_64-unknown-linux-gnu.tar.gz
+          ./elan-init -y --default-toolchain none --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: lean/.lake
+          key: lean-${{ hashFiles('lean/lean-toolchain', 'lean/lake-manifest.json') }}
+      - run: make test-lean
+
   check:
     runs-on: ubuntu-latest
     steps:

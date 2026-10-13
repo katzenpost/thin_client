@@ -7,7 +7,7 @@ connect_deadline?=480
 
 include $(dir $(lastword $(MAKEFILE_LIST)))ci.mk
 
-.PHONY: test test-python test-rust check
+.PHONY: test test-python test-rust test-lean check
 test: test-python test-rust
 
 test-python:
@@ -16,6 +16,11 @@ test-python:
 test-rust:
 	@command -v cargo >/dev/null || { echo "cargo is required for the rust tests" >&2; exit 1; }
 	cargo test --lib
+
+test-lean:
+	@command -v lake >/dev/null || { echo "lake (from elan) is required for the lean tests" >&2; exit 1; }
+	cd lean && lake exe cache get && lake build thinclient-test && lake exe thinclient-test
+	cd lean/scripts/gen-vectors && go run . verify ../../.lake/requests.json
 
 check:
 	cargo clippy --all-targets -- -D warnings

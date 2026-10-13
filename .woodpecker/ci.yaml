@@ -14,6 +14,11 @@ steps:
     commands:
       - make test-rust
 
+  - name: test-lean
+    image: ${CI_IMAGE:-localhost/thinclient-ci:latest}
+    commands:
+      - make test-lean
+
   - name: check
     image: ${CI_IMAGE:-localhost/thinclient-ci:latest}
     commands:

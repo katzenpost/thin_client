@@ -12,6 +12,9 @@ ARG FORGEJO_RUNNER_VERSION=13.2.0
 ARG FORGEJO_RUNNER_SHA256=fadaec897f5e6641c363f87ecaf75f866f99c81b7097ec6b433e4c48123fcad1
 ARG WOODPECKER_CLI_VERSION=3.18.1
 ARG WOODPECKER_CLI_SHA256=e7e78b0cc2f1172407d4e1439909bf8f55fb9b55f0fa79ae28338b195ecb56a5
+ARG ELAN_VERSION=4.2.4
+ARG ELAN_SHA256=42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
+ARG LEAN_TOOLCHAIN=leanprover/lean4:v4.33.1
 
 COPY --from=uv /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=uv /usr/local/bin/uvx /usr/local/bin/uvx
@@ -22,7 +25,8 @@ COPY --from=rust /usr/local/cargo /usr/local/cargo
 ENV GOROOT=/usr/local/go
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo
-ENV PATH=/usr/local/go/bin:/usr/local/cargo/bin:${PATH}
+ENV ELAN_HOME=/usr/local/elan
+ENV PATH=/usr/local/go/bin:/usr/local/cargo/bin:/usr/local/elan/bin:${PATH}
 
 WORKDIR /tmp/runners
 
@@ -37,11 +41,16 @@ RUN curl -fsSLO "https://github.com/nektos/act/releases/download/v${ACT_VERSION}
  && echo "${WOODPECKER_CLI_SHA256}  woodpecker-cli_linux_amd64.tar.gz" | sha256sum -c - \
  && tar -xzf woodpecker-cli_linux_amd64.tar.gz woodpecker-cli \
  && install -m 0755 woodpecker-cli /usr/local/bin/woodpecker-cli \
+ && curl -fsSLO "https://github.com/leanprover/elan/releases/download/v${ELAN_VERSION}/elan-x86_64-unknown-linux-gnu.tar.gz" \
+ && echo "${ELAN_SHA256}  elan-x86_64-unknown-linux-gnu.tar.gz" | sha256sum -c - \
+ && tar -xzf elan-x86_64-unknown-linux-gnu.tar.gz elan-init \
+ && ./elan-init -y --default-toolchain "${LEAN_TOOLCHAIN}" --no-modify-path \
+ && chmod -R a+rwX /usr/local/elan \
  && cd / && rm -rf /tmp/runners
 
 WORKDIR /
 
 RUN rustup component add clippy
 
-RUN go version && uv --version && cargo clippy --version && act --version \
+RUN go version && uv --version && cargo clippy --version && lake --version && act --version \
  && forgejo-runner --version && woodpecker-cli --version
