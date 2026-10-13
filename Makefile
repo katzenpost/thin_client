@@ -19,15 +19,15 @@ test-rust:
 
 test-lean:
 	@command -v lake >/dev/null || { echo "lake (from elan) is required for the lean tests" >&2; exit 1; }
-	cd lean && lake exe cache get && lake build thinclient-test && lake exe thinclient-test
-	cd lean/scripts/gen-vectors && go run . verify ../../.lake/requests.json
+	lake exe cache get && lake build thinclient-test && lake exe thinclient-test
+	cd scripts/gen-vectors && go run . verify ../../.lake/requests.json
 
 # Against the daemon named in testdata/thinclient.toml, as test-integration.sh sets it up.
 test-lean-integration:
 	@command -v lake >/dev/null || { echo "lake (from elan) is required for the lean tests" >&2; exit 1; }
-	cd lean && lake exe cache get && lake build thinclient-integration && \
+	lake exe cache get && lake build thinclient-integration && \
 	lake exe thinclient-integration 127.0.0.1 \
-	  $$(sed -n 's/.*Address = ".*:\([0-9]*\)".*/\1/p' ../testdata/thinclient.toml)
+	  $$(sed -n 's/.*Address = ".*:\([0-9]*\)".*/\1/p' testdata/thinclient.toml)
 
 check:
 	cargo clippy --all-targets -- -D warnings

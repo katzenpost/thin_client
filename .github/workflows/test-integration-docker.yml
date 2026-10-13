@@ -75,12 +75,12 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: thinclient/lean/.lake
-          key: lean-${{ hashFiles('thinclient/lean/lean-toolchain', 'thinclient/lean/lake-manifest.json') }}
+          path: thinclient/.lake
+          key: lean-${{ hashFiles('thinclient/lean-toolchain', 'thinclient/lake-manifest.json') }}
 
       - name: Build the Lean integration tests
         run: |
-          cd thinclient/lean
+          cd thinclient
           lake exe cache get
           lake build thinclient-integration
 

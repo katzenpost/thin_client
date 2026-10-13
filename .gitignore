@@ -18,4 +18,4 @@ debian/librust-katzenpost-thin-client-dev.debhelper.log
 debian/librust-katzenpost-thin-client-dev.substvars
 dist/
 
-lean/.lake/
+/.lake/

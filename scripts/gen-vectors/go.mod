@@ -1,4 +1,4 @@
-module github.com/katzenpost/thin_client/lean/scripts/gen-vectors
+module github.com/katzenpost/thin_client/scripts/gen-vectors
 
 go 1.26.9
 
