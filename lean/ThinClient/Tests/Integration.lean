@@ -137,12 +137,19 @@ def copyOntoExistingBox : ClientM Unit := do
 def directoryAuthorities : ClientM Unit := do
   expect "directory authorities" (!(← getDirectoryAuthorities).isEmpty)
 
+/-- Echo through each echo service in turn until one answers; a mixnet may have dead ones. -/
 def echo : ClientM Unit := do
-  let service ← getService "echo"
-  let (node, queue) := service.toDestination
-  let some nodeHash := FixedBytes.ofBytes? node | fail "node hash size"
-  let reply ← blockingSendMessage "hello".toUTF8 nodeHash queue (timeoutMs := 120000)
-  expect "echo reply" (sameBytes' (reply.extract 0 5) "hello".toUTF8)
+  for service in ← getServices "echo" do
+    let (node, queue) := service.toDestination
+    let some nodeHash := FixedBytes.ofBytes? node | fail "node hash size"
+    try
+      let reply ← blockingSendMessage "hello".toUTF8 nodeHash queue (timeoutMs := 60000)
+      expect "echo reply" (sameBytes' (reply.extract 0 5) "hello".toUTF8)
+      return
+    catch
+      | .timeout => IO.println s!"     echo service {service.mixDescriptor.name} did not answer"
+      | e => throw e
+  fail "no echo service answered"
 
 def scenarios : List (String × ClientM Unit) := [
   ("new keypair", newKeypairBasic),
