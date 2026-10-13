@@ -10,3 +10,9 @@ import ThinClient.Cbor
 import ThinClient.Geometry
 import ThinClient.Pki
 import ThinClient.Messages
+import ThinClient.Protocol
+import ThinClient.Client
+import ThinClient.Api.Pki
+import ThinClient.Api.Messaging
+import ThinClient.Api.Pigeonhole
+import ThinClient.Api.Voucher
