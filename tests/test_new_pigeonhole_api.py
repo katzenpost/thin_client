@@ -61,27 +61,28 @@ async def setup_thin_client():
     return client
 
 
-async def await_box_propagated(client, read_cap, box_index):
-    """Block until the given box is readable.
+async def await_stream_propagated(client, read_cap, first_index, count):
+    """Block until every box of a stream is readable.
 
-    The default ARQ behaviour auto-retries on BoxIDNotFound, so this
-    single read returns only once the box has propagated to a serving
-    replica, a deterministic replacement for a blind propagation
-    sleep. For a sequentially written stream, pass the last written
-    box: the boxes before it were written earlier and so have had at
-    least as long to settle, and this avoids the traffic of re-reading
-    every box.
+    The default ARQ behaviour auto-retries on BoxIDNotFound, so each
+    read returns only once its box has reached a shard replica. Every
+    box is read, not only the last: a write that returned can still be
+    lost between replicas, leaving an earlier box missing after a
+    later one has landed.
     """
-    read_request = await client.encrypt_read(read_cap, box_index)
-    await client.start_resending_encrypted_message(
-        read_cap=read_cap,
-        write_cap=None,
-        message_box_index=box_index,
-        reply_index=0,
-        envelope_descriptor=read_request.envelope_descriptor,
-        message_ciphertext=read_request.message_ciphertext,
-        envelope_hash=read_request.envelope_hash,
-    )
+    box_index = first_index
+    for _ in range(count):
+        read_request = await client.encrypt_read(read_cap, box_index)
+        await client.start_resending_encrypted_message(
+            read_cap=read_cap,
+            write_cap=None,
+            message_box_index=box_index,
+            reply_index=0,
+            envelope_descriptor=read_request.envelope_descriptor,
+            message_ciphertext=read_request.message_ciphertext,
+            envelope_hash=read_request.envelope_hash,
+        )
+        box_index = await client.next_message_box_index(box_index)
 
 
 @pytest.mark.asyncio
@@ -432,15 +433,13 @@ async def test_create_courier_envelopes_from_payload():
                 envelope_hash=write_result.envelope_hash
             )
             print(f"✓ Alice sent copy stream chunk {i+1} to temporary channel")
-
-            # Track the box just written, then advance for the next chunk.
-            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
 
         # Deterministic ARQ propagation gate in place of a blind sleep.
-        print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_box_propagated(
-            alice_client, temp_keypair.read_cap, last_temp_index
+        print("\n--- Awaiting copy stream propagation (ARQ read of every box) ---")
+        await await_stream_propagated(
+            alice_client, temp_keypair.read_cap,
+            temp_keypair.first_message_index, len(copy_stream_chunks),
         )
 
         # Step 6: Send Copy command to courier using ARQ
@@ -598,15 +597,13 @@ async def test_copy_command_multi_channel():
                 envelope_hash=write_result.envelope_hash
             )
             print(f"✓ Alice sent chunk {i+1} to temporary channel")
-
-            # Track the box just written, then advance for the next chunk.
-            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
 
         # Deterministic ARQ propagation gate in place of a blind sleep.
-        print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_box_propagated(
-            alice_client, temp_keypair.read_cap, last_temp_index
+        print("\n--- Awaiting copy stream propagation (ARQ read of every box) ---")
+        await await_stream_propagated(
+            alice_client, temp_keypair.read_cap,
+            temp_keypair.first_message_index, len(all_chunks),
         )
 
         # Step 6: Send Copy command to courier using ARQ
@@ -765,15 +762,13 @@ async def test_copy_command_multi_channel_efficient():
                 envelope_hash=write_result.envelope_hash
             )
             print(f"✓ Alice sent chunk {i+1} to temporary channel")
-
-            # Track the box just written, then advance for the next chunk.
-            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
 
         # Deterministic ARQ propagation gate in place of a blind sleep.
-        print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_box_propagated(
-            alice_client, temp_keypair.read_cap, last_temp_index
+        print("\n--- Awaiting copy stream propagation (ARQ read of every box) ---")
+        await await_stream_propagated(
+            alice_client, temp_keypair.read_cap,
+            temp_keypair.first_message_index, len(all_chunks),
         )
 
         # Step 6: Send Copy command to courier using ARQ
@@ -1387,7 +1382,7 @@ async def test_copy_onto_already_existing_box_error():
         print("✓ Created temporary copy stream WriteCap")
 
         # The copy aborts on the first envelope (the destination box
-        # already exists), so a single chunk proves the failure; a
+        # already exists), so a small payload proves the failure; a
         # larger payload only writes and propagates boxes the copy
         # never reaches.
         small_payload = os.urandom(64)
@@ -1417,13 +1412,13 @@ async def test_copy_onto_already_existing_box_error():
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash
             )
-            last_temp_index = temp_index
             temp_index = await client.next_message_box_index(temp_index)
 
         # Deterministic ARQ propagation gate in place of a blind sleep.
-        print("--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_box_propagated(
-            client, temp_keypair.read_cap, last_temp_index
+        print("--- Awaiting copy stream propagation (ARQ read of every box) ---")
+        await await_stream_propagated(
+            client, temp_keypair.read_cap,
+            temp_keypair.first_message_index, len(copy_stream_chunks),
         )
 
         # Send Copy command - should fail because destination box already exists
@@ -1524,13 +1519,13 @@ async def test_from_payload_multi_call():
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash)
-            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
             print(f"Wrote temp element {i+1}/{len(all_temp_elements)}")
 
-        print("Awaiting temp stream propagation (ARQ read of final box)")
-        await await_box_propagated(
-            alice_client, temp_keypair.read_cap, last_temp_index
+        print("Awaiting temp stream propagation (ARQ read of every box)")
+        await await_stream_propagated(
+            alice_client, temp_keypair.read_cap,
+            temp_keypair.first_message_index, len(all_temp_elements),
         )
 
         # Send copy command
@@ -1627,13 +1622,13 @@ async def test_from_multi_payload_multi_call():
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash)
-            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
             print(f"Wrote temp element {i+1}/{len(all_elements)}")
 
-        print("Awaiting temp stream propagation (ARQ read of final box)")
-        await await_box_propagated(
-            alice_client, temp_keypair.read_cap, last_temp_index
+        print("Awaiting temp stream propagation (ARQ read of every box)")
+        await await_stream_propagated(
+            alice_client, temp_keypair.read_cap,
+            temp_keypair.first_message_index, len(all_elements),
         )
 
         # Send copy command
