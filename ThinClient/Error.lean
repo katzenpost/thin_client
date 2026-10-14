@@ -231,6 +231,7 @@ inductive ProtocolViolation where
   | badGeometry (reason : String)
   | unexpectedReply (key : String)
   | missingField (name : String)
+  | undecodable (reason : String)
   deriving DecidableEq, Repr
 
 def ProtocolViolation.message : ProtocolViolation → String
@@ -242,6 +243,7 @@ def ProtocolViolation.message : ProtocolViolation → String
   | badGeometry reason => s!"bad geometry: {reason}"
   | unexpectedReply key => s!"unexpected reply {key}"
   | missingField name => s!"reply is missing {name}"
+  | undecodable reason => s!"undecodable message: {reason}"
 
 inductive ThinClientError where
   | transport (e : IO.Error)

@@ -330,6 +330,36 @@ def stateHidesInFlight : Async Unit :=
     let s ← expectOk "state" (← run c (tracking flying currentState))
     unless s.inFlight.isEmpty do throw (IO.userError "in-flight requests exposed")
 
+def Daemon.sendRaw (d : Daemon) (variant : String) (body : Encoding) : Async Unit := do
+  match Frame.encode (toByteArray (encodeRecord [(variant, some body)])) with
+  | .ok frame => d.transport.send frame
+  | .error _ => throw (IO.userError "frame too large")
+
+/-- A daemon whose Sphinx geometry has a field this client does not know fails the connect with
+the decode error. -/
+def undecodableStatus : Async Unit := do
+  let (ct, dt) ← pipe
+  let d ← Daemon.new dt
+  let geometry := encodeRecord ((Fixtures.sphinxGeometry.fields.map fun (k, e) => (k, some e)) ++
+    [("FutureField", some (encode (7 : Nat)))])
+  let daemon ← async (d.sendRaw "connection_status_event" (encodeRecord [
+    field "is_connected" true, field "instance_token" (fixed 16 0x50),
+    ("sphinx_geometry", some geometry), field "pigeonhole_geometry" Fixtures.pigeonholeGeometry]))
+  expectError "connect" (← (Client.connectWith (pure ct)).run) fun
+    | .protocol (.undecodable r) => (r.splitOn "FutureField").length > 1
+    | _ => false
+  await daemon
+
+def undecodableReply : Async Unit :=
+  withDaemon (fun d => do
+    d.handshake
+    let (req, _) ← d.expect GetMessageBoxIndexCounter
+    d.sendRaw "get_message_box_index_counter_reply"
+      (encodeRecord [field "query_id" req.queryId, field "counter" "seven"]))
+  fun c => do
+    expectError "call" (← run c (getMessageBoxIndexCounter index))
+      (· matches .protocol (.undecodable _))
+
 def suite : TestM Unit := do
   for (name, scenario) in [
       ("handshake and call", handshakeAndCall),
@@ -347,7 +377,9 @@ def suite : TestM Unit := do
       ("reconnect handshake times out", reconnectHandshakeTimesOut),
       ("slow subscriber is cut off", slowSubscriberCutOff),
       ("dial completing after stop is closed", dialAfterStop),
-      ("state hides in-flight requests", stateHidesInFlight)] do
+      ("state hides in-flight requests", stateHidesInFlight),
+      ("undecodable status fails the connect with its error", undecodableStatus),
+      ("undecodable reply fails its caller", undecodableReply)] do
     match ← within 30 scenario with
     | .ok () => check name true
     | .error e => check name false (fun _ => e)

@@ -76,6 +76,8 @@ inductive Effect where
   | send (request : ByteArray)
   /-- Hand the reply to the caller waiting on this query. -/
   | resolve (queryId : QueryId) (reply : Response)
+  /-- Fail the caller waiting on this query. -/
+  | reject (queryId : QueryId) (err : ThinClientError)
   | publish (event : Event)
   /-- The handshake is complete. -/
   | ready
@@ -177,8 +179,14 @@ def onResponse (check : GeometryCheck) (s : State) (r : Response) : State × Lis
   let (s₂, e₂) := advance check s₁ r
   (s₂, e₁ ++ e₂)
 
-/-- A frame that does not decode counts as a stray frame. -/
-def onUndecodable (s : State) : State × List Effect := stray s
+/-- A frame that does not decode fails the handshake; once ready, it fails the caller waiting on
+`queryId`, if the frame names one. -/
+def onUndecodable (queryId : Option QueryId) (v : ProtocolViolation) (s : State) :
+    State × List Effect :=
+  if s.phase != .ready then (s, [.fail v])
+  else match queryId with
+    | some q => (s, [.reject q (.protocol v)])
+    | none => (s, [])
 
 /-! ## The handshake order -/
 
@@ -186,7 +194,9 @@ theorem stray_phase (s : State) : (stray s).1.phase = s.phase := by
   unfold stray; split <;> (try split) <;> rfl
 
 /-- A frame that does not decode never moves the handshake. -/
-theorem onUndecodable_phase (s : State) : (onUndecodable s).1.phase = s.phase := stray_phase s
+theorem onUndecodable_phase (queryId : Option QueryId) (v : ProtocolViolation) (s : State) :
+    (onUndecodable queryId v s).1.phase = s.phase := by
+  unfold onUndecodable; split <;> (try split) <;> rfl
 
 theorem absorb_phase (s : State) (r : Response) : (absorb s r).1.phase = s.phase := by
   cases r <;> simp only [absorb] <;> (try split) <;> rfl

@@ -91,13 +91,10 @@ def suite : TestM Unit := do
     | some (.handshake _) => true | _ => false)
   let (_, es) := feed initial (status :: List.replicate maxHandshakeFrames (Response.shutdownEvent {}))
   check "the stray frame limit itself is allowed" (failed es).isNone
-  let feedUndecodable (s : State) (n : Nat) : State × List Effect :=
-    (List.replicate n ()).foldl (fun (s, es) _ => let (s', es') := onUndecodable s; (s', es ++ es'))
-      (s, [])
   let (afterStatus, _) := step initial status
-  let (_, es) := feedUndecodable afterStatus (maxHandshakeFrames + 1)
-  check "too many undecodable frames fail the handshake" (match failed es with
-    | some (.handshake _) => true | _ => false)
+  let (_, es) := onUndecodable none (.undecodable "bad") afterStatus
+  check "an undecodable frame fails the handshake with its error"
+    (failed es == some (.undecodable "bad"))
 
   -- Geometries.
   let (s, es) := feed initial [status (geometries := false)]
@@ -115,6 +112,11 @@ def suite : TestM Unit := do
   let q2 : QueryId := fixed 16 0xb0
   let (_, es) := feed ready [counterReply q2 2, counterReply q1 1]
   check "replies resolve their queries in arrival order" (resolved es == [q2, q1])
+  let (_, es) := onUndecodable (some q1) (.undecodable "bad") ready
+  check "an undecodable reply fails its caller" (match es with
+    | [.reject q (.protocol (.undecodable "bad"))] => q == q1 | _ => false)
+  let (_, es) := onUndecodable none (.undecodable "bad") ready
+  check "an undecodable event is dropped once ready" es.isEmpty
   let (_, es) := feed ready [replyEvent]
   check "events are published, not resolved" ((resolved es).isEmpty &&
     es.any fun | .publish (.messageReply _) => true | _ => false)

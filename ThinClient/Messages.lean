@@ -939,6 +939,13 @@ def decode (frame : ByteArray) : Except ThinClientError Response := do
   | [(k, raw)] => (ofKeyBody k raw).mapError (.decode s!"{k}: {·}")
   | kvs => throw (.protocol (.multipleVariants (kvs.map (·.1))))
 
+/-- The `query_id` of a frame whose body does not decode, so its caller can be told. -/
+def frameQueryId? (frame : ByteArray) : Option QueryId := do
+  let r ← (deserialise (α := Record) frame).toOption
+  let [(_, raw)] := r.fields.filter (!isNull ·.2) |>.toList | none
+  let query : Decoder (Option QueryId) := do (← decodeRecord).optional "query_id"
+  (← (deserialiseFromBytes query raw).toOption).2
+
 /-- The query a reply answers. -/
 def queryId? : Response → Option QueryId
   | newKeypairReply m => m.queryId

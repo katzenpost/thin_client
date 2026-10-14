@@ -146,6 +146,10 @@ private def perform (c : Client) : Protocol.Effect → Async Unit
     match ← c.waiters.modifyGet fun m => (m.get? q, m.erase q) with
     | some w => w.resolve (.ok r)
     | none => pure ()
+  | .reject q err => do
+    match ← c.waiters.modifyGet fun m => (m.get? q, m.erase q) with
+    | some w => w.resolve (.error err)
+    | none => pure ()
   | .publish e => c.publish e
   | .ready => do (← c.handshake.get).resolve (.ok ())
   | .fail v => do
@@ -156,7 +160,12 @@ private def perform (c : Client) : Protocol.Effect → Async Unit
 private def handleFrame (c : Client) (frame : ByteArray) : Async Unit := do
   let step : Protocol.State → Protocol.State × List Protocol.Effect :=
     match Response.decode frame with
-    | .error _ => Protocol.onUndecodable
+    | .error e =>
+      let v : ProtocolViolation := match e with
+        | .protocol v => v
+        | .decode reason => .undecodable reason
+        | e => .undecodable (toString e)
+      Protocol.onUndecodable (Response.frameQueryId? frame) v
     | .ok r => (Protocol.onResponse Protocol.validateGeometries · r)
   let effects ← c.state.modifyGet fun s => let (s', es) := step s; (es, s')
   for e in effects do c.perform e
