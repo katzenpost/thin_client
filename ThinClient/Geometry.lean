@@ -30,11 +30,6 @@ structure PigeonholeGeometry where
 
 namespace PigeonholeGeometry
 
-def keys : List String :=
-  ["MaxPlaintextPayloadLength", "CourierQueryReadLength", "CourierQueryWriteLength",
-   "CourierQueryReplyReadLength", "CourierQueryReplyWriteLength", "NIKEName",
-   "SignatureSchemeName"]
-
 instance : Serialise PigeonholeGeometry where
   encode g := encodeRecord [
     field "MaxPlaintextPayloadLength" g.maxPlaintextPayloadLength,
@@ -46,7 +41,6 @@ instance : Serialise PigeonholeGeometry where
     field "SignatureSchemeName" g.signatureSchemeName]
   decode := do
     let r ← decodeRecord
-    r.onlyKeys keys
     return {
       maxPlaintextPayloadLength := ← r.withDefault "MaxPlaintextPayloadLength" 0
       courierQueryReadLength := ← r.withDefault "CourierQueryReadLength" 0
@@ -62,5 +56,16 @@ def validate (g : PigeonholeGeometry) : Except String Unit := do
   if g.signatureSchemeName != "Ed25519" then throw "SignatureSchemeName must be Ed25519"
 
 end PigeonholeGeometry
+
+/-- Exactly one scheme name is set and the header dimensions are nonzero. The daemon does the
+Sphinx cryptography, so the scheme need not be one CryptWalker implements. -/
+def checkSphinxGeometry (g : Geometry) : Except String Unit := do
+  if g.nikeName.isEmpty == g.kemName.isEmpty then
+    throw "geometry must set exactly one of NIKEName and KEMName"
+  if g.packetLength == 0 then throw "geometry has PacketLength of 0"
+  if g.nrHops == 0 then throw "geometry has NrHops of 0"
+  if g.headerLength == 0 then throw "geometry has HeaderLength of 0"
+  if g.routingInfoLength == 0 then throw "geometry has RoutingInfoLength of 0"
+  if g.perHopRoutingInfoLength == 0 then throw "geometry has PerHopRoutingInfoLength of 0"
 
 end ThinClient

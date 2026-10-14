@@ -43,12 +43,7 @@ structure MixDescriptor where
 
 namespace MixDescriptor
 
-def keys : List String :=
-  ["Name", "Epoch", "LinkKey", "MixKeys", "Version", "Addresses", "Kaetzchen", "LoadWeight",
-   "IdentityKey", "IsGatewayNode", "IsServiceNode", "AuthenticationType",
-   "KaetzchenAdvertizedData"]
-
-/-- Fields are written in canonical key order. -/
+/-- Fields are written in canonical key order. Unknown keys are ignored when decoding. -/
 instance : Serialise MixDescriptor where
   encode d := encodeRecord [
     field "Name" d.name,
@@ -66,7 +61,6 @@ instance : Serialise MixDescriptor where
     field "KaetzchenAdvertizedData" d.kaetzchenAdvertizedData]
   decode := do
     let r ← decodeRecord
-    r.onlyKeys keys
     return {
       name := ← r.withDefault "Name" ""
       epoch := ← r.withDefault "Epoch" 0
@@ -113,8 +107,6 @@ instance : Serialise ReplicaDescriptor where
     field "Addresses" d.addresses]
   decode := do
     let r ← decodeRecord
-    r.onlyKeys ["Name", "ReplicaID", "Epoch", "IdentityKey", "LinkKey", "EnvelopeKeys",
-      "Addresses"]
     return {
       name := ← r.withDefault "Name" ""
       replicaId := ← r.withDefault "ReplicaID" 0

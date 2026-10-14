@@ -13,7 +13,7 @@ Messages are fed through `Protocol.onResponse` directly; there is no connection.
 
 namespace ThinClient.Tests.Protocol
 
-open ThinClient ThinClient.Protocol ThinClient.Tests.Fixtures
+open Cborg ThinClient ThinClient.Protocol ThinClient.Tests.Fixtures
 
 def initial : State := { instanceToken := fixed 16 0x01 }
 
@@ -47,6 +47,22 @@ def badStatus : Response :=
     sphinxGeometry := some { sphinxGeometry with nikeName := "", kemName := "" },
     pigeonholeGeometry := some pigeonholeGeometry }
 
+/-- A status naming a NIKE CryptWalker does not implement. -/
+def foreignSchemeStatus : Response :=
+  .connectionStatusEvent {
+    isConnected := true, instanceToken := fixed 16 0x50,
+    sphinxGeometry := some { sphinxGeometry with nikeName := "CTIDH1024-X25519" },
+    pigeonholeGeometry := some { pigeonholeGeometry with nikeName := "CTIDH1024-X25519" } }
+
+/-- A document whose service node and replica carry keys this client does not know. -/
+def futureDocumentEvent : Response :=
+  let node := toByteArray (encodeRecord [
+    field "Name" "svc", field "ContactInfo" "mailto:op@example.org", field "SoftwareVersion" "9.9"])
+  let replica := encodeRecord [field "Name" "replica", field "ContactInfo" "x"]
+  .newPkiDocumentEvent { payload := toByteArray (encodeRecord [
+    field "Epoch" (1000 : UInt64), field "ServiceNodes" #[node],
+    ("StorageReplicas", some (encodeListLen 1 ++ replica))]) }
+
 def replyEvent : Response :=
   .messageReplyEvent { messageId := none, surbId := none, payload := bytes 0 3, errorCode := 0 }
 
@@ -75,6 +91,13 @@ def suite : TestM Unit := do
     | some (.handshake _) => true | _ => false)
   let (_, es) := feed initial (status :: List.replicate maxHandshakeFrames (Response.shutdownEvent {}))
   check "the stray frame limit itself is allowed" (failed es).isNone
+  let feedUndecodable (s : State) (n : Nat) : State × List Effect :=
+    (List.replicate n ()).foldl (fun (s, es) _ => let (s', es') := onUndecodable s; (s', es ++ es'))
+      (s, [])
+  let (afterStatus, _) := step initial status
+  let (_, es) := feedUndecodable afterStatus (maxHandshakeFrames + 1)
+  check "too many undecodable frames fail the handshake" (match failed es with
+    | some (.handshake _) => true | _ => false)
 
   -- Geometries.
   let (s, es) := feed initial [status (geometries := false)]
@@ -82,6 +105,9 @@ def suite : TestM Unit := do
   checkEq "missing geometry does not advance" "awaitingStatus" (phaseName s.phase)
   let (_, es) := feed initial [badStatus]
   check "invalid geometry fails" (match failed es with | some (.badGeometry _) => true | _ => false)
+  let (s, es) := feed initial [foreignSchemeStatus]
+  check "a scheme CryptWalker lacks is accepted" (failed es).isNone
+  checkEq "a scheme CryptWalker lacks advances" "awaitingDocument" (phaseName s.phase)
 
   -- Replies go to their query.
   let (ready, _) := feed initial handshake
@@ -101,6 +127,11 @@ def suite : TestM Unit := do
   check "an evicted epoch is gone" (s.documentForEpoch? 1001).isNone
   let s := [2, 0, 1].foldl (fun s e => (step s (documentEvent e)).1) ready
   checkEq "early epochs do not underflow" [1, 0] (s.documents.map (·.epoch))
+  let (s, _) := step ready futureDocumentEvent
+  check "descriptors with unknown keys decode" (match s.document with
+    | some d => d.serviceNodes.map (·.name) == #["svc"] &&
+      d.storageReplicas.map (·.name) == #["replica"]
+    | none => false)
 
   -- Reconnecting.
   let flying : InFlight := { key := fixed 32 0x77, queryId := q1, request := bytes 0x99 10 }
@@ -116,5 +147,10 @@ def suite : TestM Unit := do
   let untracked := tracked.untrack flying.key
   let (_, es) := feed untracked.reconnecting [status 0x51, documentEvent, sessionReply]
   check "finished request not resent" ((sends es).length == 1)
+  let (cut, _) := feed tracked.reconnecting [status 0x51]
+  let (s, es) := feed cut.reconnecting [status 0x51, documentEvent, sessionReply]
+  checkEq "reconnect after a cut handshake reaches ready" "ready" (phaseName s.phase)
+  check "cut handshake: in-flight request still resent"
+    ((sends es).any (sameBytes · flying.request))
 
 end ThinClient.Tests.Protocol

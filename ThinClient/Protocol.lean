@@ -101,7 +101,8 @@ def untrack (s : State) (key : Hash32) : State :=
 
 /-- Start a new handshake after the connection was lost. -/
 def reconnecting (s : State) : State :=
-  { s with phase := .awaitingStatus, strayFrames := 0, previousDaemonToken := s.daemonToken,
+  { s with phase := .awaitingStatus, strayFrames := 0,
+           previousDaemonToken := s.previousDaemonToken <|> s.daemonToken,
            shutdownReceived := false, isConnected := false }
 
 end State
@@ -129,7 +130,7 @@ def absorb (s : State) : Response → State × List Effect
 abbrev GeometryCheck := Geometry → PigeonholeGeometry → Except String Unit
 
 /-- Both geometries must validate. -/
-def validateGeometries : GeometryCheck := fun g p => do g.validate; p.validate
+def validateGeometries : GeometryCheck := fun g p => do checkSphinxGeometry g; p.validate
 
 /-- Why the geometries the daemon reported cannot be used, if they cannot. -/
 def geometryProblem (check : GeometryCheck) (s : State) : Option ProtocolViolation :=
@@ -148,6 +149,12 @@ def replay (s : State) : List Effect :=
     else s.inFlight.reverse.map (.send ·.request) ++ [.abandonExcept (s.inFlight.map (·.queryId))]
   | none => []
 
+/-- A frame that does not move the handshake on; too many fail it. -/
+def stray (s : State) : State × List Effect :=
+  if s.phase == .ready then (s, [])
+  else if s.strayFrames + 1 > maxHandshakeFrames then (s, [.fail (.handshake s.phase.expected)])
+  else ({ s with strayFrames := s.strayFrames + 1 }, [])
+
 /-- Move through the handshake. -/
 def advance (check : GeometryCheck) (s : State) (r : Response) : State × List Effect :=
   match s.phase, r with
@@ -162,10 +169,7 @@ def advance (check : GeometryCheck) (s : State) (r : Response) : State × List E
     ({ s with phase := .ready, strayFrames := 0, appId := m.appId, resumed := m.resumed,
               previousDaemonToken := none },
      .ready :: replay s)
-  | .ready, _ => (s, [])
-  | p, _ =>
-    if s.strayFrames + 1 > maxHandshakeFrames then (s, [.fail (.handshake p.expected)])
-    else ({ s with strayFrames := s.strayFrames + 1 }, [])
+  | _, _ => stray s
 
 /-- `check` judges the geometries the daemon reports; the client uses `validateGeometries`. -/
 def onResponse (check : GeometryCheck) (s : State) (r : Response) : State × List Effect :=
@@ -173,7 +177,16 @@ def onResponse (check : GeometryCheck) (s : State) (r : Response) : State × Lis
   let (s₂, e₂) := advance check s₁ r
   (s₂, e₁ ++ e₂)
 
+/-- A frame that does not decode counts as a stray frame. -/
+def onUndecodable (s : State) : State × List Effect := stray s
+
 /-! ## The handshake order -/
+
+theorem stray_phase (s : State) : (stray s).1.phase = s.phase := by
+  unfold stray; split <;> (try split) <;> rfl
+
+/-- A frame that does not decode never moves the handshake. -/
+theorem onUndecodable_phase (s : State) : (onUndecodable s).1.phase = s.phase := stray_phase s
 
 theorem absorb_phase (s : State) (r : Response) : (absorb s r).1.phase = s.phase := by
   cases r <;> simp only [absorb] <;> (try split) <;> rfl
@@ -181,7 +194,7 @@ theorem absorb_phase (s : State) (r : Response) : (absorb s r).1.phase = s.phase
 theorem advance_phase (check : GeometryCheck) (s : State) (r : Response) :
     (advance check s r).1.phase = s.phase ∨ (advance check s r).1.phase = s.phase.next := by
   unfold advance
-  split <;> (try split) <;> simp_all [Phase.next]
+  split <;> (try split) <;> simp_all [Phase.next, stray_phase]
 
 /-- Each message moves the handshake forward by at most one phase. -/
 theorem onResponse_phase (check : GeometryCheck) (s : State) (r : Response) :
@@ -202,6 +215,6 @@ theorem onResponse_advances (check : GeometryCheck) (s : State) (r : Response)
   have hph : s₁.phase = s.phase := by rw [← absorb_phase s r, hs]
   simp only at h
   unfold advance at h
-  split at h <;> (try split at h) <;> simp_all
+  split at h <;> (try split at h) <;> simp_all [stray_phase]
 
 end ThinClient.Protocol
