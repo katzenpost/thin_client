@@ -42,6 +42,34 @@ def readBox (rc : ReadCap) (index : MessageBoxIndex) (options : ResendOptions :=
 
 def sameBytes' (a b : ByteArray) : Bool := a.data == b.data
 
+/-- Whether the box at `index` is stored at a replica, read once without retrying. -/
+def boxStored (rc : ReadCap) (index : MessageBoxIndex) : ClientM Bool := do
+  try
+    discard <| readBox rc index { noRetryOnBoxIdNotFound := true, replyIndex := some 0 }
+    pure true
+  catch
+    | .replica .boxIdNotFound | .replica .replicationFailed => pure false
+    | e => throw e
+
+/-- Write `boxes` from `start`, waiting until each is stored at a replica and writing it again if
+it has not appeared within two minutes. A write completes once the courier accepts it, before any
+replica stores it, so a write the replicas lose is still reported as sent; a Copy reads the stream
+from its first box. -/
+def writeStream (wc : WriteCap) (rc : ReadCap) (start : MessageBoxIndex) (boxes : Array ByteArray) :
+    ClientM Unit := do
+  let mut index := start
+  for box in boxes do
+    let mut stored := false
+    for _ in [0:3] do
+      writeBox box wc index { replyIndex := some 0 }
+      let deadline := (← IO.monoMsNow) + 120000
+      while !stored && (← IO.monoMsNow) < deadline do
+        stored ← boxStored rc index
+        unless stored do sleep 3000
+      if stored then break
+    expect "box stored" stored
+    index ← nextMessageBoxIndex index
+
 def newKeypairBasic : ClientM Unit := do
   discard <| newKeypair (← randomSeed)
 
@@ -121,13 +149,7 @@ def copyOntoExistingBox : ClientM Unit := do
   let temp ← newKeypair (← randomSeed)
   let (chunks, _) ← createCourierEnvelopesFromPayload (Tests.Frame.bytes 7 2000)
     dest.writeCap dest.firstMessageIndex true true
-  let mut index := temp.firstMessageIndex
-  let mut last := index
-  for chunk in chunks do
-    writeBox chunk temp.writeCap index { replyIndex := some 0 }
-    last := index
-    index ← nextMessageBoxIndex index
-  discard <| readBox temp.readCap last { replyIndex := some 0 }
+  writeStream temp.writeCap temp.readCap temp.firstMessageIndex chunks
   try
     startResendingCopyCommand temp.writeCap
     fail "copy onto an existing box succeeded"
