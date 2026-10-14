@@ -20,7 +20,8 @@ carries the connection and fails with a `ThinClientError`:
 
 `withClientUnix path` does the same over a unix socket, `@name` for an abstract one. A reader task feeds each frame from the daemon through `Protocol.onResponse` and carries out the
 effects it returns. When the connection drops, the reader task reconnects, backing off from one
-second up to a minute, and the protocol replays what was in flight. -/
+second up to a minute, and the protocol replays what was in flight. A handshake that does not
+complete within `handshakeTimeoutMs` drops the connection. -/
 
 namespace ThinClient
 
@@ -53,9 +54,20 @@ def Transport.unix (path : String) : Async Transport :=
 
 abbrev Waiter := IO.Promise (Except ThinClientError Response)
 
+def handshakeTimeoutMs : Nat := 120000
+
+/-- How long `call` and `send` wait by default, for the handshake and then for the reply. -/
+def callTimeoutMs : Nat := 120000
+
+/-- Events a subscription holds before the subscriber is cut off. -/
+def subscriptionCapacity : Nat := 1024
+
 structure Client where
   private dial : Async Transport
+  private handshakeTimeoutMs : Nat
   private transport : IO.Ref Transport
+  /-- Counts connections, so a handshake timer can tell whether its connection is current. -/
+  private generation : IO.Ref Nat
   private writeLock : Std.Semaphore
   private state : IO.Ref Protocol.State
   private waiters : IO.Ref (Std.HashMap QueryId Waiter)
@@ -83,6 +95,25 @@ namespace Client
 
 private def waitPromise {α : Type} (p : IO.Promise α) : Async (Option α) := await p.result?
 
+private def taskSelector {α : Type} (t : Task α) : Selector α where
+  tryFn := do if ← IO.hasFinished t then return some t.get else return none
+  registerFn w := discard <| BaseIO.chainTask t fun a => w.race (pure ()) (·.resolve (.ok a))
+  unregisterFn := pure ()
+
+/-- `t`'s value, or `.timeout` once the monotonic clock passes `deadline`. -/
+private def awaitUntil {α : Type} (deadline : Option Nat) (t : Task α) :
+    ExceptT ThinClientError Async α := do
+  let some deadline := deadline | await t
+  let now ← IO.monoMsNow
+  if now ≥ deadline then
+    if ← IO.hasFinished t then return t.get else throw ThinClientError.timeout
+  let timer ← Selector.sleep (.ofNat (deadline - now))
+  let r ← Selectable.one (α := Option α) #[
+    .case (taskSelector t) (fun a => pure (some a)),
+    .case timer (fun _ => pure none)]
+  let some a := r | throw ThinClientError.timeout
+  pure a
+
 private def spawn (x : Async Unit) : Async Unit := background x
 
 private def withWriteLock {α : Type} (c : Client) (k : Async α) : Async α := do
@@ -100,8 +131,8 @@ def publish (c : Client) (e : Event) : BaseIO Unit := do
   let mut live := #[]
   for ch in subs do
     unless ← ch.isClosed do
-      discard <| ch.send e
-      live := live.push ch
+      if ← ch.trySend e then live := live.push ch
+      else discard <| EIO.toBaseIO ch.close
   c.subscribers.set live
 
 private def failWaiters (c : Client) (keep : QueryId → Bool) (err : ThinClientError) : BaseIO Unit := do
@@ -123,11 +154,12 @@ private def perform (c : Client) : Protocol.Effect → Async Unit
   | .abandonExcept keep => c.failWaiters (keep.contains ·) (.daemon .connectionLost)
 
 private def handleFrame (c : Client) (frame : ByteArray) : Async Unit := do
-  match Response.decode frame with
-  | .error _ => pure ()
-  | .ok r =>
-    let effects ← c.state.modifyGet fun s => let (s', es) := Protocol.onResponse Protocol.validateGeometries s r; (es, s')
-    for e in effects do c.perform e
+  let step : Protocol.State → Protocol.State × List Protocol.Effect :=
+    match Response.decode frame with
+    | .error _ => Protocol.onUndecodable
+    | .ok r => (Protocol.onResponse Protocol.validateGeometries · r)
+  let effects ← c.state.modifyGet fun s => let (s', es) := step s; (es, s')
+  for e in effects do c.perform e
 
 /-- Read frames until the stream ends. -/
 private partial def readFrames (c : Client) (t : Transport) (r : Frame.Reader) : Async Unit := do
@@ -150,6 +182,14 @@ private partial def redial (c : Client) (delay : Nat) : Async (Option Transport)
   catch _ =>
     c.redial (min (delay * 2) 60)
 
+/-- Close `t` if its handshake has not completed in time. -/
+private def watchHandshake (c : Client) (t : Transport) : Async Unit := do
+  let gen ← c.generation.get
+  spawn do
+    sleep (.ofNat c.handshakeTimeoutMs)
+    if (← c.generation.get) == gen && (← c.state.get).phase != .ready then
+      try t.close catch _ => pure ()
+
 /-- The reader task: read, and reconnect whenever the connection drops. -/
 private partial def readLoop (c : Client) (t : Transport) : Async Unit := do
   c.readFrames t {}
@@ -161,24 +201,35 @@ private partial def readLoop (c : Client) (t : Transport) : Async Unit := do
   | none => pure ()
   | some t' =>
     c.transport.set t'
+    c.generation.modify (· + 1)
+    -- `close` sets `closed` before taking the transport, so one of the two closes `t'`.
+    if ← c.closed.get then
+      try t'.close catch _ => pure ()
+      return
+    c.watchHandshake t'
     c.readLoop t'
 
-/-- Wait until a handshake has completed. -/
-private partial def awaitReady (c : Client) : ExceptT ThinClientError Async Unit := do
+/-- Wait until a handshake has completed, or `deadline` passes. -/
+private partial def awaitReady (c : Client) (deadline : Option Nat) :
+    ExceptT ThinClientError Async Unit := do
   if ← c.closed.get then throw .closed
-  match ← waitPromise (← c.handshake.get) with
+  match ← awaitUntil deadline (← c.handshake.get).result? with
   | some (.ok ()) => pure ()
   | some (.error e) => if (← c.state.get).phase == .ready then pure () else throw e
-  | none => c.awaitReady
+  | none => c.awaitReady deadline
 
-/-- Connect through `dial` and complete the handshake within two minutes. -/
-def connectWith (dial : Async Transport) : ExceptT ThinClientError Async Client := do
+/-- Connect through `dial` and complete the handshake within `handshakeTimeoutMs`, which also
+bounds each handshake after a reconnect. -/
+def connectWith (dial : Async Transport) (handshakeTimeoutMs : Nat := ThinClient.handshakeTimeoutMs) :
+    ExceptT ThinClientError Async Client := do
   let t ← liftAsync dial
   let token ← FixedBytes.random 16
   let handshake ← IO.Promise.new
   let c : Client := {
     dial
+    handshakeTimeoutMs
     transport := ← IO.mkRef t
+    generation := ← IO.mkRef 0
     writeLock := ← Std.Semaphore.new 1
     state := ← IO.mkRef { instanceToken := token }
     waiters := ← IO.mkRef {}
@@ -187,7 +238,7 @@ def connectWith (dial : Async Transport) : ExceptT ThinClientError Async Client 
     closed := ← IO.mkRef false }
   spawn (c.readLoop t)
   spawn do
-    sleep 120000
+    sleep (.ofNat handshakeTimeoutMs)
     handshake.resolve (.error .timeout)
   match ← waitPromise handshake with
   | some (.ok ()) => pure c
@@ -219,16 +270,24 @@ end Client
 
 def client : ClientM Client := read
 
-/-- Send a request that has no reply. -/
-def send {α : Type} [Request α] (req : α) : ClientM Unit := do
+private def deadlineAfter (timeoutMs : Option Nat) : BaseIO (Option Nat) := do
+  let now ← IO.monoMsNow
+  return timeoutMs.map (now + ·)
+
+/-- Send a request that has no reply, once a handshake has completed within `timeoutMs`. -/
+def send {α : Type} [Request α] (req : α) (timeoutMs : Option Nat := some callTimeoutMs) :
+    ClientM Unit := do
   let c ← read
-  c.awaitReady
+  c.awaitReady (← deadlineAfter timeoutMs)
   c.write (encodeRequest req)
 
-/-- Send a request and wait for its reply. A reply reporting an error is thrown. -/
-def call {α : Type} [Rpc α] (req : α) : ClientM (Rpc.Reply α) := do
+/-- Send a request and wait for its reply, failing with `.timeout` after `timeoutMs`; `none`
+waits until the client closes. A reply reporting an error is thrown. -/
+def call {α : Type} [Rpc α] (req : α) (timeoutMs : Option Nat := some callTimeoutMs) :
+    ClientM (Rpc.Reply α) := do
   let c ← read
-  c.awaitReady
+  let deadline ← deadlineAfter timeoutMs
+  c.awaitReady deadline
   let q := Rpc.queryId req
   let w : Waiter ← IO.Promise.new
   c.waiters.modify (·.insert q w)
@@ -236,7 +295,7 @@ def call {α : Type} [Rpc α] (req : α) : ClientM (Rpc.Reply α) := do
     -- A close between `awaitReady` and registering the waiter would miss it.
     if ← c.closed.get then throw .closed
     c.write (encodeRequest req)
-    let some result ← Client.waitPromise w | throw .closed
+    let some result ← Client.awaitUntil deadline w.result? | throw .closed
     let r ← liftM (m := Except ThinClientError) result
     let some reply := Rpc.reply? r | throw (.protocol (.unexpectedReply r.key))
     if let some e := Rpc.error? reply then throw e
@@ -252,7 +311,8 @@ def stop : ClientM Unit := do (← read).close true
 /-- Close the connection, leaving the daemon to keep the session. -/
 def disconnect : ClientM Unit := do (← read).close false
 
-def currentState : ClientM Protocol.State := do (← read).state.get
+/-- The protocol state, less the requests in flight, whose encodings carry capabilities. -/
+def currentState : ClientM Protocol.State := do return { ← (← read).state.get with inFlight := [] }
 
 def isConnected : ClientM Bool := do return (← currentState).isConnected
 
@@ -293,14 +353,16 @@ def withClientUnix {α : Type} (path : String) (k : ClientM α) :
 structure Subscription where
   private channel : Std.CloseableChannel Event
 
-def subscribe : ClientM Subscription := do
-  let ch ← Std.CloseableChannel.new
+/-- A subscription that falls `capacity` events behind is closed. -/
+def subscribe (capacity : Nat := subscriptionCapacity) : ClientM Subscription := do
+  let ch ← Std.CloseableChannel.new (some (max capacity 1))
   (← read).subscribers.modify (·.push ch)
   pure ⟨ch⟩
 
 namespace Subscription
 
-/-- The next event; `none` once the subscription or the client is closed. -/
+/-- The next event; `none` once the subscription or the client is closed, or the subscriber fell
+behind. -/
 def recv (s : Subscription) : Async (Option Event) := do await (← s.channel.recv)
 
 def close (s : Subscription) : BaseIO Unit := discard <| EIO.toBaseIO s.channel.close

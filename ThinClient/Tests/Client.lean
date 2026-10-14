@@ -236,6 +236,100 @@ def reconnectReplays (pipe : IO (Transport × Transport) := pipe) : Async Unit :
   unless sent.data == resent.data do throw (IO.userError "resend differs from the original")
   discard <| run c stop
 
+/-- A dial that hands out `ts` in turn, then fails. -/
+def dialing (ts : List Transport) : IO (Async Transport) := do
+  let dials ← IO.mkRef ts
+  return do
+    match ← dials.modifyGet fun ts => (ts.head?, ts.drop 1) with
+    | some t => pure t
+    | none => throw (IO.userError "no more daemons")
+
+def callTimesOut : Async Unit :=
+  withDaemon (fun d => do
+    d.handshake
+    discard <| d.expect GetMessageBoxIndexCounter
+    discard <| d.expect ThinClose)
+  fun c => do
+    expectError "call" (← run c (call (timeoutMs := some 200)
+      { queryId := fixed 16 0xc0, messageBoxIndex := index : GetMessageBoxIndexCounter }))
+      (· matches .timeout)
+    discard <| run c stop
+
+/-- After a reconnect, a daemon that never finishes the handshake is dropped and the next one
+dialled. -/
+def reconnectHandshakeTimesOut : Async Unit := do
+  let (ct1, dt1) ← pipe
+  let (ct2, dt2) ← pipe
+  let (ct3, dt3) ← pipe
+  let d1 ← Daemon.new dt1
+  let d2 ← Daemon.new dt2
+  let d3 ← Daemon.new dt3
+  let first ← async do
+    d1.handshake 0x50
+    sleep 200
+    d1.transport.close
+  let stalled ← async do
+    d2.send (status 0x51)
+    if (← d2.next).isSome then throw (IO.userError "stalled daemon was sent a request")
+  let third ← async do
+    d3.handshake 0x52
+    let (req, _) ← d3.expect GetMessageBoxIndexCounter
+    d3.send (counterReply req.queryId 3)
+  let c ← expectOk "connect" (← (Client.connectWith (← dialing [ct1, ct2, ct3])
+    (handshakeTimeoutMs := 500)).run)
+  sleep 500
+  let n ← expectOk "call" (← run c (getMessageBoxIndexCounter index))
+  unless n == 3 do throw (IO.userError s!"counter {n}")
+  await first; await stalled; await third
+  discard <| run c stop
+
+/-- A subscriber that does not keep up is cut off instead of queueing without bound. -/
+def slowSubscriberCutOff : Async Unit :=
+  withDaemon (fun d => do
+    d.handshake
+    let (req, _) ← d.expect GetMessageBoxIndexCounter
+    for i in [0:3] do
+      d.send (.messageReplyEvent {
+        messageId := none, surbId := some (fixed 16 i.toUInt8), payload := .empty, errorCode := 0 })
+    d.send (counterReply req.queryId 1))
+  fun c => do
+    let sub ← expectOk "subscribe" (← run c (subscribe (capacity := 2)))
+    discard <| expectOk "call" (← run c (getMessageBoxIndexCounter index))
+    let mut received := 0
+    while (← sub.recv).isSome do received := received + 1
+    unless received ≤ 2 do throw (IO.userError s!"{received} events past capacity")
+
+/-- A dial that completes after `stop` has its connection closed. -/
+def dialAfterStop : Async Unit := do
+  let (ct1, dt1) ← pipe
+  let (ct2, dt2) ← pipe
+  let d1 ← Daemon.new dt1
+  let d2 ← Daemon.new dt2
+  let dialled ← IO.mkRef 0
+  let started ← IO.Promise.new
+  let release ← IO.Promise.new
+  let dial : Async Transport := do
+    if (← dialled.modifyGet fun n => (n, n + 1)) == 0 then return ct1
+    started.resolve ()
+    discard <| await release.result?
+    return ct2
+  let first ← async do
+    d1.handshake
+    d1.transport.close
+  let c ← expectOk "connect" (← (Client.connectWith dial).run)
+  await first
+  discard <| await started.result?
+  discard <| run c stop
+  release.resolve ()
+  if (← d2.next).isSome then throw (IO.userError "client talked after stop")
+
+def stateHidesInFlight : Async Unit :=
+  withDaemon (fun d => d.handshake) fun c => do
+    let flying : Protocol.InFlight := { key := fixed 32 0x77, queryId := fixed 16 0xa0,
+                                         request := bytes 0x99 10 }
+    let s ← expectOk "state" (← run c (tracking flying currentState))
+    unless s.inFlight.isEmpty do throw (IO.userError "in-flight requests exposed")
+
 def suite : TestM Unit := do
   for (name, scenario) in [
       ("handshake and call", handshakeAndCall),
@@ -248,7 +342,12 @@ def suite : TestM Unit := do
       ("try/finally stop on error", closeOnError),
       ("failed handshake", handshakeFailure),
       ("reconnect replays in-flight requests", reconnectReplays),
-      ("reconnect over a unix socket", reconnectReplays unixPipe)] do
+      ("reconnect over a unix socket", reconnectReplays unixPipe),
+      ("call times out", callTimesOut),
+      ("reconnect handshake times out", reconnectHandshakeTimesOut),
+      ("slow subscriber is cut off", slowSubscriberCutOff),
+      ("dial completing after stop is closed", dialAfterStop),
+      ("state hides in-flight requests", stateHidesInFlight)] do
     match ← within 30 scenario with
     | .ok () => check name true
     | .error e => check name false (fun _ => e)

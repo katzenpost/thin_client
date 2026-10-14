@@ -47,6 +47,8 @@ structure ResendOptions where
   /-- Report a write to a box that already exists as `boxAlreadyExists` instead of success. -/
   noIdempotentBoxAlreadyExists : Bool := false
   replyIndex : Option UInt8 := none
+  /-- How long to wait for a courier's answer; `none` waits until cancelled. -/
+  timeoutMs : Option Nat := none
 
 structure TombstoneEnvelope where
   messageCiphertext : ByteArray
@@ -102,7 +104,7 @@ def startResendingEncryptedMessage (access : BoxAccess) (envelopeDescriptor mess
     noRetryOnBoxIdNotFound := options.noRetryOnBoxIdNotFound,
     noIdempotentBoxAlreadyExists := options.noIdempotentBoxAlreadyExists }
   let r ← tracking { key := envelopeHash, queryId := req.queryId, request := encodeRequest req }
-    (call req)
+    (call req options.timeoutMs)
   return { plaintext := r.plaintext, courierIdentityHash := r.courierIdentityHash,
            courierQueueId := r.courierQueueId }
 
@@ -118,11 +120,12 @@ def writeCapHash (writeCap : WriteCap) : Hash32 :=
   ⟨⟨h.toArray⟩, h.size_toArray⟩
 
 /-- Have the courier copy the stream of envelopes written with `writeCap` to their destinations,
-resending until it completes. -/
-def startResendingCopyCommand (writeCap : WriteCap) : ClientM Unit := do
+resending until it completes or `timeoutMs` passes. -/
+def startResendingCopyCommand (writeCap : WriteCap) (timeoutMs : Option Nat := none) :
+    ClientM Unit := do
   let req : StartResendingCopyCommand := { queryId := ← freshQueryId, writeCap }
   discard <| tracking { key := writeCapHash writeCap, queryId := req.queryId,
-                        request := encodeRequest req } (call req)
+                        request := encodeRequest req } (call req timeoutMs)
 
 def cancelResendingCopyCommand (writeCapHash : Hash32) : ClientM Unit := do
   untrack writeCapHash
