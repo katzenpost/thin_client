@@ -13,12 +13,12 @@ rev = "6aa918341adc7ae21b31dd6d3a75d856a2c61842"
 [[require]]
 name = "CryptWalker"
 git = "https://github.com/katzenpost/CryptWalker.git"
-rev = "16cf28b595cebd53b75d1a2ae0f5fe6bc3ee9e80"
+rev = "6e83bc855e46b6b6a6ec2f8916ce48039f51191a"
 
 [[require]]
 name = "lean_unix_socket"
 git = "https://github.com/katzenpost/lean_unix_socket.git"
-rev = "c93d00799af0a9302c00d84a1c332a59b7cea887"
+rev = "4bbfd6bb9df6bc9ce0d31252afff86d48683c9f2"
 
 [[lean_lib]]
 name = "ThinClient"
