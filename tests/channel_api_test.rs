@@ -45,6 +45,20 @@ const BOX_WRITES: usize = 3;
 /// outlast the CI step and report a timeout instead of a failure. This
 /// bounds the wait and names what was still missing when it ran out.
 const STREAM_STORED_DEADLINE: Duration = Duration::from_secs(600);
+/// The budget for every gate in this binary, which is the one that has to
+/// hold. `STREAM_STORED_DEADLINE` bounds a single call, and five tests
+/// call `await_stream_stored`, so on its own it bounds each wait and not
+/// their sum: five stalled gates outlast the step, which is killed without
+/// running an assertion or printing why. The clock starts at the first
+/// gate, so mixnet setup is not charged to it.
+const SUITE_STORED_BUDGET: Duration = Duration::from_secs(900);
+
+/// When every gate in this binary must have finished by.
+fn suite_give_up_at() -> tokio::time::Instant {
+    static START: std::sync::OnceLock<tokio::time::Instant> =
+        std::sync::OnceLock::new();
+    *START.get_or_init(tokio::time::Instant::now) + SUITE_STORED_BUDGET
+}
 
 /// Whether the box is stored at a replica, read once without retrying.
 async fn box_stored(client: &ThinClient, read_cap: &[u8], index: &[u8]) -> bool {
@@ -67,7 +81,8 @@ async fn box_stored(client: &ThinClient, read_cap: &[u8], index: &[u8]) -> bool 
 /// stream from its first box, so every box is checked, and a box that does not
 /// appear within `BOX_LOST_AFTER` is written again.
 ///
-/// The whole wait is bounded by `STREAM_STORED_DEADLINE`, so a stream that
+/// The wait is bounded by `STREAM_STORED_DEADLINE` for this stream and by
+/// `SUITE_STORED_BUDGET` across every gate in the binary, so a stream that
 /// never settles fails here, saying which box was outstanding, rather than
 /// running until the CI step times out and says nothing.
 async fn await_stream_stored(
@@ -77,7 +92,8 @@ async fn await_stream_stored(
     first_index: &[u8],
     payloads: &[Vec<u8>],
 ) {
-    let give_up_at = tokio::time::Instant::now() + STREAM_STORED_DEADLINE;
+    let give_up_at = (tokio::time::Instant::now() + STREAM_STORED_DEADLINE)
+        .min(suite_give_up_at());
     let mut index = first_index.to_vec();
     for (i, payload) in payloads.iter().enumerate() {
         let mut stored = false;
@@ -107,8 +123,10 @@ async fn await_stream_stored(
         }
         assert!(
             stored,
-            "box {} of {} was not stored after {} writes within {}s",
-            i + 1, payloads.len(), BOX_WRITES, STREAM_STORED_DEADLINE.as_secs(),
+            "box {} of {} was not stored after {} writes; this stream's \
+             budget is {}s and the whole binary's is {}s",
+            i + 1, payloads.len(), BOX_WRITES,
+            STREAM_STORED_DEADLINE.as_secs(), SUITE_STORED_BUDGET.as_secs(),
         );
         index = client.next_message_box_index(&index).await.expect("Failed to get next index");
     }

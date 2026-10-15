@@ -18,6 +18,7 @@ These tests require a running mixnet with client daemon for integration testing.
 import asyncio
 import pytest
 import os
+import time
 from katzenpost_thinclient import (
     ThinClient,
     Config,
@@ -72,6 +73,22 @@ BOX_LOST_AFTER_SECONDS = 120
 # outlast the CI step and report a timeout instead of a failure. This bounds
 # the wait and names what was still missing when it ran out.
 STREAM_STORED_DEADLINE_SECONDS = 600
+# The budget across every gate in this process, which is the one that has
+# to hold: the figure above bounds a single call, and several tests call
+# await_stream_stored, so alone it bounds each wait and not their sum. The
+# clock starts at the first gate, so mixnet setup is not charged to it.
+# time.monotonic, not loop.time: pytest-asyncio may give each test its own
+# event loop, and two loops' clocks share no origin.
+SUITE_STORED_BUDGET_SECONDS = 900
+_suite_started_at = None
+
+
+def _suite_give_up_at():
+    """When every gate in this process must have finished by."""
+    global _suite_started_at
+    if _suite_started_at is None:
+        _suite_started_at = time.monotonic()
+    return _suite_started_at + SUITE_STORED_BUDGET_SECONDS
 
 
 async def box_stored(client, read_cap, box_index):
@@ -115,23 +132,29 @@ async def await_stream_stored(client, keypair, payloads, writes=3):
     the stream from its first box, so every box is checked, and a box that
     does not appear within BOX_LOST_AFTER_SECONDS is written again.
 
-    The whole wait is bounded by STREAM_STORED_DEADLINE_SECONDS, so a stream
-    that never settles fails here, saying which box was outstanding, rather
-    than running until the CI step times out and says nothing.
+    The wait is bounded by STREAM_STORED_DEADLINE_SECONDS for this stream
+    and by SUITE_STORED_BUDGET_SECONDS across every gate in the process, so
+    a stream that never settles fails here, saying which box was
+    outstanding, rather than running until the CI step times out and says
+    nothing.
     """
-    loop = asyncio.get_running_loop()
-    give_up_at = loop.time() + STREAM_STORED_DEADLINE_SECONDS
+    give_up_at = min(
+        time.monotonic() + STREAM_STORED_DEADLINE_SECONDS,
+        _suite_give_up_at(),
+    )
     index = keypair.first_message_index
     for i, payload in enumerate(payloads):
         stored = False
         for attempt in range(writes):
-            if loop.time() >= give_up_at:
+            if time.monotonic() >= give_up_at:
                 break
             if attempt > 0:
                 print(f"--- Box {i + 1} was not stored; writing it again ---")
                 await write_box(client, keypair.write_cap, index, payload)
-            deadline = min(loop.time() + BOX_LOST_AFTER_SECONDS, give_up_at)
-            while not stored and loop.time() < deadline:
+            deadline = min(
+                time.monotonic() + BOX_LOST_AFTER_SECONDS, give_up_at
+            )
+            while not stored and time.monotonic() < deadline:
                 stored = await box_stored(client, keypair.read_cap, index)
                 if not stored:
                     await asyncio.sleep(BOX_POLL_SECONDS)
@@ -140,7 +163,9 @@ async def await_stream_stored(client, keypair, payloads, writes=3):
         if not stored:
             raise AssertionError(
                 f"box {i + 1} of {len(payloads)} was not stored after "
-                f"{writes} writes within {STREAM_STORED_DEADLINE_SECONDS}s"
+                f"{writes} writes; this stream's budget is "
+                f"{STREAM_STORED_DEADLINE_SECONDS}s and the whole "
+                f"process's is {SUITE_STORED_BUDGET_SECONDS}s"
             )
         index = await client.next_message_box_index(index)
 
