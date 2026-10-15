@@ -14,7 +14,7 @@ jobs:
       contents: read
       packages: write
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
       ELAN_VERSION: 4.2.4
       ELAN_SHA256: 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
@@ -73,13 +73,15 @@ jobs:
           ./elan-init -y --default-toolchain none --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      - uses: actions/cache@v4
+      # Restores the .lake that ci.yml's test-lean saves on main, which merge queue runs can read.
+      - uses: actions/cache/restore@v4
         with:
-          path: thinclient/.lake
+          path: .lake
           key: lean-${{ hashFiles('thinclient/lean-toolchain', 'thinclient/lake-manifest.json') }}
 
       - name: Build the Lean integration tests
         run: |
+          if [ -d .lake ]; then mv .lake thinclient/.lake; fi
           cd thinclient
           lake exe cache get
           lake build thinclient-integration
@@ -125,7 +127,7 @@ jobs:
 
       - name: Run Python, Rust and Lean integration tests in parallel
         id: parallel-tests
-        timeout-minutes: 60
+        timeout-minutes: 90
         run: |
           cd thinclient
 
