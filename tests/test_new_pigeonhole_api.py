@@ -67,6 +67,11 @@ async def setup_thin_client():
 # before it is taken as lost and written again.
 BOX_POLL_SECONDS = 3
 BOX_LOST_AFTER_SECONDS = 120
+# A whole stream's budget. The per-box retries alone allow
+# writes * BOX_LOST_AFTER_SECONDS each, so a stream of any length could
+# outlast the CI step and report a timeout instead of a failure. This bounds
+# the wait and names what was still missing when it ran out.
+STREAM_STORED_DEADLINE_SECONDS = 600
 
 
 async def box_stored(client, read_cap, box_index):
@@ -109,24 +114,34 @@ async def await_stream_stored(client, keypair, payloads, writes=3):
     it, so a write the replicas lose is still reported as sent. A Copy reads
     the stream from its first box, so every box is checked, and a box that
     does not appear within BOX_LOST_AFTER_SECONDS is written again.
+
+    The whole wait is bounded by STREAM_STORED_DEADLINE_SECONDS, so a stream
+    that never settles fails here, saying which box was outstanding, rather
+    than running until the CI step times out and says nothing.
     """
     loop = asyncio.get_running_loop()
+    give_up_at = loop.time() + STREAM_STORED_DEADLINE_SECONDS
     index = keypair.first_message_index
     for i, payload in enumerate(payloads):
+        stored = False
         for attempt in range(writes):
+            if loop.time() >= give_up_at:
+                break
             if attempt > 0:
                 print(f"--- Box {i + 1} was not stored; writing it again ---")
                 await write_box(client, keypair.write_cap, index, payload)
-            deadline = loop.time() + BOX_LOST_AFTER_SECONDS
-            stored = False
+            deadline = min(loop.time() + BOX_LOST_AFTER_SECONDS, give_up_at)
             while not stored and loop.time() < deadline:
                 stored = await box_stored(client, keypair.read_cap, index)
                 if not stored:
                     await asyncio.sleep(BOX_POLL_SECONDS)
             if stored:
                 break
-        else:
-            raise AssertionError(f"box {i + 1} of the stream was not stored after {writes} writes")
+        if not stored:
+            raise AssertionError(
+                f"box {i + 1} of {len(payloads)} was not stored after "
+                f"{writes} writes within {STREAM_STORED_DEADLINE_SECONDS}s"
+            )
         index = await client.next_message_box_index(index)
 
 

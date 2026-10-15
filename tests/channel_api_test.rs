@@ -40,6 +40,11 @@ async fn setup_thin_client() -> Result<std::sync::Arc<ThinClient>, Box<dyn std::
 const BOX_POLL: Duration = Duration::from_secs(3);
 const BOX_LOST_AFTER: Duration = Duration::from_secs(120);
 const BOX_WRITES: usize = 3;
+/// A whole stream's budget. The per-box retries alone allow
+/// `BOX_WRITES * BOX_LOST_AFTER` each, so a stream of any length could
+/// outlast the CI step and report a timeout instead of a failure. This
+/// bounds the wait and names what was still missing when it ran out.
+const STREAM_STORED_DEADLINE: Duration = Duration::from_secs(600);
 
 /// Whether the box is stored at a replica, read once without retrying.
 async fn box_stored(client: &ThinClient, read_cap: &[u8], index: &[u8]) -> bool {
@@ -61,6 +66,10 @@ async fn box_stored(client: &ThinClient, read_cap: &[u8], index: &[u8]) -> bool 
 /// it, so a write the replicas lose is still reported as sent. A Copy reads the
 /// stream from its first box, so every box is checked, and a box that does not
 /// appear within `BOX_LOST_AFTER` is written again.
+///
+/// The whole wait is bounded by `STREAM_STORED_DEADLINE`, so a stream that
+/// never settles fails here, saying which box was outstanding, rather than
+/// running until the CI step times out and says nothing.
 async fn await_stream_stored(
     client: &ThinClient,
     write_cap: &[u8],
@@ -68,10 +77,14 @@ async fn await_stream_stored(
     first_index: &[u8],
     payloads: &[Vec<u8>],
 ) {
+    let give_up_at = tokio::time::Instant::now() + STREAM_STORED_DEADLINE;
     let mut index = first_index.to_vec();
     for (i, payload) in payloads.iter().enumerate() {
         let mut stored = false;
         for attempt in 0..BOX_WRITES {
+            if tokio::time::Instant::now() >= give_up_at {
+                break;
+            }
             if attempt > 0 {
                 println!("--- Box {} was not stored; writing it again ---", i + 1);
                 let w = client.encrypt_write(payload, write_cap, &index).await
@@ -81,7 +94,7 @@ async fn await_stream_stored(
                     &w.envelope_descriptor, &w.message_ciphertext, &w.envelope_hash,
                 ).await.expect("Failed to write box");
             }
-            let deadline = tokio::time::Instant::now() + BOX_LOST_AFTER;
+            let deadline = (tokio::time::Instant::now() + BOX_LOST_AFTER).min(give_up_at);
             while !stored && tokio::time::Instant::now() < deadline {
                 stored = box_stored(client, read_cap, &index).await;
                 if !stored {
@@ -92,7 +105,11 @@ async fn await_stream_stored(
                 break;
             }
         }
-        assert!(stored, "box {} of the stream was not stored after {} writes", i + 1, BOX_WRITES);
+        assert!(
+            stored,
+            "box {} of {} was not stored after {} writes within {}s",
+            i + 1, payloads.len(), BOX_WRITES, STREAM_STORED_DEADLINE.as_secs(),
+        );
         index = client.next_message_box_index(&index).await.expect("Failed to get next index");
     }
 }
