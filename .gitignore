@@ -17,3 +17,5 @@ debian/librust-katzenpost-thin-client-dev.*.debhelper
 debian/librust-katzenpost-thin-client-dev.debhelper.log
 debian/librust-katzenpost-thin-client-dev.substvars
 dist/
+
+/.lake/

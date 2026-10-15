@@ -25,6 +25,18 @@ jobs:
       - uses: actions/checkout@v4
       - run: make test-rust
 
+  test-lean:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ vars.CI_IMAGE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .lake
+          key: lean-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+      - run: make test-lean
+
   check:
     runs-on: ubuntu-latest
     container:

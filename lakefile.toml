@@ -1,0 +1,32 @@
+name = "thinclient"
+defaultTargets = ["ThinClient"]
+
+[leanOptions]
+autoImplicit = false
+relaxedAutoImplicit = false
+
+[[require]]
+name = "cborg"
+git = "https://github.com/katzenpost/cborg.git"
+rev = "6aa918341adc7ae21b31dd6d3a75d856a2c61842"
+
+[[require]]
+name = "CryptWalker"
+git = "https://github.com/katzenpost/CryptWalker.git"
+rev = "6e83bc855e46b6b6a6ec2f8916ce48039f51191a"
+
+[[require]]
+name = "lean_unix_socket"
+git = "https://github.com/katzenpost/lean_unix_socket.git"
+rev = "4bbfd6bb9df6bc9ce0d31252afff86d48683c9f2"
+
+[[lean_lib]]
+name = "ThinClient"
+
+[[lean_exe]]
+name = "thinclient-test"
+root = "ThinClient.Tests.Main"
+
+[[lean_exe]]
+name = "thinclient-integration"
+root = "ThinClient.Tests.Integration"
