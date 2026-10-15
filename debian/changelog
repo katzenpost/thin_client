@@ -1,3 +1,9 @@
+katzenpost-thinclient (0.0.25) unstable; urgency=medium
+
+  * Release 0.0.25, carrying the handshake fixes made since 0.0.24.
+
+ -- Katzenpost <packages@katzenpost.network>  Thu, 15 Oct 2026 15:34:00 +0200
+
 katzenpost-thinclient (0.0.24) unstable; urgency=medium
 
   * Package the Python thin client.
