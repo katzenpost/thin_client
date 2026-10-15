@@ -18,6 +18,8 @@ jobs:
     env:
       ELAN_VERSION: 4.2.4
       ELAN_SHA256: 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
+      LEAN_DEPS_REPO: ghcr.io/${{ github.repository_owner }}/thin_client-lean-deps
+      LEAN_DEPS_PUSH: 1
 
     steps:
       - name: Checkout thinclient repository
@@ -73,17 +75,13 @@ jobs:
           ./elan-init -y --default-toolchain none --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      # Restores the .lake that ci.yml's test-lean saves on main, which merge queue runs can read.
-      - uses: actions/cache/restore@v4
-        with:
-          path: .lake
-          key: lean-${{ hashFiles('thinclient/lean-toolchain', 'thinclient/lake-manifest.json') }}
+      - uses: oras-project/setup-oras@v2.0.1
 
       - name: Build the Lean integration tests
         run: |
-          if [ -d .lake ]; then mv .lake thinclient/.lake; fi
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
           cd thinclient
-          lake exe cache get
+          scripts/lean-deps.sh
           lake build thinclient-integration
 
       - name: Install thinclient dependencies
