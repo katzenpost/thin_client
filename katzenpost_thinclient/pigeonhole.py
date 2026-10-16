@@ -309,11 +309,13 @@ async def start_resending_encrypted_message(
     https://katzenpost.network/docs/pigeonhole_explained/#the-pigeonhole-arq
     for the retransmission behavior and per-operation round-trip costs.
 
-    A write completes on the courier's ACK, a single mixnet round trip,
-    and by default treats BoxAlreadyExists as idempotent success. A read
-    is two-phased: after the ACK the daemon collects the payload with a
-    fresh SURB, decrypts it, and returns the plaintext; by default a
-    read retries BoxIDNotFound until the box is written.
+    Reads and writes are both two-phased: the courier ACKs the query,
+    and the daemon then collects the replica's answer with a fresh SURB.
+    A write completes once a replica confirms the box is stored, retries
+    temporary replica failures, and by default treats BoxAlreadyExists as
+    idempotent success. A read decrypts the payload and returns the
+    plaintext; by default a read retries BoxIDNotFound until the box is
+    written.
 
     The two keyword-only flags select the variant behaviors that the Go
     binding exposes as separate methods
