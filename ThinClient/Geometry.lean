@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -/
 
 import Cborg
-import CryptWalker.Sphinx.geometry_cbor
+import CryptWalker.Protocols.Sphinx.geometry_cbor
 
 /-! # Geometries
 
@@ -15,7 +15,7 @@ namespace ThinClient
 
 open Cborg
 
-export CryptWalker.Sphinx.Geometry (Geometry)
+export CryptWalker.Protocols.Sphinx.Geometry (Geometry)
 
 /-- Sizes of the Pigeonhole courier queries and replies, and the schemes they use. -/
 structure PigeonholeGeometry where
