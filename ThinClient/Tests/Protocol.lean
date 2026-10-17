@@ -47,7 +47,7 @@ def badStatus : Response :=
     sphinxGeometry := some { sphinxGeometry with nikeName := "", kemName := "" },
     pigeonholeGeometry := some pigeonholeGeometry }
 
-/-- A status naming a NIKE CryptWalker does not implement. -/
+/-- A status naming a NIKE Cryptlib does not implement. -/
 def foreignSchemeStatus : Response :=
   .connectionStatusEvent {
     isConnected := true, instanceToken := fixed 16 0x50,
@@ -103,8 +103,8 @@ def suite : TestM Unit := do
   let (_, es) := feed initial [badStatus]
   check "invalid geometry fails" (match failed es with | some (.badGeometry _) => true | _ => false)
   let (s, es) := feed initial [foreignSchemeStatus]
-  check "a scheme CryptWalker lacks is accepted" (failed es).isNone
-  checkEq "a scheme CryptWalker lacks advances" "awaitingDocument" (phaseName s.phase)
+  check "a scheme Cryptlib lacks is accepted" (failed es).isNone
+  checkEq "a scheme Cryptlib lacks advances" "awaitingDocument" (phaseName s.phase)
 
   -- Replies go to their query.
   let (ready, _) := feed initial handshake

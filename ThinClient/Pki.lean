@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -/
 
 import ThinClient.Cbor
-import CryptWalker.Hash.Blake2b
+import Cryptlib.Primitives.Hash.Blake2b
 
 /-! # PKI document
 
@@ -207,7 +207,7 @@ structure ServiceDescriptor where
 /-- The destination to send to: the BLAKE2b-256 hash of the node's identity key, and its
 queue. -/
 def ServiceDescriptor.toDestination (s : ServiceDescriptor) : ByteArray × ByteArray :=
-  (⟨(CryptWalker.Hash.Blake2b.hash256 s.mixDescriptor.identityKey).toArray⟩, s.recipientQueueId)
+  (⟨(Cryptlib.Primitives.Hash.Blake2b.hash256 s.mixDescriptor.identityKey).toArray⟩, s.recipientQueueId)
 
 /-- Every service node offering `capability`. -/
 def findServices (capability : String) (doc : Document) : Array ServiceDescriptor :=

@@ -105,8 +105,8 @@ def checkDocument (rs : List Response) : TestM Unit := do
   checkEq "no other services" 0 (findServices "nope" doc).size
   let some geometry := status.sphinxGeometry | check "sphinx geometry present" false
   check "sphinx geometry validates" (geometry.validate matches .ok ())
-  check "sphinx geometry is CryptWalker's" (match
-      CryptWalker.Protocols.Sphinx.Geometry.ofNIKE "x25519" 2000 true 5 with
+  check "sphinx geometry is Cryptlib's" (match
+      Cryptlib.Protocols.Sphinx.Geometry.ofNIKE "x25519" 2000 true 5 with
     | .ok g => g == geometry | _ => false)
   check "sphinx geometry hash is the document's" (sameBytes ⟨geometry.hash.toArray⟩ doc.sphinxGeometryHash)
   let some ph := status.pigeonholeGeometry | check "pigeonhole geometry present" false

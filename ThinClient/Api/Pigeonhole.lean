@@ -116,7 +116,7 @@ def cancelResendingEncryptedMessage (envelopeHash : Hash32) : ClientM Unit := do
 
 /-- The key a copy command is tracked and cancelled by: BLAKE2b-256 of the write capability. -/
 def writeCapHash (writeCap : WriteCap) : Hash32 :=
-  let h := CryptWalker.Hash.Blake2b.hash256 writeCap.bytes
+  let h := Cryptlib.Primitives.Hash.Blake2b.hash256 writeCap.bytes
   ⟨⟨h.toArray⟩, h.size_toArray⟩
 
 /-- Have the courier copy the stream of envelopes written with `writeCap` to their destinations,
