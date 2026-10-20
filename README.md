@@ -3,8 +3,8 @@
 *Thin client libraries for sending and receiving messages via the
 Katzenpost mix network.*
 
-This repository contains the [Rust](README_rust.md) and
-[Python](README_python.md) thin client libraries for
+This repository contains the [Rust](README_rust.md),
+[Python](README_python.md) and [Lean](README_lean.md) thin client libraries for
 [Katzenpost](https://katzenpost.network/), together with
 `pigeonhole-cp`, a small command-line utility for sending and
 receiving files over Pigeonhole channels.
@@ -73,6 +73,7 @@ and §§4-5 of the [Echomix paper](https://arxiv.org/abs/2501.02933).
 
 - [Python thin client](README_python.md), distributed via PyPI as [`katzenpost_thinclient`](https://pypi.org/project/katzenpost_thinclient/).
 - [Rust thin client](README_rust.md), distributed via crates.io as [`katzenpost_thin_client`](https://crates.io/crates/katzenpost_thin_client).
+- [Lean thin client](README_lean.md), the `thinclient` Lake package.
 
 
 ## pigeonhole-cp

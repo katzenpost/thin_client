@@ -1,4 +1,8 @@
 name = "thinclient"
+version = "0.1.0"
+description = "Lean thin client for the Katzenpost mixnet"
+keywords = ["katzenpost", "mixnet", "client", "privacy"]
+license = "AGPL-3.0-only"
 defaultTargets = ["ThinClient"]
 
 [leanOptions]
