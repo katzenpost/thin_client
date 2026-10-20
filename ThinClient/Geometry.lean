@@ -4,18 +4,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 -/
 
 import Cborg
-import CryptWalker.Protocols.Sphinx.geometry_cbor
+import Cryptlib.Protocols.Sphinx.geometry_cbor
 
 /-! # Geometries
 
 The daemon reports two geometries when a client connects: the Sphinx packet geometry, whose type,
-encoding and hash come from CryptWalker, and the Pigeonhole geometry defined here. -/
+encoding and hash come from Cryptlib, and the Pigeonhole geometry defined here. -/
 
 namespace ThinClient
 
 open Cborg
 
-export CryptWalker.Protocols.Sphinx.Geometry (Geometry)
+export Cryptlib.Protocols.Sphinx.Geometry (Geometry)
 
 /-- Sizes of the Pigeonhole courier queries and replies, and the schemes they use. -/
 structure PigeonholeGeometry where
@@ -58,7 +58,7 @@ def validate (g : PigeonholeGeometry) : Except String Unit := do
 end PigeonholeGeometry
 
 /-- Exactly one scheme name is set and the header dimensions are nonzero. The daemon does the
-Sphinx cryptography, so the scheme need not be one CryptWalker implements. -/
+Sphinx cryptography, so the scheme need not be one Cryptlib implements. -/
 def checkSphinxGeometry (g : Geometry) : Except String Unit := do
   if g.nikeName.isEmpty == g.kemName.isEmpty then
     throw "geometry must set exactly one of NIKEName and KEMName"

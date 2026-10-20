@@ -19,7 +19,7 @@ def fixed (n : Nat) (start : UInt8) : FixedBytes n :=
   ⟨bytes start n, by simp [bytes, ByteArray.size]⟩
 
 def sphinxGeometry : Geometry :=
-  match CryptWalker.Protocols.Sphinx.Geometry.ofNIKE "x25519" 2000 true 5 with
+  match Cryptlib.Protocols.Sphinx.Geometry.ofNIKE "x25519" 2000 true 5 with
   | .ok g => g
   | .error _ => default
 

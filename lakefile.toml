@@ -11,9 +11,9 @@ git = "https://github.com/katzenpost/cborg.git"
 rev = "6aa918341adc7ae21b31dd6d3a75d856a2c61842"
 
 [[require]]
-name = "CryptWalker"
-git = "https://github.com/katzenpost/CryptWalker.git"
-rev = "4831c416b8552e8829f77bfc9e5710fece5379c8"
+name = "cryptlib"
+git = "https://github.com/katzenpost/cryptlib.git"
+rev = "6f651738d26db5ac18dd5670bf501cfc63723175"
 
 [[require]]
 name = "lean_unix_socket"
