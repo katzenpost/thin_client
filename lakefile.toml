@@ -17,7 +17,7 @@ rev = "v0.2.0"
 [[require]]
 name = "cryptlib"
 git = "https://github.com/katzenpost/cryptlib.git"
-rev = "dedbe442a2305fac2f86d4fb7098d47d7dfd109f"
+rev = "v0.2.0"
 
 [[require]]
 name = "lean_unix_socket"
