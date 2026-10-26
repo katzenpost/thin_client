@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (C) 2026 David Stainton
 SPDX-License-Identifier: AGPL-3.0-only
 -/
 
-import Cryptlib.Util.newhex
+import Cryptlib.Util.HexBytes
 
 /-! # Test helpers
 
@@ -36,10 +36,10 @@ def runSuite (name : String) (t : TestM Unit) : IO Bool := do
   IO.println s!"{name}: {pass} passed, {fail} failed"
   return fail == 0
 
-def hex (b : ByteArray) : String := Cryptlib.Util.newhex.byteArrayToHex b
+def hex (b : ByteArray) : String := Cryptlib.Util.HexBytes.byteArrayToHex b
 
 def unhex (s : String) : Except String ByteArray :=
-  match Cryptlib.Util.newhex.hexStringToByteArray s with
+  match Cryptlib.Util.HexBytes.hexStringToByteArray s with
   | some b => .ok b
   | none => .error s!"not hex: {s.take 16}"
 
