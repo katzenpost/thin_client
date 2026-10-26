@@ -22,7 +22,7 @@ rev = "v0.2.0"
 [[require]]
 name = "lean_unix_socket"
 git = "https://github.com/katzenpost/lean_unix_socket.git"
-rev = "4928d11994868397da22399e14098a99449f4544"
+rev = "2d27248dd646a49653de201049b75f8601bb0da1"
 
 [[lean_lib]]
 name = "ThinClient"
