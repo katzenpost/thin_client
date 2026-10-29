@@ -1678,6 +1678,187 @@ impl ThinClient {
     }
 }
 
+// ========================================================================
+// NIKE and sealed boxes: the daemon does the cryptography
+// ========================================================================
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct NikeGenerateKeyPairRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    nike_scheme: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct NikeGenerateKeyPairReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    public_key: Option<Vec<u8>>,
+    #[serde(default, with = "optional_bytes")]
+    private_key: Option<Vec<u8>>,
+    #[serde(default)]
+    error_code: u8,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct NikeDeriveSecretRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    nike_scheme: String,
+    #[serde(with = "serde_bytes")]
+    private_key: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    public_key: Vec<u8>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct NikeDeriveSecretReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    shared_secret: Option<Vec<u8>>,
+    #[serde(default)]
+    error_code: u8,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct BoxSealRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    nike_scheme: String,
+    #[serde(with = "serde_bytes")]
+    public_key: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    plaintext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct BoxSealReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    ciphertext: Option<Vec<u8>>,
+    #[serde(default)]
+    error_code: u8,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct BoxOpenRequest {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    nike_scheme: String,
+    #[serde(with = "serde_bytes")]
+    private_key: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct BoxOpenReply {
+    #[serde(with = "serde_bytes")]
+    query_id: Vec<u8>,
+    #[serde(default, with = "optional_bytes")]
+    plaintext: Option<Vec<u8>>,
+    #[serde(default)]
+    error_code: u8,
+}
+
+/// A NIKE keypair from nike_generate_key_pair, as hpqc encodes its keys.
+#[derive(Clone)]
+pub struct NikeKeyPair {
+    pub public_key: Vec<u8>,
+    pub private_key: Vec<u8>,
+}
+
+impl std::fmt::Debug for NikeKeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NikeKeyPair").field("public_key", &self.public_key).finish_non_exhaustive()
+    }
+}
+
+fn required(v: Option<Vec<u8>>, what: &str) -> Result<Vec<u8>, ThinClientError> {
+    v.ok_or_else(|| ThinClientError::Other(format!("{what} is None")))
+}
+
+impl ThinClient {
+    /// Sends a request served locally by the daemon and decodes its reply.
+    async fn local_query<Req: serde::Serialize, Reply: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+        query_id: Vec<u8>,
+        req: &Req,
+    ) -> Result<Reply, ThinClientError> {
+        let request_value = serde_cbor::value::to_value(req).map_err(ThinClientError::CborError)?;
+        let mut request = BTreeMap::new();
+        request.insert(Value::Text(key.to_string()), request_value);
+        let reply_map = self.send_and_wait_direct(query_id, request).await?;
+        if let Some(Value::Integer(code)) = reply_map.get(&Value::Text("error_code".to_string()))
+            && *code != 0
+        {
+            return Err(error_code_to_error(*code as u8));
+        }
+        serde_cbor::value::from_value(Value::Map(reply_map)).map_err(ThinClientError::CborError)
+    }
+
+    /// Generates a keypair for the NIKE named by `nike_scheme`, e.g.
+    /// "X25519-CTIDH1024". The daemon does the cryptography and keeps nothing.
+    pub async fn nike_generate_key_pair(&self, nike_scheme: &str) -> Result<NikeKeyPair, ThinClientError> {
+        let query_id = Self::new_query_id();
+        let req = NikeGenerateKeyPairRequest { query_id: query_id.clone(), nike_scheme: nike_scheme.to_string() };
+        let reply: NikeGenerateKeyPairReply = self.local_query("nike_generate_key_pair", query_id, &req).await?;
+        Ok(NikeKeyPair {
+            public_key: required(reply.public_key, "nike_generate_key_pair: public_key")?,
+            private_key: required(reply.private_key, "nike_generate_key_pair: private_key")?,
+        })
+    }
+
+    /// Derives the shared secret of `private_key` and the peer's
+    /// `public_key`. A degenerate (all zero) secret is an error.
+    pub async fn nike_derive_secret(
+        &self,
+        nike_scheme: &str,
+        private_key: &[u8],
+        public_key: &[u8],
+    ) -> Result<Vec<u8>, ThinClientError> {
+        let query_id = Self::new_query_id();
+        let req = NikeDeriveSecretRequest {
+            query_id: query_id.clone(),
+            nike_scheme: nike_scheme.to_string(),
+            private_key: private_key.to_vec(),
+            public_key: public_key.to_vec(),
+        };
+        let reply: NikeDeriveSecretReply = self.local_query("nike_derive_secret", query_id, &req).await?;
+        required(reply.shared_secret, "nike_derive_secret: shared_secret")
+    }
+
+    /// Seals `plaintext` to a NIKE public key with hpqc's sealedbox.
+    pub async fn box_seal(&self, nike_scheme: &str, public_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, ThinClientError> {
+        let query_id = Self::new_query_id();
+        let req = BoxSealRequest {
+            query_id: query_id.clone(),
+            nike_scheme: nike_scheme.to_string(),
+            public_key: public_key.to_vec(),
+            plaintext: plaintext.to_vec(),
+        };
+        let reply: BoxSealReply = self.local_query("box_seal", query_id, &req).await?;
+        required(reply.ciphertext, "box_seal: ciphertext")
+    }
+
+    /// Opens a box sealed with box_seal, with the recipient's NIKE private key.
+    pub async fn box_open(&self, nike_scheme: &str, private_key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, ThinClientError> {
+        let query_id = Self::new_query_id();
+        let req = BoxOpenRequest {
+            query_id: query_id.clone(),
+            nike_scheme: nike_scheme.to_string(),
+            private_key: private_key.to_vec(),
+            ciphertext: ciphertext.to_vec(),
+        };
+        let reply: BoxOpenReply = self.local_query("box_open", query_id, &req).await?;
+        required(reply.plaintext, "box_open: plaintext")
+    }
+}
+
 #[cfg(test)]
 mod sack_request_tests {
     use super::*;
@@ -1736,6 +1917,71 @@ mod sack_request_tests {
         let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
         for expected in ["query_id", "voucher_secret_key", "sealed_reply", "message_write_cap"] {
             assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
+        }
+    }
+
+    fn seq(start: u8, n: usize) -> Vec<u8> {
+        (0..n).map(|i| start.wrapping_add(i as u8)).collect()
+    }
+
+    fn vector_body(section: &str, name: &str) -> Vec<u8> {
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/vectors.json")).unwrap();
+        let e = v[section].as_array().unwrap().iter().find(|e| e["name"] == name).unwrap();
+        hex::decode(e["body"].as_str().unwrap()).unwrap()
+    }
+
+    // The requests encode byte for byte as the Go reference's vectors.
+    #[test]
+    fn box_requests_match_go_vectors() {
+        let q = seq(0x20, 16);
+        let s = "X25519-CTIDH1024".to_string();
+        let cases = [
+            ("nike_generate_key_pair", serde_cbor::to_vec(&NikeGenerateKeyPairRequest { query_id: q.clone(), nike_scheme: s.clone() })),
+            ("nike_derive_secret", serde_cbor::to_vec(&NikeDeriveSecretRequest {
+                query_id: q.clone(), nike_scheme: s.clone(), private_key: seq(0x91, 32), public_key: seq(0xa1, 32) })),
+            ("box_seal", serde_cbor::to_vec(&BoxSealRequest {
+                query_id: q.clone(), nike_scheme: s.clone(), public_key: seq(0xa1, 32), plaintext: seq(0xb1, 16) })),
+            ("box_open", serde_cbor::to_vec(&BoxOpenRequest {
+                query_id: q.clone(), nike_scheme: s.clone(), private_key: seq(0x91, 32), ciphertext: seq(0xc1, 48) })),
+        ];
+        for (name, got) in cases {
+            assert_eq!(hex::encode(got.unwrap()), hex::encode(vector_body("requests", name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn box_replies_decode_go_vectors() {
+        let r: NikeGenerateKeyPairReply = serde_cbor::from_slice(&vector_body("responses", "nike_generate_key_pair_reply")).unwrap();
+        assert_eq!((r.public_key, r.private_key), (Some(seq(0xa1, 32)), Some(seq(0x91, 32))));
+        let r: NikeDeriveSecretReply = serde_cbor::from_slice(&vector_body("responses", "nike_derive_secret_reply")).unwrap();
+        assert_eq!(r.shared_secret, Some(seq(0xd1, 32)));
+        let r: BoxSealReply = serde_cbor::from_slice(&vector_body("responses", "box_seal_reply")).unwrap();
+        assert_eq!(r.ciphertext, Some(seq(0xc1, 48)));
+        let r: BoxOpenReply = serde_cbor::from_slice(&vector_body("responses", "box_open_reply")).unwrap();
+        assert_eq!(r.plaintext, Some(seq(0xb1, 16)));
+        let r: BoxOpenReply = serde_cbor::from_slice(&vector_body("responses", "box_open_reply_err")).unwrap();
+        assert_eq!(r.error_code, 3);
+    }
+
+    #[test]
+    fn box_request_field_names() {
+        let cases = [
+            (serde_cbor::value::to_value(NikeGenerateKeyPairRequest { query_id: vec![1], nike_scheme: "X".into() }).unwrap(),
+             vec!["query_id", "nike_scheme"]),
+            (serde_cbor::value::to_value(NikeDeriveSecretRequest { query_id: vec![1], nike_scheme: "X".into(), private_key: vec![2], public_key: vec![3] }).unwrap(),
+             vec!["query_id", "nike_scheme", "private_key", "public_key"]),
+            (serde_cbor::value::to_value(BoxSealRequest { query_id: vec![1], nike_scheme: "X".into(), public_key: vec![2], plaintext: vec![3] }).unwrap(),
+             vec!["query_id", "nike_scheme", "public_key", "plaintext"]),
+            (serde_cbor::value::to_value(BoxOpenRequest { query_id: vec![1], nike_scheme: "X".into(), private_key: vec![2], ciphertext: vec![3] }).unwrap(),
+             vec!["query_id", "nike_scheme", "private_key", "ciphertext"]),
+        ];
+        for (value, expected) in cases {
+            let mut keys = map_keys(value);
+            keys.sort();
+            let mut expected: Vec<String> = expected.into_iter().map(String::from).collect();
+            expected.sort();
+            assert_eq!(keys, expected);
         }
     }
 

@@ -16,3 +16,4 @@ import ThinClient.Api.Pki
 import ThinClient.Api.Messaging
 import ThinClient.Api.Pigeonhole
 import ThinClient.Api.Voucher
+import ThinClient.Api.Box
