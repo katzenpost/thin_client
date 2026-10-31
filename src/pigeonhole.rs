@@ -704,8 +704,9 @@ impl ThinClient {
         let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_read: envelope_hash is None".to_string()))?;
         let next_message_box_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("encrypt_read: next_message_box_index is None".to_string()))?;
 
-        let mut envelope_hash = [0u8; 32];
-        envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
+        let envelope_hash: [u8; 32] = envelope_hash_vec.try_into().map_err(|_| {
+            ThinClientError::Other("encrypt_read: envelope_hash must be exactly 32 bytes".to_string())
+        })?;
 
         Ok(EncryptReadResult {
             message_ciphertext,
@@ -773,8 +774,9 @@ impl ThinClient {
         let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_write: envelope_hash is None".to_string()))?;
         let next_message_box_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("encrypt_write: next_message_box_index is None".to_string()))?;
 
-        let mut envelope_hash = [0u8; 32];
-        envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
+        let envelope_hash: [u8; 32] = envelope_hash_vec.try_into().map_err(|_| {
+            ThinClientError::Other("encrypt_write: envelope_hash must be exactly 32 bytes".to_string())
+        })?;
 
         Ok(EncryptWriteResult {
             message_ciphertext,
