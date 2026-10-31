@@ -276,6 +276,12 @@ const THIN_CLIENT_ERROR_COPY_COMMAND_FAILED: u8 = 26;
 /// success). Unlike `error_code_to_error()`, this helper has access to the
 /// reply's diagnostic fields and can populate
 /// `ThinClientError::CopyCommandFailed { .. }` when the courier reports code 26.
+fn envelope_hash_from_reply(op: &str, bytes: &[u8]) -> Result<[u8; 32], ThinClientError> {
+    <[u8; 32]>::try_from(bytes).map_err(|_| {
+        ThinClientError::Other(format!("{op}: envelope_hash must be 32 bytes, got {}", bytes.len()))
+    })
+}
+
 fn copy_reply_to_error(reply: &StartResendingCopyCommandReply) -> Option<ThinClientError> {
     match reply.error_code {
         0 => None,
@@ -704,8 +710,7 @@ impl ThinClient {
         let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_read: envelope_hash is None".to_string()))?;
         let next_message_box_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("encrypt_read: next_message_box_index is None".to_string()))?;
 
-        let mut envelope_hash = [0u8; 32];
-        envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
+        let envelope_hash = envelope_hash_from_reply("encrypt_read", &envelope_hash_vec)?;
 
         Ok(EncryptReadResult {
             message_ciphertext,
@@ -773,8 +778,7 @@ impl ThinClient {
         let envelope_hash_vec = reply.envelope_hash.ok_or_else(|| ThinClientError::Other("encrypt_write: envelope_hash is None".to_string()))?;
         let next_message_box_index = reply.next_message_box_index.ok_or_else(|| ThinClientError::Other("encrypt_write: next_message_box_index is None".to_string()))?;
 
-        let mut envelope_hash = [0u8; 32];
-        envelope_hash.copy_from_slice(&envelope_hash_vec[..32]);
+        let envelope_hash = envelope_hash_from_reply("encrypt_write", &envelope_hash_vec)?;
 
         Ok(EncryptWriteResult {
             message_ciphertext,
@@ -1681,6 +1685,13 @@ impl ThinClient {
 #[cfg(test)]
 mod sack_request_tests {
     use super::*;
+
+    #[test]
+    fn envelope_hash_requires_exactly_32_bytes() {
+        assert!(envelope_hash_from_reply("encrypt_read", &[7u8; 31]).is_err());
+        assert!(envelope_hash_from_reply("encrypt_read", &[7u8; 33]).is_err());
+        assert_eq!(envelope_hash_from_reply("encrypt_read", &[7u8; 32]).unwrap(), [7u8; 32]);
+    }
 
     fn map_keys(value: Value) -> Vec<String> {
         match value {
