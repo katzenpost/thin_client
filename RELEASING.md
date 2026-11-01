@@ -74,8 +74,14 @@ repository, so pushing the tag is the release.
 6. Commit, push the branch, open a pull request, and merge it into
    `main` once CI passes. The build job of `publish-rust.yml` runs on
    every pull request, so a stale `Cargo.lock` is caught here while it
-   is still a one-line fix on the branch, and the integration workflow
-   runs the clients against the freshly pinned katzenpost.
+   is still a one-line fix on the branch. The docker integration
+   workflow runs against the freshly pinned katzenpost only in the
+   merge queue or when started by hand, so trigger it on the branch
+   before merging:
+
+   ```bash
+   gh workflow run test-integration-docker.yml --ref prepare_release_X.Y.Z
+   ```
 
 ## Tags
 
