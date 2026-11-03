@@ -161,6 +161,8 @@ from .pigeonhole import (
     voucher_induct,
     voucher_open,
     voucher_derive_stream,
+    VOUCHER_FORM_LONG,
+    VOUCHER_FORM_COMPACT,
     # Result dataclasses
     KeypairResult,
     EncryptReadResult,
@@ -219,6 +221,8 @@ __all__ = [
     'VoucherInductResult',
     'VoucherOpenResult',
     'VoucherStreamResult',
+    'VOUCHER_FORM_LONG',
+    'VOUCHER_FORM_COMPACT',
     # Utility functions
     'find_services',
     'pretty_print_obj',

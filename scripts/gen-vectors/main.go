@@ -203,6 +203,9 @@ func requests(c caps) []named[thin.Request] {
 			IsLast: true, Buffer: seq(0x31, 8)}}},
 		{"voucher_mint", &thin.Request{VoucherMint: &thin.VoucherMint{
 			QueryID: q, MessageWriteCap: must(c.write.MarshalBinary()), DisplayName: "alice"}}},
+		{"voucher_mint_long", &thin.Request{VoucherMint: &thin.VoucherMint{
+			QueryID: q, MessageWriteCap: must(c.write.MarshalBinary()), DisplayName: "alice",
+			Form: thin.VoucherFormLong}}},
 		{"voucher_induct", &thin.Request{VoucherInduct: &thin.VoucherInduct{
 			QueryID: q, Voucher: seq(0x41, 32), VoucherPayload: seq(0x51, 64), WhoReply: seq(0x61, 16)}}},
 		{"voucher_open", &thin.Request{VoucherOpen: &thin.VoucherOpen{

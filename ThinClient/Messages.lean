@@ -318,20 +318,33 @@ instance : Serialise CreateCourierEnvelopesFromTombstoneRange where
       isLast := ← r.withDefault "is_last" false
       buffer := ← r.withDefault "buffer" .empty }
 
+/-- The long VoucherPayload form for `voucherMint`: the signed CBOR map that inductors from before
+the compact form read. Its reply is the MKEM ciphertext in VoucherStream box 1. -/
+def voucherFormLong : UInt8 := 1
+
+/-- The compact VoucherPayload form for `voucherMint`: the signed CBOR array. Its reply is a sealed
+box framed over VoucherStream boxes 1 on. The daemon mints it when no form is given. -/
+def voucherFormCompact : UInt8 := 2
+
 structure VoucherMint where
   queryId : QueryId
   messageWriteCap : ByteArray
   displayName : String
+  /-- The VoucherPayload form: `voucherFormLong` or `voucherFormCompact`; 0, left off the wire,
+  means compact. -/
+  form : UInt8 := 0
 
 instance : Serialise VoucherMint where
   encode m := encodeRecord [field "query_id" m.queryId,
-    field "message_write_cap" m.messageWriteCap, field "display_name" m.displayName]
+    field "message_write_cap" m.messageWriteCap, field "display_name" m.displayName,
+    optField "form" (if m.form == 0 then none else some m.form)]
   decode := do
     let r ← decodeRecord
     return {
       queryId := ← r.required "query_id"
       messageWriteCap := ← r.withDefault "message_write_cap" .empty
-      displayName := ← r.withDefault "display_name" "" }
+      displayName := ← r.withDefault "display_name" ""
+      form := ← r.withDefault "form" 0 }
 
 structure VoucherInduct where
   queryId : QueryId

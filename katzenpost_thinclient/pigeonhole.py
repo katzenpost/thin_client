@@ -980,13 +980,27 @@ async def create_courier_envelopes_from_tombstone_range(
 # fresh randomness for the reply keypair, the salt, and the seal.
 
 
-async def voucher_mint(self, message_write_cap: bytes, display_name: str) -> VoucherMintResult:
+VOUCHER_FORM_LONG = 1
+"""The long VoucherPayload form for voucher_mint: the signed CBOR map that
+inductors from before the compact form read. Its reply is the MKEM ciphertext
+in VoucherStream box 1."""
+
+VOUCHER_FORM_COMPACT = 2
+"""The compact VoucherPayload form for voucher_mint: the signed CBOR array. Its
+reply is a sealed box framed over VoucherStream boxes 1 on. The daemon mints it
+when no form is given."""
+
+
+async def voucher_mint(self, message_write_cap: bytes, display_name: str, form: int = 0) -> VoucherMintResult:
     """
     Mints a Voucher from the joiner's MessageStream write cap.
 
     Args:
         message_write_cap: The joiner's MessageStream write capability.
         display_name: The joiner's chosen display name.
+        form: VOUCHER_FORM_LONG, to join a group whose inductors only read
+            the long form, or VOUCHER_FORM_COMPACT; 0 (the default) lets the
+            daemon choose, which is the compact form.
 
     Returns:
         VoucherMintResult: The Voucher, the payload to publish, the rendezvous
@@ -1003,6 +1017,8 @@ async def voucher_mint(self, message_write_cap: bytes, display_name: str) -> Vou
             "display_name": display_name,
         }
     }
+    if form:
+        request["voucher_mint"]["form"] = form
     try:
         reply = await self._send_and_wait(query_id=query_id, request=request)
     except Exception as e:
