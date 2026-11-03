@@ -161,6 +161,10 @@ from .pigeonhole import (
     voucher_induct,
     voucher_open,
     voucher_derive_stream,
+    nike_generate_key_pair,
+    nike_derive_secret,
+    box_seal,
+    box_open,
     VOUCHER_FORM_LONG,
     VOUCHER_FORM_COMPACT,
     # Result dataclasses
@@ -175,6 +179,7 @@ from .pigeonhole import (
     VoucherInductResult,
     VoucherOpenResult,
     VoucherStreamResult,
+    NikeKeyPairResult,
 )
 
 
@@ -196,6 +201,10 @@ ThinClient.voucher_mint = voucher_mint
 ThinClient.voucher_induct = voucher_induct
 ThinClient.voucher_open = voucher_open
 ThinClient.voucher_derive_stream = voucher_derive_stream
+ThinClient.nike_generate_key_pair = nike_generate_key_pair
+ThinClient.nike_derive_secret = nike_derive_secret
+ThinClient.box_seal = box_seal
+ThinClient.box_open = box_open
 
 
 # Export public API
@@ -221,6 +230,7 @@ __all__ = [
     'VoucherInductResult',
     'VoucherOpenResult',
     'VoucherStreamResult',
+    'NikeKeyPairResult',
     'VOUCHER_FORM_LONG',
     'VOUCHER_FORM_COMPACT',
     # Utility functions
