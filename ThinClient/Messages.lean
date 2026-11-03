@@ -318,20 +318,33 @@ instance : Serialise CreateCourierEnvelopesFromTombstoneRange where
       isLast := ← r.withDefault "is_last" false
       buffer := ← r.withDefault "buffer" .empty }
 
+/-- The long VoucherPayload form for `voucherMint`: the signed CBOR map that inductors from before
+the compact form read. Its reply is the MKEM ciphertext in VoucherStream box 1. -/
+def voucherFormLong : UInt8 := 1
+
+/-- The compact VoucherPayload form for `voucherMint`: the signed CBOR array. Its reply is a sealed
+box framed over VoucherStream boxes 1 on. The daemon mints it when no form is given. -/
+def voucherFormCompact : UInt8 := 2
+
 structure VoucherMint where
   queryId : QueryId
   messageWriteCap : ByteArray
   displayName : String
+  /-- The VoucherPayload form: `voucherFormLong` or `voucherFormCompact`; 0, left off the wire,
+  means compact. -/
+  form : UInt8 := 0
 
 instance : Serialise VoucherMint where
   encode m := encodeRecord [field "query_id" m.queryId,
-    field "message_write_cap" m.messageWriteCap, field "display_name" m.displayName]
+    field "message_write_cap" m.messageWriteCap, field "display_name" m.displayName,
+    optField "form" (if m.form == 0 then none else some m.form)]
   decode := do
     let r ← decodeRecord
     return {
       queryId := ← r.required "query_id"
       messageWriteCap := ← r.withDefault "message_write_cap" .empty
-      displayName := ← r.withDefault "display_name" "" }
+      displayName := ← r.withDefault "display_name" ""
+      form := ← r.withDefault "form" 0 }
 
 structure VoucherInduct where
   queryId : QueryId
@@ -377,6 +390,70 @@ instance : Serialise VoucherDeriveStream where
   decode := do
     let r ← decodeRecord
     return { queryId := ← r.required "query_id", voucher := ← r.withDefault "voucher" .empty }
+
+/-! NIKE keys and sealed boxes: the daemon does the cryptography and keeps no keys.
+`nikeScheme` names an hpqc NIKE, e.g. "X25519-CTIDH1024". -/
+
+structure NIKEGenerateKeyPair where
+  queryId : QueryId
+  nikeScheme : String
+
+instance : Serialise NIKEGenerateKeyPair where
+  encode m := encodeRecord [field "query_id" m.queryId, field "nike_scheme" m.nikeScheme]
+  decode := do
+    let r ← decodeRecord
+    return { queryId := ← r.required "query_id", nikeScheme := ← r.withDefault "nike_scheme" "" }
+
+structure NIKEDeriveSecret where
+  queryId : QueryId
+  nikeScheme : String
+  privateKey : ByteArray
+  publicKey : ByteArray
+
+instance : Serialise NIKEDeriveSecret where
+  encode m := encodeRecord [field "query_id" m.queryId, field "nike_scheme" m.nikeScheme,
+    field "private_key" m.privateKey, field "public_key" m.publicKey]
+  decode := do
+    let r ← decodeRecord
+    return {
+      queryId := ← r.required "query_id"
+      nikeScheme := ← r.withDefault "nike_scheme" ""
+      privateKey := ← r.withDefault "private_key" .empty
+      publicKey := ← r.withDefault "public_key" .empty }
+
+structure BoxSeal where
+  queryId : QueryId
+  nikeScheme : String
+  publicKey : ByteArray
+  plaintext : ByteArray
+
+instance : Serialise BoxSeal where
+  encode m := encodeRecord [field "query_id" m.queryId, field "nike_scheme" m.nikeScheme,
+    field "public_key" m.publicKey, field "plaintext" m.plaintext]
+  decode := do
+    let r ← decodeRecord
+    return {
+      queryId := ← r.required "query_id"
+      nikeScheme := ← r.withDefault "nike_scheme" ""
+      publicKey := ← r.withDefault "public_key" .empty
+      plaintext := ← r.withDefault "plaintext" .empty }
+
+structure BoxOpen where
+  queryId : QueryId
+  nikeScheme : String
+  privateKey : ByteArray
+  ciphertext : ByteArray
+
+instance : Serialise BoxOpen where
+  encode m := encodeRecord [field "query_id" m.queryId, field "nike_scheme" m.nikeScheme,
+    field "private_key" m.privateKey, field "ciphertext" m.ciphertext]
+  decode := do
+    let r ← decodeRecord
+    return {
+      queryId := ← r.required "query_id"
+      nikeScheme := ← r.withDefault "nike_scheme" ""
+      privateKey := ← r.withDefault "private_key" .empty
+      ciphertext := ← r.withDefault "ciphertext" .empty }
 
 /-! ## Replies and events -/
 
@@ -820,6 +897,68 @@ instance : Serialise VoucherDeriveStreamReply where
       voucherReadCap := ← r.withDefault "voucher_read_cap" .empty
       errorCode := ← r.withDefault "error_code" 0 }
 
+structure NIKEGenerateKeyPairReply where
+  queryId : QueryId
+  publicKey : ByteArray
+  privateKey : ByteArray
+  errorCode : UInt8
+
+instance : Serialise NIKEGenerateKeyPairReply where
+  encode m := encodeRecord [field "query_id" m.queryId, field "public_key" m.publicKey,
+    field "private_key" m.privateKey, field "error_code" m.errorCode]
+  decode := do
+    let r ← decodeRecord
+    return {
+      queryId := ← r.required "query_id"
+      publicKey := ← r.withDefault "public_key" .empty
+      privateKey := ← r.withDefault "private_key" .empty
+      errorCode := ← r.withDefault "error_code" 0 }
+
+structure NIKEDeriveSecretReply where
+  queryId : QueryId
+  sharedSecret : ByteArray
+  errorCode : UInt8
+
+instance : Serialise NIKEDeriveSecretReply where
+  encode m := encodeRecord [field "query_id" m.queryId, field "shared_secret" m.sharedSecret,
+    field "error_code" m.errorCode]
+  decode := do
+    let r ← decodeRecord
+    return {
+      queryId := ← r.required "query_id"
+      sharedSecret := ← r.withDefault "shared_secret" .empty
+      errorCode := ← r.withDefault "error_code" 0 }
+
+structure BoxSealReply where
+  queryId : QueryId
+  ciphertext : ByteArray
+  errorCode : UInt8
+
+instance : Serialise BoxSealReply where
+  encode m := encodeRecord [field "query_id" m.queryId, field "ciphertext" m.ciphertext,
+    field "error_code" m.errorCode]
+  decode := do
+    let r ← decodeRecord
+    return {
+      queryId := ← r.required "query_id"
+      ciphertext := ← r.withDefault "ciphertext" .empty
+      errorCode := ← r.withDefault "error_code" 0 }
+
+structure BoxOpenReply where
+  queryId : QueryId
+  plaintext : ByteArray
+  errorCode : UInt8
+
+instance : Serialise BoxOpenReply where
+  encode m := encodeRecord [field "query_id" m.queryId, field "plaintext" m.plaintext,
+    field "error_code" m.errorCode]
+  decode := do
+    let r ← decodeRecord
+    return {
+      queryId := ← r.required "query_id"
+      plaintext := ← r.withDefault "plaintext" .empty
+      errorCode := ← r.withDefault "error_code" 0 }
+
 /-! ## The daemon's messages -/
 
 inductive Response where
@@ -849,6 +988,10 @@ inductive Response where
   | voucherInductReply (m : VoucherInductReply)
   | voucherOpenReply (m : VoucherOpenReply)
   | voucherDeriveStreamReply (m : VoucherDeriveStreamReply)
+  | nikeGenerateKeyPairReply (m : NIKEGenerateKeyPairReply)
+  | nikeDeriveSecretReply (m : NIKEDeriveSecretReply)
+  | boxSealReply (m : BoxSealReply)
+  | boxOpenReply (m : BoxOpenReply)
   /-- A key this client does not know. -/
   | unknown (key : String)
 
@@ -885,6 +1028,10 @@ def toKeyBody : Response → String × Encoding
   | voucherInductReply m => ("voucher_induct_reply", encode m)
   | voucherOpenReply m => ("voucher_open_reply", encode m)
   | voucherDeriveStreamReply m => ("voucher_derive_stream_reply", encode m)
+  | nikeGenerateKeyPairReply m => ("nike_generate_key_pair_reply", encode m)
+  | nikeDeriveSecretReply m => ("nike_derive_secret_reply", encode m)
+  | boxSealReply m => ("box_seal_reply", encode m)
+  | boxOpenReply m => ("box_open_reply", encode m)
   | unknown k => (k, encodeNull)
 
 def key (r : Response) : String := r.toKeyBody.1
@@ -927,6 +1074,10 @@ def ofKeyBody (key : String) (raw : ByteArray) : Except String Response :=
   | "voucher_induct_reply" => body raw voucherInductReply
   | "voucher_open_reply" => body raw voucherOpenReply
   | "voucher_derive_stream_reply" => body raw voucherDeriveStreamReply
+  | "nike_generate_key_pair_reply" => body raw nikeGenerateKeyPairReply
+  | "nike_derive_secret_reply" => body raw nikeDeriveSecretReply
+  | "box_seal_reply" => body raw boxSealReply
+  | "box_open_reply" => body raw boxOpenReply
   | k => .ok (unknown k)
 
 private def isNull (raw : ByteArray) : Bool := raw.size == 1 && raw[0]! == 0xf6
@@ -964,6 +1115,10 @@ def queryId? : Response → Option QueryId
   | voucherInductReply m => m.queryId
   | voucherOpenReply m => m.queryId
   | voucherDeriveStreamReply m => m.queryId
+  | nikeGenerateKeyPairReply m => m.queryId
+  | nikeDeriveSecretReply m => m.queryId
+  | boxSealReply m => m.queryId
+  | boxOpenReply m => m.queryId
   | _ => none
 
 end Response
@@ -1114,6 +1269,34 @@ instance : Rpc VoucherDeriveStream where
   Reply := VoucherDeriveStreamReply
   queryId := (·.queryId)
   reply? | .voucherDeriveStreamReply m => some m | _ => none
+  error? m := ThinClientError.ofCode m.errorCode
+
+instance : Rpc NIKEGenerateKeyPair where
+  key := "nike_generate_key_pair"
+  Reply := NIKEGenerateKeyPairReply
+  queryId := (·.queryId)
+  reply? | .nikeGenerateKeyPairReply m => some m | _ => none
+  error? m := ThinClientError.ofCode m.errorCode
+
+instance : Rpc NIKEDeriveSecret where
+  key := "nike_derive_secret"
+  Reply := NIKEDeriveSecretReply
+  queryId := (·.queryId)
+  reply? | .nikeDeriveSecretReply m => some m | _ => none
+  error? m := ThinClientError.ofCode m.errorCode
+
+instance : Rpc BoxSeal where
+  key := "box_seal"
+  Reply := BoxSealReply
+  queryId := (·.queryId)
+  reply? | .boxSealReply m => some m | _ => none
+  error? m := ThinClientError.ofCode m.errorCode
+
+instance : Rpc BoxOpen where
+  key := "box_open"
+  Reply := BoxOpenReply
+  queryId := (·.queryId)
+  reply? | .boxOpenReply m => some m | _ => none
   error? m := ThinClientError.ofCode m.errorCode
 
 /-! ## Events -/

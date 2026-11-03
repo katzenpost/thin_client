@@ -21,10 +21,10 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/katzenpost/hpqc/bacap"
 
+	nikeschemes "github.com/katzenpost/hpqc/nike/schemes"
 	"github.com/katzenpost/katzenpost/client/thin"
 	cpki "github.com/katzenpost/katzenpost/core/pki"
 	"github.com/katzenpost/katzenpost/core/sphinx/geo"
-	nikeschemes "github.com/katzenpost/hpqc/nike/schemes"
 	pgeo "github.com/katzenpost/katzenpost/pigeonhole/geo"
 )
 
@@ -203,6 +203,9 @@ func requests(c caps) []named[thin.Request] {
 			IsLast: true, Buffer: seq(0x31, 8)}}},
 		{"voucher_mint", &thin.Request{VoucherMint: &thin.VoucherMint{
 			QueryID: q, MessageWriteCap: must(c.write.MarshalBinary()), DisplayName: "alice"}}},
+		{"voucher_mint_long", &thin.Request{VoucherMint: &thin.VoucherMint{
+			QueryID: q, MessageWriteCap: must(c.write.MarshalBinary()), DisplayName: "alice",
+			Form: thin.VoucherFormLong}}},
 		{"voucher_induct", &thin.Request{VoucherInduct: &thin.VoucherInduct{
 			QueryID: q, Voucher: seq(0x41, 32), VoucherPayload: seq(0x51, 64), WhoReply: seq(0x61, 16)}}},
 		{"voucher_open", &thin.Request{VoucherOpen: &thin.VoucherOpen{
@@ -210,6 +213,14 @@ func requests(c caps) []named[thin.Request] {
 			MessageWriteCap: must(c.write.MarshalBinary())}}},
 		{"voucher_derive_stream", &thin.Request{VoucherDeriveStream: &thin.VoucherDeriveStream{
 			QueryID: q, Voucher: seq(0x41, 32)}}},
+		{"nike_generate_key_pair", &thin.Request{NIKEGenerateKeyPair: &thin.NIKEGenerateKeyPair{
+			QueryID: q, NIKEScheme: "X25519-CTIDH1024"}}},
+		{"nike_derive_secret", &thin.Request{NIKEDeriveSecret: &thin.NIKEDeriveSecret{
+			QueryID: q, NIKEScheme: "X25519-CTIDH1024", PrivateKey: seq(0x91, 32), PublicKey: seq(0xa1, 32)}}},
+		{"box_seal", &thin.Request{BoxSeal: &thin.BoxSeal{
+			QueryID: q, NIKEScheme: "X25519-CTIDH1024", PublicKey: seq(0xa1, 32), Plaintext: seq(0xb1, 16)}}},
+		{"box_open", &thin.Request{BoxOpen: &thin.BoxOpen{
+			QueryID: q, NIKEScheme: "X25519-CTIDH1024", PrivateKey: seq(0x91, 32), Ciphertext: seq(0xc1, 48)}}},
 	}
 }
 
@@ -285,6 +296,16 @@ func responses(c caps) []named[thin.Response] {
 			QueryID: q, WhoReply: seq(0x01, 16), Salt: seq(0x11, 16), MutatedMessageWriteCap: seq(0x21, 168)}}},
 		{"voucher_derive_stream_reply", &thin.Response{VoucherDeriveStreamReply: &thin.VoucherDeriveStreamReply{
 			QueryID: q, VoucherWriteCap: seq(0x21, 168), VoucherReadCap: seq(0x31, 136)}}},
+		{"nike_generate_key_pair_reply", &thin.Response{NIKEGenerateKeyPairReply: &thin.NIKEGenerateKeyPairReply{
+			QueryID: q, PublicKey: seq(0xa1, 32), PrivateKey: seq(0x91, 32)}}},
+		{"nike_derive_secret_reply", &thin.Response{NIKEDeriveSecretReply: &thin.NIKEDeriveSecretReply{
+			QueryID: q, SharedSecret: seq(0xd1, 32)}}},
+		{"box_seal_reply", &thin.Response{BoxSealReply: &thin.BoxSealReply{
+			QueryID: q, Ciphertext: seq(0xc1, 48)}}},
+		{"box_open_reply", &thin.Response{BoxOpenReply: &thin.BoxOpenReply{
+			QueryID: q, Plaintext: seq(0xb1, 16)}}},
+		{"box_open_reply_err", &thin.Response{BoxOpenReply: &thin.BoxOpenReply{
+			QueryID: q, Plaintext: []byte{}, ErrorCode: thin.ThinClientErrorInvalidRequest}}},
 		{"voucher_open_reply_err", &thin.Response{VoucherOpenReply: &thin.VoucherOpenReply{
 			QueryID: q, WhoReply: []byte{}, Salt: []byte{}, MutatedMessageWriteCap: []byte{},
 			ErrorCode: thin.ThinClientErrorVoucherSealOpenFailed}}},

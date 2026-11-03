@@ -14,25 +14,16 @@ pub fn find_services(capability: &str, doc: &BTreeMap<Value, Value>) -> Vec<Serv
     let mut services = Vec::new();
 
     let Some(Value::Array(nodes)) = doc.get(&Value::Text("ServiceNodes".to_string())) else {
-        println!("❌ No 'ServiceNodes' found in PKI document.");
         return services;
     };
 
     for node in nodes {
         let Value::Bytes(node_bytes) = node else { continue };
         let Ok(mynode) = from_slice::<BTreeMap<Value, Value>>(node_bytes) else { continue };
-
-        // 🔍 Print available capabilities in each node
-        if let Some(Value::Map(details)) = mynode.get(&Value::Text("Kaetzchen".to_string())) {
-            println!("🔍 Available Capabilities: {:?}", details.keys());
-        }
-
         let Some(Value::Map(details)) = mynode.get(&Value::Text("Kaetzchen".to_string())) else { continue };
         let Some(Value::Map(service)) = details.get(&Value::Text(capability.to_string())) else { continue };
         let Some(Value::Text(endpoint)) = service.get(&Value::Text("endpoint".to_string())) else { continue };
 
-	println!("returning a service descriptor!");
-	    
         services.push(ServiceDescriptor {
             recipient_queue_id: endpoint.as_bytes().to_vec(),
             mix_descriptor: mynode,

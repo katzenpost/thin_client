@@ -12,7 +12,7 @@ control over the Pigeonhole protocol.
 
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from .core import (
@@ -980,13 +980,27 @@ async def create_courier_envelopes_from_tombstone_range(
 # fresh randomness for the reply keypair, the salt, and the seal.
 
 
-async def voucher_mint(self, message_write_cap: bytes, display_name: str) -> VoucherMintResult:
+VOUCHER_FORM_LONG = 1
+"""The long VoucherPayload form for voucher_mint: the signed CBOR map that
+inductors from before the compact form read. Its reply is the MKEM ciphertext
+in VoucherStream box 1."""
+
+VOUCHER_FORM_COMPACT = 2
+"""The compact VoucherPayload form for voucher_mint: the signed CBOR array. Its
+reply is a sealed box framed over VoucherStream boxes 1 on. The daemon mints it
+when no form is given."""
+
+
+async def voucher_mint(self, message_write_cap: bytes, display_name: str, form: int = 0) -> VoucherMintResult:
     """
     Mints a Voucher from the joiner's MessageStream write cap.
 
     Args:
         message_write_cap: The joiner's MessageStream write capability.
         display_name: The joiner's chosen display name.
+        form: VOUCHER_FORM_LONG, to join a group whose inductors only read
+            the long form, or VOUCHER_FORM_COMPACT; 0 (the default) lets the
+            daemon choose, which is the compact form.
 
     Returns:
         VoucherMintResult: The Voucher, the payload to publish, the rendezvous
@@ -1003,6 +1017,8 @@ async def voucher_mint(self, message_write_cap: bytes, display_name: str) -> Vou
             "display_name": display_name,
         }
     }
+    if form:
+        request["voucher_mint"]["form"] = form
     try:
         reply = await self._send_and_wait(query_id=query_id, request=request)
     except Exception as e:
@@ -1148,3 +1164,50 @@ async def voucher_derive_stream(self, voucher: bytes) -> VoucherStreamResult:
         voucher_read_cap=reply["voucher_read_cap"],
     )
 
+
+
+# NIKE and sealed boxes. The daemon does the cryptography with no mixnet IO
+# and keeps no keys; nike_scheme names an hpqc NIKE, e.g. "X25519-CTIDH1024".
+
+
+@dataclass
+class NikeKeyPairResult:
+    """Result from nike_generate_key_pair: a NIKE keypair as hpqc encodes it."""
+    public_key: bytes
+    private_key: bytes = field(repr=False)
+
+
+async def _local_query(self, key: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    query_id = self.new_query_id()
+    reply = await self._send_and_wait(query_id=query_id, request={key: {"query_id": query_id, **body}})
+    if reply.get('error_code', 0) != THIN_CLIENT_SUCCESS:
+        raise Exception(f"{key} failed: {thin_client_error_to_string(reply['error_code'])}")
+    return reply
+
+
+async def nike_generate_key_pair(self, nike_scheme: str) -> NikeKeyPairResult:
+    """Generates a keypair for the NIKE named by nike_scheme."""
+    reply = await _local_query(self, "nike_generate_key_pair", {"nike_scheme": nike_scheme})
+    return NikeKeyPairResult(public_key=reply["public_key"], private_key=reply["private_key"])
+
+
+async def nike_derive_secret(self, nike_scheme: str, private_key: bytes, public_key: bytes) -> bytes:
+    """Derives the shared secret of private_key and the peer's public_key.
+    A degenerate (all zero) secret is an error."""
+    reply = await _local_query(self, "nike_derive_secret", {
+        "nike_scheme": nike_scheme, "private_key": private_key, "public_key": public_key})
+    return reply["shared_secret"]
+
+
+async def box_seal(self, nike_scheme: str, public_key: bytes, plaintext: bytes) -> bytes:
+    """Seals plaintext to a NIKE public key with hpqc's sealedbox."""
+    reply = await _local_query(self, "box_seal", {
+        "nike_scheme": nike_scheme, "public_key": public_key, "plaintext": plaintext})
+    return reply["ciphertext"]
+
+
+async def box_open(self, nike_scheme: str, private_key: bytes, ciphertext: bytes) -> bytes:
+    """Opens a box sealed with box_seal, with the recipient's NIKE private key."""
+    reply = await _local_query(self, "box_open", {
+        "nike_scheme": nike_scheme, "private_key": private_key, "ciphertext": ciphertext})
+    return reply["plaintext"]
