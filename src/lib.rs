@@ -41,7 +41,7 @@ pub mod transport;
 pub use crate::core::{ThinClient, EventSinkReceiver, DirectoryAuthority};
 pub use crate::error::ThinClientError;
 pub use crate::helpers::{find_services, pretty_print_pki_doc};
-pub use crate::pigeonhole::{TombstoneRangeResult, StartResendingResult};
+pub use crate::pigeonhole::{NikeKeyPair, TombstoneRangeResult, StartResendingResult};
 pub use crate::transport::{DialConfig, DialConfigError, Dialer, TcpDialConfig, UnixDialConfig};
 
 // ========================================================================

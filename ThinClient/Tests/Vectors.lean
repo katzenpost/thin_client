@@ -61,6 +61,10 @@ def requestRoundTrip (key : String) (body : ByteArray) : Except String (ByteArra
   | "voucher_induct" => go (α := VoucherInduct)
   | "voucher_open" => go (α := VoucherOpen)
   | "voucher_derive_stream" => go (α := VoucherDeriveStream)
+  | "nike_generate_key_pair" => go (α := NIKEGenerateKeyPair)
+  | "nike_derive_secret" => go (α := NIKEDeriveSecret)
+  | "box_seal" => go (α := BoxSeal)
+  | "box_open" => go (α := BoxOpen)
   | k => .error s!"unknown request {k}"
 
 def checkRequest (v : Vector) : TestM (Option Json) := do
