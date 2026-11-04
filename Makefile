@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-katzenpost_ref?=91debb67407dd6f8bc9a7e58c9613dc30cc4699c
+katzenpost_ref?=fc420a396b0d8e65d418c6736d824c71fb751c49
 katzenpost_dir?=.katzenpost
 live_dir?=.live
 connect_deadline?=480

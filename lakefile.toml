@@ -1,5 +1,5 @@
 name = "thinclient"
-version = "0.2.0"
+version = "0.2.1"
 description = "Lean thin client for the Katzenpost mixnet"
 keywords = ["katzenpost", "mixnet", "client", "privacy"]
 license = "AGPL-3.0-only"

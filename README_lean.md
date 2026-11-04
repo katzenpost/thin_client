@@ -22,13 +22,13 @@ For Pigeonhole, the storage layer most of the API is about, see
 
 ## Installation
 
-Add the package to your `lakefile.toml`, pinned to a commit:
+Add the package to your `lakefile.toml`, pinned to a release tag:
 
 ```toml
 [[require]]
 name = "thinclient"
 git = "https://github.com/katzenpost/thin_client.git"
-rev = "<commit>"
+rev = "lean/v0.2.1"
 ```
 
 and import it with `import ThinClient`.
