@@ -35,6 +35,104 @@ async fn setup_thin_client() -> Result<std::sync::Arc<ThinClient>, Box<dyn std::
     Ok(client)
 }
 
+/// How often a box is polled, and how long a written box may take to appear
+/// before it is taken as lost and written again.
+const BOX_POLL: Duration = Duration::from_secs(3);
+const BOX_LOST_AFTER: Duration = Duration::from_secs(120);
+const BOX_WRITES: usize = 3;
+/// A whole stream's budget. The per-box retries alone allow
+/// `BOX_WRITES * BOX_LOST_AFTER` each, so a stream of any length could
+/// outlast the CI step and report a timeout instead of a failure. This
+/// bounds the wait and names what was still missing when it ran out.
+const STREAM_STORED_DEADLINE: Duration = Duration::from_secs(600);
+/// The budget for every gate in this binary, which is the one that has to
+/// hold. `STREAM_STORED_DEADLINE` bounds a single call, and five tests
+/// call `await_stream_stored`, so on its own it bounds each wait and not
+/// their sum: five stalled gates outlast the step, which is killed without
+/// running an assertion or printing why. The clock starts at the first
+/// gate, so mixnet setup is not charged to it.
+const SUITE_STORED_BUDGET: Duration = Duration::from_secs(900);
+
+/// When every gate in this binary must have finished by.
+fn suite_give_up_at() -> tokio::time::Instant {
+    static START: std::sync::OnceLock<tokio::time::Instant> =
+        std::sync::OnceLock::new();
+    *START.get_or_init(tokio::time::Instant::now) + SUITE_STORED_BUDGET
+}
+
+/// Whether the box is stored at a replica, read once without retrying.
+async fn box_stored(client: &ThinClient, read_cap: &[u8], index: &[u8]) -> bool {
+    let read = client.encrypt_read(read_cap, index).await.expect("Failed to encrypt read");
+    match client.start_resending_encrypted_message_no_retry(
+        Some(read_cap), None, Some(index), Some(0),
+        &read.envelope_descriptor, &read.message_ciphertext, &read.envelope_hash,
+    ).await {
+        Ok(_) => true,
+        Err(ThinClientError::BoxNotFound) | Err(ThinClientError::ReplicationFailed) => false,
+        Err(e) => panic!("Failed to read box: {e}"),
+    }
+}
+
+/// Block until every box of the stream written from `payloads`, from
+/// `first_index`, is stored at a replica.
+///
+/// A write completes once the courier accepts it, before any replica stores
+/// it, so a write the replicas lose is still reported as sent. A Copy reads the
+/// stream from its first box, so every box is checked, and a box that does not
+/// appear within `BOX_LOST_AFTER` is written again.
+///
+/// The wait is bounded by `STREAM_STORED_DEADLINE` for this stream and by
+/// `SUITE_STORED_BUDGET` across every gate in the binary, so a stream that
+/// never settles fails here, saying which box was outstanding, rather than
+/// running until the CI step times out and says nothing.
+async fn await_stream_stored(
+    client: &ThinClient,
+    write_cap: &[u8],
+    read_cap: &[u8],
+    first_index: &[u8],
+    payloads: &[Vec<u8>],
+) {
+    let give_up_at = (tokio::time::Instant::now() + STREAM_STORED_DEADLINE)
+        .min(suite_give_up_at());
+    let mut index = first_index.to_vec();
+    for (i, payload) in payloads.iter().enumerate() {
+        let mut stored = false;
+        for attempt in 0..BOX_WRITES {
+            if tokio::time::Instant::now() >= give_up_at {
+                break;
+            }
+            if attempt > 0 {
+                println!("--- Box {} was not stored; writing it again ---", i + 1);
+                let w = client.encrypt_write(payload, write_cap, &index).await
+                    .expect("Failed to encrypt box");
+                client.start_resending_encrypted_message(
+                    None, Some(write_cap), None, Some(0),
+                    &w.envelope_descriptor, &w.message_ciphertext, &w.envelope_hash,
+                ).await.expect("Failed to write box");
+            }
+            let deadline = (tokio::time::Instant::now() + BOX_LOST_AFTER).min(give_up_at);
+            while !stored && tokio::time::Instant::now() < deadline {
+                stored = box_stored(client, read_cap, &index).await;
+                if !stored {
+                    tokio::time::sleep(BOX_POLL).await;
+                }
+            }
+            if stored {
+                break;
+            }
+        }
+        assert!(
+            stored,
+            "box {} of {} was not stored after {} writes; this stream's \
+             budget is {}s and the whole binary's is {}s",
+            i + 1, payloads.len(), BOX_WRITES,
+            STREAM_STORED_DEADLINE.as_secs(), SUITE_STORED_BUDGET.as_secs(),
+        );
+        index = client.next_message_box_index(&index).await.expect("Failed to get next index");
+    }
+}
+
+
 #[tokio::test]
 async fn test_new_keypair_basic() {
     println!("\n=== Test: new_keypair basic functionality ===");
@@ -211,7 +309,6 @@ async fn test_create_courier_envelopes_from_payload() {
     // Step 5: Write all copy stream chunks to the temporary channel
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
     let mut temp_index = temp_first_index.clone();
-    let mut last_temp_index = temp_first_index.clone();
     for (i, chunk) in copy_stream_result.envelopes.iter().enumerate() {
         let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
             alice_client
@@ -231,25 +328,11 @@ async fn test_create_courier_envelopes_from_payload() {
         println!("  ✓ Wrote chunk {} ({} bytes)", i + 1, chunk.len());
 
         // Advance to next index for next chunk
-        last_temp_index = temp_index.clone();
         temp_index = alice_client.next_message_box_index(&temp_index).await
             .expect("Failed to get next index");
     }
 
-    // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
-    // Gate on a single default ARQ read of the temp stream's final box.
-    let temp_gate_read = alice_client
-        .encrypt_read(&temp_read_cap, &last_temp_index).await
-        .expect("Failed to encrypt temp gate read");
-    let _ = alice_client.start_resending_encrypted_message(
-        Some(&temp_read_cap),
-        None,
-        Some(&last_temp_index),
-        Some(0),
-        &temp_gate_read.envelope_descriptor,
-        &temp_gate_read.message_ciphertext,
-        &temp_gate_read.envelope_hash
-    ).await.expect("Failed to await temp stream propagation");
+    await_stream_stored(&alice_client, &temp_write_cap, &temp_read_cap, &temp_first_index, &copy_stream_result.envelopes).await;
 
     // Step 6: Send Copy command to courier
     println!("\n--- Step 6: Sending Copy command to courier via ARQ ---");
@@ -338,7 +421,6 @@ async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
     // Step 5: Write all chunks to temporary channel
     println!("\n--- Step 5: Writing copy stream chunks to temp channel ---");
     let mut temp_index = temp_first_index.clone();
-    let mut last_temp_index = temp_first_index.clone();
     for (i, chunk) in result.envelopes.iter().enumerate() {
         let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
             alice_client
@@ -357,25 +439,11 @@ async fn test_create_courier_envelopes_from_multi_payload_multi_channel() {
 
         println!("  ✓ Wrote chunk {} ({} bytes)", i + 1, chunk.len());
 
-        last_temp_index = temp_index.clone();
         temp_index = alice_client.next_message_box_index(&temp_index).await
             .expect("Failed to get next index");
     }
 
-    // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
-    // Gate on a single default ARQ read of the temp stream's final box.
-    let temp_gate_read = alice_client
-        .encrypt_read(&temp_read_cap, &last_temp_index).await
-        .expect("Failed to encrypt temp gate read");
-    let _ = alice_client.start_resending_encrypted_message(
-        Some(&temp_read_cap),
-        None,
-        Some(&last_temp_index),
-        Some(0),
-        &temp_gate_read.envelope_descriptor,
-        &temp_gate_read.message_ciphertext,
-        &temp_gate_read.envelope_hash
-    ).await.expect("Failed to await temp stream propagation");
+    await_stream_stored(&alice_client, &temp_write_cap, &temp_read_cap, &temp_first_index, &result.envelopes).await;
 
     // Step 6: Send Copy command
     println!("\n--- Step 6: Sending Copy command via ARQ ---");
@@ -743,7 +811,6 @@ async fn test_from_payload_multi_call() {
 
     // Write all temp stream elements to temp channel
     let mut temp_index = temp_first_index.clone();
-    let mut last_temp_index = temp_first_index.clone();
     for (i, elem) in all_temp_elements.iter().enumerate() {
         let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
             alice_client.encrypt_write(elem, &temp_write_cap, &temp_index).await
@@ -754,23 +821,12 @@ async fn test_from_payload_multi_call() {
             &env_desc, &ciphertext, &env_hash,
         ).await.expect("Failed to send chunk via ARQ");
 
-        last_temp_index = temp_index.clone();
         temp_index = alice_client.next_message_box_index(&temp_index).await
             .expect("Failed to get next index");
         println!("  Wrote temp element {}/{}", i + 1, all_temp_elements.len());
     }
 
-    // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
-    // Gate on a single default ARQ read of the temp stream's final box.
-    let temp_gate_read = alice_client
-        .encrypt_read(&temp_read_cap, &last_temp_index).await
-        .expect("Failed to encrypt temp gate read");
-    let _ = alice_client.start_resending_encrypted_message(
-        Some(&temp_read_cap), None, Some(&last_temp_index), Some(0),
-        &temp_gate_read.envelope_descriptor,
-        &temp_gate_read.message_ciphertext,
-        &temp_gate_read.envelope_hash,
-    ).await.expect("Failed to await temp stream propagation");
+    await_stream_stored(&alice_client, &temp_write_cap, &temp_read_cap, &temp_first_index, &all_temp_elements).await;
 
     // Send copy command
     alice_client.start_resending_copy_command(&temp_write_cap, None, None).await
@@ -867,7 +923,6 @@ async fn test_from_multi_payload_multi_call() {
     let mut all_elements = result1.envelopes.clone();
     all_elements.extend(result2.envelopes.clone());
     let mut temp_index = temp_first_index.clone();
-    let mut last_temp_index = temp_first_index.clone();
     for (i, elem) in all_elements.iter().enumerate() {
         let EncryptWriteResult { message_ciphertext: ciphertext, envelope_descriptor: env_desc, envelope_hash: env_hash, .. } =
             alice_client.encrypt_write(elem, &temp_write_cap, &temp_index).await
@@ -878,23 +933,12 @@ async fn test_from_multi_payload_multi_call() {
             &env_desc, &ciphertext, &env_hash,
         ).await.expect("Failed to send chunk via ARQ");
 
-        last_temp_index = temp_index.clone();
         temp_index = alice_client.next_message_box_index(&temp_index).await
             .expect("Failed to get next index");
         println!("  Wrote temp element {}/{}", i + 1, all_elements.len());
     }
 
-    // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
-    // Gate on a single default ARQ read of the temp stream's final box.
-    let temp_gate_read = alice_client
-        .encrypt_read(&temp_read_cap, &last_temp_index).await
-        .expect("Failed to encrypt temp gate read");
-    let _ = alice_client.start_resending_encrypted_message(
-        Some(&temp_read_cap), None, Some(&last_temp_index), Some(0),
-        &temp_gate_read.envelope_descriptor,
-        &temp_gate_read.message_ciphertext,
-        &temp_gate_read.envelope_hash,
-    ).await.expect("Failed to await temp stream propagation");
+    await_stream_stored(&alice_client, &temp_write_cap, &temp_read_cap, &temp_first_index, &all_elements).await;
 
     // Send copy command
     alice_client.start_resending_copy_command(&temp_write_cap, None, None).await
@@ -1039,7 +1083,6 @@ async fn test_copy_onto_already_existing_box_error() {
 
     // Step 5: Write all copy stream chunks to the temporary channel.
     let mut temp_index = temp_first_index.clone();
-    let mut last_temp_index = temp_first_index.clone();
     for (i, chunk) in copy_stream_result.envelopes.iter().enumerate() {
         let EncryptWriteResult { message_ciphertext, envelope_descriptor, envelope_hash, .. } =
             client.encrypt_write(chunk, &temp_write_cap, &temp_index).await
@@ -1057,26 +1100,11 @@ async fn test_copy_onto_already_existing_box_error() {
 
         println!("  ✓ Wrote chunk {}/{}", i + 1, num_chunks);
 
-        last_temp_index = temp_index.clone();
         temp_index = client.next_message_box_index(&temp_index).await
             .expect("Failed to get next index");
     }
 
-    // No propagation sleep: the retrying read of the destination box gates itself until the copy lands.
-    // Gate on a single default ARQ read of the temp stream's final box; the
-    // daemon auto-retries on BoxIDNotFound until that box has propagated.
-    let temp_gate_read = client
-        .encrypt_read(&temp_read_cap, &last_temp_index).await
-        .expect("Failed to encrypt temp gate read");
-    let _ = client.start_resending_encrypted_message(
-        Some(&temp_read_cap),
-        None,
-        Some(&last_temp_index),
-        Some(0),
-        &temp_gate_read.envelope_descriptor,
-        &temp_gate_read.message_ciphertext,
-        &temp_gate_read.envelope_hash,
-    ).await.expect("Failed to await temp stream propagation");
+    await_stream_stored(&client, &temp_write_cap, &temp_read_cap, &temp_first_index, &copy_stream_result.envelopes).await;
 
     // Step 6: Send Copy command — must fail because the destination's first
     // box was already populated in step 2.

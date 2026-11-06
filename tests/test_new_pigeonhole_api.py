@@ -18,10 +18,13 @@ These tests require a running mixnet with client daemon for integration testing.
 import asyncio
 import pytest
 import os
+import time
 from katzenpost_thinclient import (
     ThinClient,
     Config,
+    BoxIDNotFoundError,
     CopyCommandFailedError,
+    ReplicationFailedError,
     REPLICA_ERROR_BOX_ALREADY_EXISTS,
 )
 
@@ -61,27 +64,110 @@ async def setup_thin_client():
     return client
 
 
-async def await_box_propagated(client, read_cap, box_index):
-    """Block until the given box is readable.
+# How often a box is polled, and how long a written box may take to appear
+# before it is taken as lost and written again.
+BOX_POLL_SECONDS = 3
+BOX_LOST_AFTER_SECONDS = 120
+# A whole stream's budget. The per-box retries alone allow
+# writes * BOX_LOST_AFTER_SECONDS each, so a stream of any length could
+# outlast the CI step and report a timeout instead of a failure. This bounds
+# the wait and names what was still missing when it ran out.
+STREAM_STORED_DEADLINE_SECONDS = 600
+# The budget across every gate in this process, which is the one that has
+# to hold: the figure above bounds a single call, and several tests call
+# await_stream_stored, so alone it bounds each wait and not their sum. The
+# clock starts at the first gate, so mixnet setup is not charged to it.
+# time.monotonic, not loop.time: pytest-asyncio may give each test its own
+# event loop, and two loops' clocks share no origin.
+SUITE_STORED_BUDGET_SECONDS = 900
+_suite_started_at = None
 
-    The default ARQ behaviour auto-retries on BoxIDNotFound, so this
-    single read returns only once the box has propagated to a serving
-    replica, a deterministic replacement for a blind propagation
-    sleep. For a sequentially written stream, pass the last written
-    box: the boxes before it were written earlier and so have had at
-    least as long to settle, and this avoids the traffic of re-reading
-    every box.
-    """
+
+def _suite_give_up_at():
+    """When every gate in this process must have finished by."""
+    global _suite_started_at
+    if _suite_started_at is None:
+        _suite_started_at = time.monotonic()
+    return _suite_started_at + SUITE_STORED_BUDGET_SECONDS
+
+
+async def box_stored(client, read_cap, box_index):
+    """Whether the box is stored at a replica, read once without retrying."""
     read_request = await client.encrypt_read(read_cap, box_index)
+    try:
+        await client.start_resending_encrypted_message(
+            read_cap=read_cap,
+            write_cap=None,
+            message_box_index=box_index,
+            reply_index=0,
+            envelope_descriptor=read_request.envelope_descriptor,
+            message_ciphertext=read_request.message_ciphertext,
+            envelope_hash=read_request.envelope_hash,
+            no_retry_on_box_id_not_found=True,
+        )
+        return True
+    except (BoxIDNotFoundError, ReplicationFailedError):
+        return False
+
+
+async def write_box(client, write_cap, box_index, payload):
+    write_result = await client.encrypt_write(payload, write_cap, box_index)
     await client.start_resending_encrypted_message(
-        read_cap=read_cap,
-        write_cap=None,
-        message_box_index=box_index,
+        read_cap=None,
+        write_cap=write_cap,
+        message_box_index=None,
         reply_index=0,
-        envelope_descriptor=read_request.envelope_descriptor,
-        message_ciphertext=read_request.message_ciphertext,
-        envelope_hash=read_request.envelope_hash,
+        envelope_descriptor=write_result.envelope_descriptor,
+        message_ciphertext=write_result.message_ciphertext,
+        envelope_hash=write_result.envelope_hash,
     )
+
+
+async def await_stream_stored(client, keypair, payloads, writes=3):
+    """Block until every box of the stream written from `payloads`, from the
+    keypair's first index, is stored at a replica.
+
+    A write completes once the courier accepts it, before any replica stores
+    it, so a write the replicas lose is still reported as sent. A Copy reads
+    the stream from its first box, so every box is checked, and a box that
+    does not appear within BOX_LOST_AFTER_SECONDS is written again.
+
+    The wait is bounded by STREAM_STORED_DEADLINE_SECONDS for this stream
+    and by SUITE_STORED_BUDGET_SECONDS across every gate in the process, so
+    a stream that never settles fails here, saying which box was
+    outstanding, rather than running until the CI step times out and says
+    nothing.
+    """
+    give_up_at = min(
+        time.monotonic() + STREAM_STORED_DEADLINE_SECONDS,
+        _suite_give_up_at(),
+    )
+    index = keypair.first_message_index
+    for i, payload in enumerate(payloads):
+        stored = False
+        for attempt in range(writes):
+            if time.monotonic() >= give_up_at:
+                break
+            if attempt > 0:
+                print(f"--- Box {i + 1} was not stored; writing it again ---")
+                await write_box(client, keypair.write_cap, index, payload)
+            deadline = min(
+                time.monotonic() + BOX_LOST_AFTER_SECONDS, give_up_at
+            )
+            while not stored and time.monotonic() < deadline:
+                stored = await box_stored(client, keypair.read_cap, index)
+                if not stored:
+                    await asyncio.sleep(BOX_POLL_SECONDS)
+            if stored:
+                break
+        if not stored:
+            raise AssertionError(
+                f"box {i + 1} of {len(payloads)} was not stored after "
+                f"{writes} writes; this stream's budget is "
+                f"{STREAM_STORED_DEADLINE_SECONDS}s and the whole "
+                f"process's is {SUITE_STORED_BUDGET_SECONDS}s"
+            )
+        index = await client.next_message_box_index(index)
 
 
 @pytest.mark.asyncio
@@ -433,15 +519,10 @@ async def test_create_courier_envelopes_from_payload():
             )
             print(f"✓ Alice sent copy stream chunk {i+1} to temporary channel")
 
-            # Track the box just written, then advance for the next chunk.
-            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
 
-        # Deterministic ARQ propagation gate in place of a blind sleep.
-        print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_box_propagated(
-            alice_client, temp_keypair.read_cap, last_temp_index
-        )
+        print("--- Awaiting every copy stream box at the replicas ---")
+        await await_stream_stored(alice_client, temp_keypair, copy_stream_chunks)
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
@@ -599,15 +680,10 @@ async def test_copy_command_multi_channel():
             )
             print(f"✓ Alice sent chunk {i+1} to temporary channel")
 
-            # Track the box just written, then advance for the next chunk.
-            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
 
-        # Deterministic ARQ propagation gate in place of a blind sleep.
-        print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_box_propagated(
-            alice_client, temp_keypair.read_cap, last_temp_index
-        )
+        print("--- Awaiting every copy stream box at the replicas ---")
+        await await_stream_stored(alice_client, temp_keypair, all_chunks)
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
@@ -766,15 +842,10 @@ async def test_copy_command_multi_channel_efficient():
             )
             print(f"✓ Alice sent chunk {i+1} to temporary channel")
 
-            # Track the box just written, then advance for the next chunk.
-            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
 
-        # Deterministic ARQ propagation gate in place of a blind sleep.
-        print("\n--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_box_propagated(
-            alice_client, temp_keypair.read_cap, last_temp_index
-        )
+        print("--- Awaiting every copy stream box at the replicas ---")
+        await await_stream_stored(alice_client, temp_keypair, all_chunks)
 
         # Step 6: Send Copy command to courier using ARQ
         print("\n--- Step 6: Sending Copy command to courier via ARQ ---")
@@ -1417,14 +1488,10 @@ async def test_copy_onto_already_existing_box_error():
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash
             )
-            last_temp_index = temp_index
             temp_index = await client.next_message_box_index(temp_index)
 
-        # Deterministic ARQ propagation gate in place of a blind sleep.
-        print("--- Awaiting copy stream propagation (ARQ read of final box) ---")
-        await await_box_propagated(
-            client, temp_keypair.read_cap, last_temp_index
-        )
+        print("--- Awaiting every copy stream box at the replicas ---")
+        await await_stream_stored(client, temp_keypair, copy_stream_chunks)
 
         # Send Copy command - should fail because destination box already exists
         print("--- Sending Copy command (should fail) ---")
@@ -1524,14 +1591,11 @@ async def test_from_payload_multi_call():
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash)
-            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
             print(f"Wrote temp element {i+1}/{len(all_temp_elements)}")
 
-        print("Awaiting temp stream propagation (ARQ read of final box)")
-        await await_box_propagated(
-            alice_client, temp_keypair.read_cap, last_temp_index
-        )
+        print("--- Awaiting every copy stream box at the replicas ---")
+        await await_stream_stored(alice_client, temp_keypair, all_temp_elements)
 
         # Send copy command
         await alice_client.start_resending_copy_command(temp_keypair.write_cap)
@@ -1627,14 +1691,11 @@ async def test_from_multi_payload_multi_call():
                 envelope_descriptor=write_result.envelope_descriptor,
                 message_ciphertext=write_result.message_ciphertext,
                 envelope_hash=write_result.envelope_hash)
-            last_temp_index = temp_index
             temp_index = await alice_client.next_message_box_index(temp_index)
             print(f"Wrote temp element {i+1}/{len(all_elements)}")
 
-        print("Awaiting temp stream propagation (ARQ read of final box)")
-        await await_box_propagated(
-            alice_client, temp_keypair.read_cap, last_temp_index
-        )
+        print("--- Awaiting every copy stream box at the replicas ---")
+        await await_stream_stored(alice_client, temp_keypair, all_elements)
 
         # Send copy command
         await alice_client.start_resending_copy_command(temp_keypair.write_cap)
