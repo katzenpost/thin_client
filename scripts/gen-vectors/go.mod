@@ -4,8 +4,8 @@ go 1.26.9
 
 require (
 	github.com/fxamacker/cbor/v2 v2.9.1
-	github.com/katzenpost/hpqc v0.0.94
-	github.com/katzenpost/katzenpost v0.0.108-0.20261029000543-f02d786115a3
+	github.com/katzenpost/hpqc v0.0.96-0.20261103140420-62a4e238dbf4
+	github.com/katzenpost/katzenpost v0.0.111-0.20261103141338-a68f4145c102
 )
 
 require (
