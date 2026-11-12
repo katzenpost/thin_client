@@ -411,6 +411,16 @@ struct CreateCourierEnvelopesFromTombstoneRangeReply {
 // Contact Voucher API Protocol Message Structs
 // ========================================================================
 
+/// The long VoucherPayload form for [`ThinClient::voucher_mint_form`]: the
+/// signed CBOR map that inductors from before the compact form read. Its reply
+/// is the MKEM ciphertext in VoucherStream box 1.
+pub const VOUCHER_FORM_LONG: u8 = 1;
+
+/// The compact VoucherPayload form for [`ThinClient::voucher_mint_form`]: the
+/// signed CBOR array. Its reply is a sealed box framed over VoucherStream
+/// boxes 1 on. The daemon mints it when no form is given.
+pub const VOUCHER_FORM_COMPACT: u8 = 2;
+
 /// Request to mint a Voucher from the joiner's MessageStream write cap.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct VoucherMintRequest {
@@ -419,6 +429,14 @@ struct VoucherMintRequest {
     #[serde(with = "serde_bytes")]
     message_write_cap: Vec<u8>,
     display_name: String,
+    /// The VoucherPayload form: [`VOUCHER_FORM_LONG`] or [`VOUCHER_FORM_COMPACT`];
+    /// 0, left off the wire, means compact.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    form: u8,
+}
+
+fn is_zero(n: &u8) -> bool {
+    *n == 0
 }
 
 /// Reply containing the minted Voucher and the joiner's reply keypair.
@@ -1550,11 +1568,38 @@ impl ThinClient {
         message_write_cap: &[u8],
         display_name: &str,
     ) -> Result<VoucherMintResult, ThinClientError> {
+        self.voucher_mint_form(message_write_cap, display_name, 0).await
+    }
+
+    /// Mints a Voucher, as [`ThinClient::voucher_mint`] does, in the chosen
+    /// VoucherPayload form.
+    ///
+    /// # Arguments
+    /// * `message_write_cap` - the joiner's MessageStream write cap.
+    /// * `display_name` - the joiner's chosen display name.
+    /// * `form` - [`VOUCHER_FORM_LONG`], to join a group whose inductors only
+    ///   read the long form, or [`VOUCHER_FORM_COMPACT`]; 0 lets the daemon
+    ///   choose, which is the compact form.
+    ///
+    /// # Returns
+    /// The Voucher, the payload to publish to VoucherStream box 0, the
+    /// rendezvous stream caps and the reply keypair.
+    ///
+    /// # Errors
+    /// The daemon's error (for instance for a malformed write cap), or a
+    /// connection or decoding error.
+    pub async fn voucher_mint_form(
+        &self,
+        message_write_cap: &[u8],
+        display_name: &str,
+        form: u8,
+    ) -> Result<VoucherMintResult, ThinClientError> {
         let query_id = Self::new_query_id();
         let request_inner = VoucherMintRequest {
             query_id: query_id.clone(),
             message_write_cap: message_write_cap.to_vec(),
             display_name: display_name.to_string(),
+            form,
         };
         let request_value = serde_cbor::value::to_value(&request_inner)
             .map_err(ThinClientError::CborError)?;
@@ -1887,11 +1932,25 @@ mod sack_request_tests {
             query_id: vec![1],
             message_write_cap: vec![2],
             display_name: "bob".to_string(),
+            form: 0,
         };
         let keys = map_keys(serde_cbor::value::to_value(&req).unwrap());
         for expected in ["query_id", "message_write_cap", "display_name"] {
             assert!(keys.iter().any(|k| k == expected), "missing field {expected}, got {keys:?}");
         }
+        assert!(!keys.iter().any(|k| k == "form"), "form 0 must be left out, got {keys:?}");
+    }
+
+    #[test]
+    fn voucher_mint_request_form() {
+        let req = VoucherMintRequest {
+            query_id: vec![1],
+            message_write_cap: vec![2],
+            display_name: "bob".to_string(),
+            form: VOUCHER_FORM_LONG,
+        };
+        let Value::Map(m) = serde_cbor::value::to_value(&req).unwrap() else { panic!("not a map") };
+        assert_eq!(m.get(&Value::Text("form".to_string())), Some(&Value::Integer(1)));
     }
 
     #[test]
