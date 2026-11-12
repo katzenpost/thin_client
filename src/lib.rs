@@ -30,7 +30,6 @@
 pub mod error;
 pub mod core;
 pub mod pigeonhole;
-pub mod persistent;
 pub mod helpers;
 pub mod transport;
 

@@ -44,11 +44,10 @@ archival storage. For a developer-oriented introduction, see
 
 ## Installation
 
-Add the crate to your `Cargo.toml`:
+Add the crate to your project:
 
-```toml
-[dependencies]
-katzenpost_thin_client = "0.0.16"
+```bash
+cargo add katzenpost_thin_client
 ```
 
 Please consult
@@ -60,40 +59,9 @@ client, the Rust and Python thin clients, and `katzenqt`.
 
 ## pigeonhole-cp
 
-The crate also ships a small command-line utility, `pigeonhole-cp`,
-for sending and receiving files to and from Pigeonhole channels.
-It is gated behind the `cli` feature:
-
-```bash
-cargo build --release --features cli --bin pigeonhole-cp
-```
-
-It has three subcommands:
-
-- `genkey -c <config>` prints a fresh write capability, read capability,
-  and first message box index.
-- `send -c <config> -w <write-cap> -i <index> -f <file>` reads a file
-  and writes it to a channel. The transfer mode is chosen by these
-  flags:
-  - (default, no flag) uses the courier COPY command, which is atomic but
-    buffers the whole file in memory and caps the payload near 9 MiB.
-  - `--no-copy` writes each Box directly with the per-box ARQ, reading the
-    file one Box at a time. It never loads the whole file into memory and
-    has no payload size limit.
-  - `--sack` uses the windowed SACK ARQ, keeping a block of Boxes in
-    flight at once. It streams the file a block at a time, so it too
-    never loads the whole file into memory.
-- `receive -c <config> -r <read-cap> -i <index> -d <dest-dir>` reads a
-  channel and writes the file to disk. `--sack` reads it with the same
-  windowed SACK ARQ instead of one Box per round trip.
-
-Under `--sack`, in either direction, the daemon sizes the window itself
-from the PKI document (routing layers and Mu), so there is no window
-flag to tune.
-
-Its source is at
-[`src/bin/pigeonhole_cp.rs`](https://github.com/katzenpost/thin_client/blob/main/src/bin/pigeonhole_cp.rs)
-and serves as a worked example of the persistent Pigeonhole API.
+`pigeonhole-cp`, a command-line utility for sending and receiving
+files over Pigeonhole channels, now lives in
+[katzenpost/pigeonhole_protocols](https://github.com/katzenpost/pigeonhole_protocols).
 
 
 ## Running the tests
@@ -114,12 +82,12 @@ make start wait run-ping
 
 The mixnet runs `kpclientd` inside a container exposed on
 `127.0.0.1:64331`, and writes a thin client configuration to
-`voting_mixnet/client/thinclient.toml`. The test suite uses the
+`mixnet-alpine/client/thinclient.toml`. The test suite uses the
 preconfigured fixture at `testdata/thinclient.toml`, which dials
 the daemon on that port. Run the suite with:
 
 ```bash
-cargo test --features cli
+cargo test
 ```
 
 

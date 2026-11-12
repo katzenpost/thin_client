@@ -5,9 +5,7 @@ Katzenpost mix network.*
 
 This repository contains the [Rust](README_rust.md),
 [Python](README_python.md) and [Lean](README_lean.md) thin client libraries for
-[Katzenpost](https://katzenpost.network/), together with
-`pigeonhole-cp`, a small command-line utility for sending and
-receiving files over Pigeonhole channels.
+[Katzenpost](https://katzenpost.network/).
 
 
 ## What is a thin client?
@@ -25,7 +23,7 @@ respective thin clients.
 
 The reference Go implementation lives in
 [`katzenpost/client/thin`](https://github.com/katzenpost/katzenpost/tree/main/client/thin)
-within the Katzenpost monorepo. The Rust and Python ports are
+within the Katzenpost monorepo. The Rust, Python and Lean ports are
 maintained here.
 
 
@@ -78,17 +76,9 @@ and §§4-5 of the [Echomix paper](https://arxiv.org/abs/2501.02933).
 
 ## pigeonhole-cp
 
-`pigeonhole-cp` is a small command-line utility, written in Rust,
-for sending and receiving files to and from Pigeonhole channels.
-It is a thin wrapper over the persistent Pigeonhole API and serves
-both as a utility in its own right and as a worked example for
-application authors. Build it with the `cli` feature:
-
-```bash
-cargo build --release --features cli --bin pigeonhole-cp
-```
-
-The source lives at [`src/bin/pigeonhole_cp.rs`](src/bin/pigeonhole_cp.rs).
+`pigeonhole-cp`, a command-line utility for sending and receiving
+files over Pigeonhole channels, now lives in
+[katzenpost/pigeonhole_protocols](https://github.com/katzenpost/pigeonhole_protocols).
 
 
 ## Directory layout
@@ -99,39 +89,39 @@ thin_client/
 │   ├── lib.rs                      Crate root; re-exports the public API.
 │   ├── core.rs                     ThinClient struct: connection, events, message send.
 │   ├── pigeonhole.rs               Low-level Pigeonhole API (manual cap and index handling).
-│   ├── persistent/                 High-level Pigeonhole API with SQLite-backed state.
-│   │   ├── mod.rs                  PigeonholeClient and ChannelHandle.
-│   │   ├── channel.rs              Channel state machine and box send/receive.
-│   │   ├── db.rs                   SQLite persistence for caps, indices, and messages.
-│   │   ├── models.rs               Channel, capability, and message records.
-│   │   └── error.rs                Errors specific to the persistent layer.
 │   ├── transport/                  Pluggable daemon transports.
 │   │   ├── mod.rs                  Dialer trait and DialConfig discriminated union.
 │   │   ├── unix.rs                 Abstract Unix domain socket transport.
 │   │   └── tcp.rs                  TCP transport (used by the docker mixnet).
 │   ├── helpers.rs                  PKI document utilities (find_services, pretty print).
-│   ├── error.rs                    Error types and error code translation.
-│   └── bin/
-│       └── pigeonhole_cp.rs        pigeonhole-cp file send/receive utility.
+│   └── error.rs                    Error types and error code translation.
 ├── katzenpost_thinclient/          Python thin client (PyPI: katzenpost_thinclient)
 │   ├── __init__.py                 Public API and module docstring.
 │   ├── core.py                     ThinClient and Config; replica error types.
 │   ├── pigeonhole.py               Capability-based Pigeonhole API.
 │   └── transport/                  Daemon transports (TCP and Unix).
+├── ThinClient/                     Lean thin client (Lake package: thinclient)
+│   ├── Api/                        Messaging, Pigeonhole, PKI, box and voucher API.
+│   └── Tests/                      Lean unit and integration tests.
 ├── tests/                          Integration tests (Rust and Python).
-│   ├── conftest.py                 Pytest fixtures; expects the daemon on 127.0.0.1:64331.
-│   ├── high_level_api_test.rs      Persistent Pigeonhole API tests.
+│   ├── conftest.py                 Pytest fixtures; dials the daemon named in testdata/thinclient.toml.
+│   ├── high_level_api_test.rs      Stateless courier-envelope tests.
 │   ├── channel_api_test.rs         Channel API tests.
-│   ├── smoke_pigeonhole_cp.rs      pigeonhole-cp smoke test.
+│   ├── directory_authorities_test.rs  get_directory_authorities test.
 │   └── test_*.py                   Python integration tests.
 ├── testdata/
 │   └── thinclient.toml             Fixture config (TCP dial, Sphinx and Pigeonhole geometry).
+├── scripts/gen-vectors/            Go generator of protocol test vectors from the daemon's types.
+├── packaging/, debian/             Debian package build.
+├── Makefile                        Test, lint and live-mixnet targets.
 ├── Cargo.toml                      Rust crate manifest.
+├── lakefile.toml                   Lean package manifest.
 ├── pyproject.toml                  Python package manifest.
 ├── requirements.txt                Python runtime dependencies.
 ├── pydoc-markdown.yml              Pydoc generation config for the Python API reference.
 ├── README.md                       This file (rendered on GitHub).
 ├── README_python.md                Bundled with the PyPI package.
+├── README_lean.md                  Lean thin client README.
 ├── README_rust.md                  Bundled with the crates.io package.
 └── RELEASING.md                    Release and publish procedure.
 ```
@@ -139,7 +129,7 @@ thin_client/
 
 ## Compatibility
 
-Both libraries track the Katzenpost stack at the tag listed in
+All three libraries track the Katzenpost stack at the tag listed in
 [Build from source](https://katzenpost.network/docs/build_from_source/);
 that page is the canonical record of pinned versions for `kpclientd`,
 the Go reference thin client, the Rust and Python thin clients, and
