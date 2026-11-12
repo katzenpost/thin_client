@@ -1,155 +1,82 @@
 # Katzenpost thin client libraries
 
-*Thin client libraries for sending and receiving messages via the
-Katzenpost mix network.*
+[![ci](https://github.com/katzenpost/thin_client/actions/workflows/ci.yml/badge.svg)](https://github.com/katzenpost/thin_client/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/katzenpost_thinclient)](https://pypi.org/project/katzenpost_thinclient/)
+[![crates.io](https://img.shields.io/crates/v/katzenpost_thin_client)](https://crates.io/crates/katzenpost_thin_client)
+[![docs.rs](https://img.shields.io/docsrs/katzenpost_thin_client)](https://docs.rs/katzenpost_thin_client)
 
-This repository contains the [Rust](README_rust.md),
-[Python](README_python.md) and [Lean](README_lean.md) thin client libraries for
-[Katzenpost](https://katzenpost.network/).
+Rust, Python and Lean libraries that let an application send messages
+and use Pigeonhole storage over a [Katzenpost](https://github.com/katzenpost)
+mixnet, by talking to the local client daemon `kpclientd`.
 
-
-## What is a thin client?
-
-A mix network is a type of anonymous communications network. The
-Katzenpost stack is split between a local daemon, `kpclientd`, and
-the application that uses it. The daemon performs all cryptographic
-and network operations: PQ Noise transport, Sphinx packet
-construction, courier discovery, and ARQ retransmission. A thin
-client is the small library on the application side: it speaks a
-CBOR-framed protocol over a local socket to the daemon, and exposes
-a friendly API in its host language. Several applications on the
-same device may share a single daemon concurrently by way of their
-respective thin clients.
-
-The reference Go implementation lives in
+This is for application developers. A thin client does no cryptography
+and no networking of its own: it speaks a CBOR-framed protocol over a
+local socket, and `kpclientd` does the rest, so you need a running
+daemon. Go programs should use the reference thin client in
 [`katzenpost/client/thin`](https://github.com/katzenpost/katzenpost/tree/main/client/thin)
-within the Katzenpost monorepo. The Rust, Python and Lean ports are
-maintained here.
+instead. [docs/overview.md](docs/overview.md) explains thin clients and
+Pigeonhole in more detail.
 
+## Quick start
 
-## Pigeonhole, in brief
+With `kpclientd` running and its thin client config in `thinclient.toml`
+([Docker test network](https://katzenpost.network/docs/admin_guide/docker.html)):
 
-Beyond simple request-response services, Katzenpost provides a
-storage layer called Pigeonhole. Applications communicate through
-encrypted, append-only streams composed of fixed-size, padded Boxes,
-which are sharded across storage replicas via consistent hashing
-(two replicas per Box). Access is governed by cryptographic
-capabilities: a write capability can append messages or place
-tombstones, whilst a separate read capability decrypts and verifies
-without conferring any ability to write. Streams are single-writer
-and multi-reader, and unlinkable in the sense that storage servers
-cannot tell which messages belong to the same stream. Storage is
-ephemeral: Boxes are garbage-collected after roughly two weeks, so
-Pigeonhole is not intended for long-term archival storage.
-
-Clients never speak to replicas directly. Each Pigeonhole operation
-is carried as a Sphinx round-trip through the mix layers to a
-courier service, which then forwards the request to the appropriate
-replicas on fixed-throughput connections so that traffic patterns
-reveal nothing to an outside observer. Many higher-level protocols
-(group chat, file transfer, request-response services) compose
-readily on top of these streams by sharing read capabilities
-out-of-band.
-
-For a developer-oriented introduction see
-[Understanding Pigeonhole](https://katzenpost.network/docs/pigeonhole_explained/).
-For the wire-level details see the
-[Pigeonhole specification](https://katzenpost.network/docs/specs/pigeonhole/)
-and §§4-5 of the [Echomix paper](https://arxiv.org/abs/2501.02933).
-
-
-## Documentation
-
-- [Project website](https://katzenpost.network/)
-- [Thin Client How-to Guide](https://katzenpost.network/docs/thin_client_howto/), task-oriented examples in Go, Rust, and Python.
-- [Thin Client API Reference](https://katzenpost.network/docs/thin_client_api_reference/), the unified API reference for all three languages.
-- [Build from source](https://katzenpost.network/docs/build_from_source/), the canonical record of pinned versions for the whole stack.
-- [Docker test network](https://katzenpost.network/docs/admin_guide/docker.html), instructions for running a local mixnet for development.
-
-
-## Per-language READMEs
-
-- [Python thin client](README_python.md), distributed via PyPI as [`katzenpost_thinclient`](https://pypi.org/project/katzenpost_thinclient/).
-- [Rust thin client](README_rust.md), distributed via crates.io as [`katzenpost_thin_client`](https://crates.io/crates/katzenpost_thin_client).
-- [Lean thin client](README_lean.md), the `thinclient` Lake package.
-
-
-## pigeonhole-cp
-
-`pigeonhole-cp`, a command-line utility for sending and receiving
-files over Pigeonhole channels, now lives in
-[katzenpost/pigeonhole_protocols](https://github.com/katzenpost/pigeonhole_protocols).
-
-
-## Directory layout
-
-```
-thin_client/
-├── src/                            Rust thin client (crates.io: katzenpost_thin_client)
-│   ├── lib.rs                      Crate root; re-exports the public API.
-│   ├── core.rs                     ThinClient struct: connection, events, message send.
-│   ├── pigeonhole.rs               Low-level Pigeonhole API (manual cap and index handling).
-│   ├── transport/                  Pluggable daemon transports.
-│   │   ├── mod.rs                  Dialer trait and DialConfig discriminated union.
-│   │   ├── unix.rs                 Abstract Unix domain socket transport.
-│   │   └── tcp.rs                  TCP transport (used by the docker mixnet).
-│   ├── helpers.rs                  PKI document utilities (find_services, pretty print).
-│   └── error.rs                    Error types and error code translation.
-├── katzenpost_thinclient/          Python thin client (PyPI: katzenpost_thinclient)
-│   ├── __init__.py                 Public API and module docstring.
-│   ├── core.py                     ThinClient and Config; replica error types.
-│   ├── pigeonhole.py               Capability-based Pigeonhole API.
-│   └── transport/                  Daemon transports (TCP and Unix).
-├── ThinClient/                     Lean thin client (Lake package: thinclient)
-│   ├── Api/                        Messaging, Pigeonhole, PKI, box and voucher API.
-│   └── Tests/                      Lean unit and integration tests.
-├── tests/                          Integration tests (Rust and Python).
-│   ├── conftest.py                 Pytest fixtures; dials the daemon named in testdata/thinclient.toml.
-│   ├── high_level_api_test.rs      Stateless courier-envelope tests.
-│   ├── channel_api_test.rs         Channel API tests.
-│   ├── directory_authorities_test.rs  get_directory_authorities test.
-│   └── test_*.py                   Python integration tests.
-├── testdata/
-│   └── thinclient.toml             Fixture config (TCP dial, Sphinx and Pigeonhole geometry).
-├── scripts/gen-vectors/            Go generator of protocol test vectors from the daemon's types.
-├── packaging/, debian/             Debian package build.
-├── Makefile                        Test, lint and live-mixnet targets.
-├── Cargo.toml                      Rust crate manifest.
-├── lakefile.toml                   Lean package manifest.
-├── pyproject.toml                  Python package manifest.
-├── requirements.txt                Python runtime dependencies.
-├── pydoc-markdown.yml              Pydoc generation config for the Python API reference.
-├── README.md                       This file (rendered on GitHub).
-├── README_python.md                Bundled with the PyPI package.
-├── README_lean.md                  Lean thin client README.
-├── README_rust.md                  Bundled with the crates.io package.
-└── RELEASING.md                    Release and publish procedure.
+```bash
+pip install katzenpost_thinclient
 ```
 
+```python
+import asyncio
+from katzenpost_thinclient import ThinClient, Config
 
-## Compatibility
+async def main():
+    client = ThinClient(Config("thinclient.toml"))
+    await client.start(asyncio.get_running_loop())
+    print("PKI epoch", client.pki_document()["Epoch"])
+    client.stop()
 
-All three libraries track the Katzenpost stack at the tag listed in
-[Build from source](https://katzenpost.network/docs/build_from_source/);
-that page is the canonical record of pinned versions for `kpclientd`,
-the Go reference thin client, the Rust and Python thin clients, and
-`katzenqt`. The reference daemon is built from the
-[katzenpost monorepo](https://github.com/katzenpost/katzenpost) at
-that same tag.
+asyncio.run(main())
+```
 
+For Rust (`cargo add katzenpost_thin_client`) and Lean, see the
+per-language READMEs below. The
+[how-to guide](https://katzenpost.network/docs/thin_client_howto/) and
+[API reference](https://katzenpost.network/docs/thin_client_api_reference/)
+cover Pigeonhole streams and messaging.
 
-## Contributions
+## What is here
 
-Pull requests are welcome at
-<https://github.com/katzenpost/thin_client>. The CI pipeline runs
-the integration suite against a docker mixnet pinned to a specific
-commit of the [katzenpost monorepo](https://github.com/katzenpost/katzenpost);
-protocol-level changes should be coordinated with that pin in mind.
+- [`src/`](src/): Rust crate `katzenpost_thin_client`; [README_rust.md](README_rust.md).
+- [`katzenpost_thinclient/`](katzenpost_thinclient/): Python package; [README_python.md](README_python.md).
+- [`ThinClient/`](ThinClient/): Lean Lake package `thinclient`; [README_lean.md](README_lean.md).
+- [`tests/`](tests/): Python and Rust tests, mostly integration tests against a daemon.
+- [`scripts/gen-vectors/`](scripts/gen-vectors/): writes [`testdata/vectors.json`](testdata/vectors.json) from the daemon's Go types.
+- [`packaging/`](packaging/), [`debian/`](debian/): Debian packages.
 
-Maintainers: see [RELEASING.md](RELEASING.md) for the release and
-publish procedure.
+[docs/layout.md](docs/layout.md) lists every file.
 
+## Status and compatibility
+
+Pre-1.0. The Python and Rust clients share one version (`pyproject.toml`,
+`Cargo.toml`); the Lean client has its own (`lakefile.toml`).
+All three speak to the `kpclientd` built from the Katzenpost commit pinned
+as `katzenpost_ref` in the [Makefile](Makefile), which the integration
+CI runs against. The test vectors in `testdata/vectors.json` are encoded by
+the Go thin client's own types, at the Katzenpost version pinned in
+`scripts/gen-vectors/go.mod`; the Rust, Python and Lean tests check against them, and
+`make test-lean` checks that Lean-encoded requests decode in Go.
+[Build from source](https://katzenpost.network/docs/build_from_source/)
+lists the versions pinned across the stack.
+
+## Testing and contributing
+
+`make test` runs the Python and Rust tests (Python needs `uv`; daemon
+tests are skipped without one), `make test-lean` the Lean tests, and
+`make check-live` builds `kpclientd` and runs a few tests against the
+live namenlos mixnet (needs Go). Pull requests are welcome; maintainers
+see [RELEASING.md](RELEASING.md).
 
 ## License
 
-AGPLv3.
+AGPL-3.0-only; see [LICENSE](LICENSE).
