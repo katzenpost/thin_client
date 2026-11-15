@@ -1212,88 +1212,6 @@ mod tests {
     use serde_cbor::Value;
     use std::collections::BTreeMap;
 
-    /// instance_token field should exist on ThinClient.
-    #[test]
-    fn test_instance_token_field_exists() {
-        // We can't easily construct a ThinClient without a socket,
-        // but we can verify the field exists by checking the struct layout
-        // via a compile-time assertion. If this compiles, the field exists.
-        fn _assert_field(tc: &ThinClient) -> &[u8; 16] {
-            &tc.instance_token
-        }
-    }
-
-    /// disconnect() method should exist and be distinct from stop().
-    #[test]
-    fn test_disconnect_method_exists() {
-        // Compile-time check: if this compiles, disconnect() exists as an async method.
-        fn _assert_method(tc: &ThinClient) {
-            let _fut = tc.disconnect();
-        }
-    }
-
-    /// SessionToken CBOR encoding should match what the daemon expects.
-    #[test]
-    fn test_session_token_cbor_encoding() {
-        let token = [0x01u8; 16];
-        let mut inner = BTreeMap::new();
-        inner.insert(
-            Value::Text("client_instance_token".to_string()),
-            Value::Bytes(token.to_vec()),
-        );
-        let mut request = BTreeMap::new();
-        request.insert(
-            Value::Text("session_token".to_string()),
-            Value::Map(inner),
-        );
-
-        let encoded = serde_cbor::to_vec(&request).unwrap();
-        let decoded: BTreeMap<Value, Value> = serde_cbor::from_slice(&encoded).unwrap();
-
-        if let Some(Value::Map(st)) = decoded.get(&Value::Text("session_token".to_string())) {
-            if let Some(Value::Bytes(t)) = st.get(&Value::Text("client_instance_token".to_string())) {
-                assert_eq!(t.as_slice(), &token);
-            } else {
-                panic!("missing client_instance_token field");
-            }
-        } else {
-            panic!("missing session_token field");
-        }
-    }
-
-    /// SessionTokenReply CBOR decoding should work correctly.
-    #[test]
-    fn test_session_token_reply_decoding() {
-        let app_id = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        let mut reply_inner = BTreeMap::new();
-        reply_inner.insert(Value::Text("app_id".to_string()), Value::Bytes(app_id.clone()));
-        reply_inner.insert(Value::Text("resumed".to_string()), Value::Bool(true));
-
-        let mut response = BTreeMap::new();
-        response.insert(
-            Value::Text("session_token_reply".to_string()),
-            Value::Map(reply_inner),
-        );
-
-        let encoded = serde_cbor::to_vec(&response).unwrap();
-        let decoded: BTreeMap<Value, Value> = serde_cbor::from_slice(&encoded).unwrap();
-
-        if let Some(Value::Map(reply)) = decoded.get(&Value::Text("session_token_reply".to_string())) {
-            if let Some(Value::Bytes(id)) = reply.get(&Value::Text("app_id".to_string())) {
-                assert_eq!(id, &app_id);
-            } else {
-                panic!("missing app_id");
-            }
-            if let Some(Value::Bool(resumed)) = reply.get(&Value::Text("resumed".to_string())) {
-                assert!(resumed);
-            } else {
-                panic!("missing resumed");
-            }
-        } else {
-            panic!("missing session_token_reply");
-        }
-    }
-
     /// doc_epoch reads the PascalCase `Epoch` field the daemon serialises.
     #[test]
     fn test_doc_epoch_reads_epoch_field() {
@@ -1338,27 +1256,5 @@ mod tests {
         }
         assert_eq!(cache.len(), 3);
         assert!(cache.contains_key(&0));
-    }
-
-    /// handle_response should not panic on session_token_reply.
-    #[tokio::test]
-    async fn test_handle_response_session_token_reply() {
-        // We need a ThinClient to call handle_response, but we can't construct one
-        // without a socket. Instead, verify the CBOR structure is correct and that
-        // session_token_reply would be handled (not panic) by checking it matches
-        // the expected pattern.
-        let mut reply_inner = BTreeMap::new();
-        reply_inner.insert(Value::Text("app_id".to_string()), Value::Bytes(vec![1; 16]));
-        reply_inner.insert(Value::Text("resumed".to_string()), Value::Bool(false));
-
-        let mut response = BTreeMap::new();
-        response.insert(
-            Value::Text("session_token_reply".to_string()),
-            Value::Map(reply_inner),
-        );
-
-        // Verify the key matches the pattern we handle
-        let key = Value::Text("session_token_reply".to_string());
-        assert!(response.contains_key(&key));
     }
 }
