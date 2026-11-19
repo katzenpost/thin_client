@@ -7,10 +7,9 @@ These tests use mock sockets and do not require a running daemon.
 """
 
 import asyncio
-import struct
 import os
 import pytest
-import cbor2
+from unittest.mock import MagicMock
 
 from katzenpost_thinclient.core import ThinClient, Config
 
@@ -32,90 +31,27 @@ def make_config():
     return cfg
 
 
-class TestInstanceToken:
-    """Tests for instance_token generation."""
-
-    def test_instance_token_exists(self):
-        """ThinClient should have an instance_token attribute."""
-        cfg = make_config()
-        client = ThinClient.__new__(ThinClient)
-        # Manually call __init__ parts that don't need a real socket
-        client.instance_token = os.urandom(16)
-        assert hasattr(client, 'instance_token')
-        assert len(client.instance_token) == 16
-
-    def test_instance_token_is_random(self):
-        """Two ThinClient instances should have different tokens."""
-        cfg = make_config()
-        # We can't easily construct ThinClient without a socket,
-        # so just test the token generation logic
-        token1 = os.urandom(16)
-        token2 = os.urandom(16)
-        assert token1 != token2
-
-    def test_instance_token_nonzero(self):
-        """Instance token should not be all zeros."""
-        token = os.urandom(16)
-        assert token != b'\x00' * 16
+def make_client():
+    """Create a ThinClient through the real __init__ with a mock socket."""
+    cfg = make_config()
+    cfg.dial = MagicMock()
+    cfg.dial.resolve.return_value.setup_socket.return_value = (MagicMock(), "addr")
+    return ThinClient(cfg)
 
 
-class TestDisconnect:
-    """Tests for the disconnect() method."""
-
-    def test_disconnect_method_exists(self):
-        """ThinClient should have a disconnect() method."""
-        assert hasattr(ThinClient, 'disconnect')
-
-    def test_disconnect_does_not_send_thin_close(self):
-        """disconnect() should close the socket without sending thin_close."""
-        # This is a design contract test - the actual socket behavior
-        # is tested in integration tests. Here we verify the method exists
-        # and is distinct from stop().
-        assert hasattr(ThinClient, 'disconnect')
-        assert hasattr(ThinClient, 'stop')
-        assert ThinClient.disconnect is not ThinClient.stop
+def test_instance_token_is_fresh_per_client():
+    a, b = make_client(), make_client()
+    assert len(a.instance_token) == 16
+    assert a.instance_token != b.instance_token
 
 
-class TestSessionTokenProtocol:
-    """Tests for session token CBOR encoding."""
-
-    def test_session_token_cbor_encoding(self):
-        """SessionToken request should encode correctly for the daemon."""
-        token = os.urandom(16)
-        request = {
-            "session_token": {
-                "client_instance_token": token,
-            }
-        }
-        encoded = cbor2.dumps(request)
-        decoded = cbor2.loads(encoded)
-        assert decoded["session_token"]["client_instance_token"] == token
-
-    def test_session_token_reply_decoding(self):
-        """SessionTokenReply should decode correctly from the daemon."""
-        app_id = os.urandom(16)
-        reply = {
-            "session_token_reply": {
-                "app_id": app_id,
-                "resumed": True,
-            }
-        }
-        encoded = cbor2.dumps(reply)
-        decoded = cbor2.loads(encoded)
-        assert decoded["session_token_reply"]["app_id"] == app_id
-        assert decoded["session_token_reply"]["resumed"] is True
-
-    def test_session_token_reply_not_resumed(self):
-        """SessionTokenReply with resumed=false should decode correctly."""
-        reply = {
-            "session_token_reply": {
-                "app_id": os.urandom(16),
-                "resumed": False,
-            }
-        }
-        encoded = cbor2.dumps(reply)
-        decoded = cbor2.loads(encoded)
-        assert decoded["session_token_reply"]["resumed"] is False
+def test_disconnect_does_not_send_thin_close():
+    client = make_client()
+    client.task = MagicMock()
+    client.disconnect()
+    client.socket.sendall.assert_not_called()
+    client.socket.close.assert_called_once()
+    client.task.cancel.assert_called_once()
 
 
 class TestHandleSessionTokenReply:
