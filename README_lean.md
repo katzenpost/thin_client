@@ -17,7 +17,7 @@ including PQ Noise transport, Sphinx packet construction, and ARQ
 retransmission, are performed by the daemon, not by this library.
 
 For Pigeonhole, the storage layer most of the API is about, see
-[Pigeonhole, in brief](README.md#pigeonhole-in-brief).
+[Pigeonhole, in brief](docs/overview.md#pigeonhole-in-brief).
 
 
 ## Installation
