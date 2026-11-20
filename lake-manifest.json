@@ -15,7 +15,7 @@
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "2569a654ffd201c05469d0b678300ba767663c58",
+   "rev": "0c29dd0f87efbb84bbcd46cba14554402c7cf66e",
    "name": "cryptlib",
    "manifestFile": "lake-manifest.json",
    "inputRev": "v0.2.0",
